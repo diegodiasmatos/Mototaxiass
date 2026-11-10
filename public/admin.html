@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1b2e">
+  <title>Assis MotoTáxi — Central Administrativa</title>
+  <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand" id="brand"></div>
+  <div class="spacer"></div>
+  <button class="iconbtn" id="btn-notifs" title="Notificações" hidden>🔔</button>
+  <button class="iconbtn" id="btn-logout" title="Sair" hidden>🚪</button>
+</header>
+
+<!-- login -->
+<main class="app" id="login-wrap" hidden>
+  <section class="screen">
+    <div class="auth-hero" id="auth-hero"></div>
+    <div class="card">
+      <h2>Acesso restrito</h2>
+      <p class="muted small mb">Somente administradores da plataforma.</p>
+      <form id="form-login">
+        <div class="field"><label>E-mail</label><input class="input" name="email" type="email" required></div>
+        <div class="field"><label>Senha</label><input class="input" name="password" type="password" required></div>
+        <button class="btn btn-navy" type="submit">Entrar na central</button>
+      </form>
+    </div>
+  </section>
+</main>
+
+<!-- painel -->
+<div class="admin-layout" id="admin-wrap" hidden>
+  <aside class="sidebar">
+    <button data-sec="dashboard" class="active">📊 Dashboard</button>
+    <button data-sec="drivers">🏍️ Mototaxistas</button>
+    <button data-sec="passengers">👥 Passageiros</button>
+    <button data-sec="rides">🛣️ Corridas</button>
+    <button data-sec="settings">⚙️ Configurações</button>
+    <button data-sec="audit">📜 Auditoria</button>
+    <button data-sec="support">🛟 Suporte</button>
+  </aside>
+  <main class="admin-main" id="admin-main">
+    <div class="spinner"></div>
+  </main>
+</div>
+
+<script src="/js/common.js"></script>
+<script src="/js/admin.js"></script>
+</body>
+</html>

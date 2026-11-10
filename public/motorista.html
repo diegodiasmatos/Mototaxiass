@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1b2e">
+  <title>Assis MotoTáxi — Parceiro Mototaxista</title>
+  <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand" id="brand"></div>
+  <div class="spacer"></div>
+  <button class="iconbtn" id="btn-notifs" title="Notificações" hidden>🔔</button>
+</header>
+
+<main class="app">
+
+  <!-- ============ AUTENTICAÇÃO ============ -->
+  <section class="screen" id="screen-auth" hidden>
+    <div class="auth-hero" id="auth-hero"></div>
+    <div class="card">
+      <div class="seg mb">
+        <button id="tab-login" class="active">Entrar</button>
+        <button id="tab-register">Quero ser parceiro</button>
+      </div>
+      <form id="form-login">
+        <div class="field"><label>E-mail</label><input class="input" name="email" type="email" required></div>
+        <div class="field"><label>Senha</label><input class="input" name="password" type="password" required></div>
+        <button class="btn btn-primary" type="submit">Entrar</button>
+      </form>
+      <form id="form-register" hidden>
+        <p class="muted small mb">Crie sua conta de parceiro. Depois você envia seus documentos para análise.</p>
+        <div class="field"><label>Nome completo</label><input class="input" name="name" required></div>
+        <div class="field"><label>CPF</label><input class="input" name="cpf" required placeholder="000.000.000-00"></div>
+        <div class="field"><label>Telefone (WhatsApp)</label><input class="input" name="phone" type="tel" required></div>
+        <div class="field"><label>E-mail</label><input class="input" name="email" type="email" required></div>
+        <div class="field"><label>Senha (mín. 8 caracteres)</label><input class="input" name="password" type="password" minlength="8" required></div>
+        <button class="btn btn-primary" type="submit">Criar conta de parceiro</button>
+      </form>
+      <p class="muted small center mt">É passageiro? <a href="/">Peça sua corrida aqui</a></p>
+    </div>
+  </section>
+
+  <!-- ============ CADASTRO PROFISSIONAL (wizard) ============ -->
+  <section class="screen" id="screen-apply" hidden>
+    <div class="card">
+      <h2 id="apply-title">Cadastro de mototaxista</h2>
+      <div class="progressbar" id="apply-progress"><span></span><span></span><span></span></div>
+
+      <div id="apply-step-1">
+        <h3>1 · Dados pessoais</h3>
+        <div class="field"><label>Data de nascimento</label><input class="input" id="ap-birth" type="date" required></div>
+        <div class="field"><label>Endereço completo</label><input class="input" id="ap-address" placeholder="Rua, número, bairro" required></div>
+        <div class="field"><label>Foto de perfil (seu rosto, nítida)</label>
+          <div class="upload-slot" id="slot-profile"><div class="uico">🤳</div><div class="ulabel">Enviar foto de perfil</div><div class="usub">Câmera ou galeria · JPG/PNG</div></div>
+          <input type="file" id="file-profile" accept="image/*" capture="user" hidden>
+        </div>
+        <button class="btn btn-primary" id="ap-next-1">Continuar →</button>
+      </div>
+
+      <div id="apply-step-2" hidden>
+        <h3>2 · Sua motocicleta</h3>
+        <div class="grid2">
+          <div class="field"><label>Marca</label><input class="input" id="ap-brand" placeholder="Honda" required></div>
+          <div class="field"><label>Modelo</label><input class="input" id="ap-model" placeholder="CG 160" required></div>
+          <div class="field"><label>Ano</label><input class="input" id="ap-year" placeholder="2022" required></div>
+          <div class="field"><label>Cor</label><input class="input" id="ap-color" placeholder="Vermelha" required></div>
+        </div>
+        <div class="field"><label>Placa</label><input class="input" id="ap-plate" placeholder="ABC-1D23" style="text-transform:uppercase" required></div>
+        <div class="row">
+          <button class="btn btn-outline" id="ap-back-2">← Voltar</button>
+          <button class="btn btn-primary" id="ap-next-2">Continuar →</button>
+        </div>
+      </div>
+
+      <div id="apply-step-3" hidden>
+        <h3>3 · Documentos</h3>
+        <p class="muted small mb">Exigências: CNH válida <b>categoria A</b> com observação <b>EAR</b> (exerce atividade remunerada) e CRLV da moto em dia. Os arquivos ficam em área privada — somente a administração acessa.</p>
+        <div class="upload-slot" id="slot-cnh"><div class="uico">🪪</div><div class="ulabel">CNH (frente, com EAR)</div><div class="usub">Foto nítida ou PDF</div></div>
+        <input type="file" id="file-cnh" accept="image/*,application/pdf" hidden>
+        <div class="upload-slot" id="slot-crlv"><div class="uico">📄</div><div class="ulabel">CRLV do veículo</div><div class="usub">Documento da moto</div></div>
+        <input type="file" id="file-crlv" accept="image/*,application/pdf" hidden>
+        <div class="upload-slot" id="slot-selfie"><div class="uico">🤳</div><div class="ulabel">Selfie segurando a CNH</div><div class="usub">Para confirmar sua identidade</div></div>
+        <input type="file" id="file-selfie" accept="image/*" capture="user" hidden>
+        <div class="row mt">
+          <button class="btn btn-outline" id="ap-back-3">← Voltar</button>
+          <button class="btn btn-primary" id="ap-submit">Enviar para análise ✓</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ AGUARDANDO ANÁLISE ============ -->
+  <section class="screen" id="screen-pending" hidden>
+    <div class="card center" id="pending-card"></div>
+  </section>
+
+  <!-- ============ PAINEL ============ -->
+  <section class="screen" id="screen-panel" hidden>
+    <h2 id="drv-greeting" style="margin:2px 0 12px;font-size:1.15rem"></h2>
+    <button class="online-toggle" id="online-toggle">
+      <div><span class="ot-dot"></span><span class="ot-label">Você está offline</span></div>
+      <div class="ot-sub">Toque para ficar online e receber corridas</div>
+    </button>
+    <div class="grid2 mb">
+      <div class="card center" style="margin:0"><div style="font-weight:800;font-size:1.25rem" id="stat-today">R$ 0,00</div><div class="muted small">Ganhos hoje</div></div>
+      <div class="card center" style="margin:0"><div style="font-weight:800;font-size:1.25rem" id="stat-rides">0</div><div class="muted small">Corridas feitas</div></div>
+    </div>
+    <div class="row mb"><span class="chip soft" id="drv-online-chip">🏍️ … parceiros online</span></div>
+    <div class="card">
+      <h2>Corridas disponíveis</h2>
+      <div id="offers-list"><div class="empty"><div class="eico">😴</div>Fique online para receber chamadas.</div></div>
+    </div>
+  </section>
+
+  <!-- ============ CORRIDA ATIVA (motorista) ============ -->
+  <section class="screen" id="screen-drive" hidden>
+    <div class="status-banner" id="drive-banner"></div>
+    <div class="mapbox tall" id="map-drive"></div>
+    <div class="card" id="drive-details"></div>
+    <div class="card" id="drive-chat">
+      <h3>💬 Mensagens</h3>
+      <div class="chat-box" id="dchat-box"></div>
+      <div class="row mt">
+        <input class="input" id="dchat-input" placeholder="Mensagem ao passageiro…" maxlength="500">
+        <button class="btn btn-navy btn-sm" id="dchat-send">Enviar</button>
+      </div>
+    </div>
+    <div id="drive-actions"></div>
+  </section>
+
+  <!-- ============ GANHOS ============ -->
+  <section class="screen" id="screen-earnings" hidden>
+    <div class="card"><h2>💰 Meus ganhos</h2><div id="earnings-box"><div class="spinner"></div></div></div>
+    <div class="card"><h2>Histórico de corridas</h2><div id="drv-history"><div class="spinner"></div></div></div>
+  </section>
+
+  <!-- ============ PERFIL ============ -->
+  <section class="screen" id="screen-profile" hidden>
+    <div class="card">
+      <div class="driver-card mb">
+        <div class="avatar" id="dprofile-avatar"></div>
+        <div style="flex:1"><div style="font-weight:800" id="dprofile-name"></div><div class="muted small" id="dprofile-email"></div></div>
+        <div class="center"><div class="star-sm" id="dprofile-rating"></div><div class="muted small" id="dprofile-rides"></div></div>
+      </div>
+      <div id="dprofile-moto" class="muted small"></div>
+    </div>
+    <div class="card"><h3>📂 Documentos enviados</h3><div id="dprofile-docs"></div></div>
+    <div class="card">
+      <h3>🛟 Suporte</h3>
+      <form id="form-support">
+        <div class="field"><input class="input" name="subject" placeholder="Assunto" required maxlength="150"></div>
+        <div class="field"><textarea class="input" name="body" placeholder="Descreva sua dúvida…" required maxlength="2000"></textarea></div>
+        <button class="btn btn-outline" type="submit">Enviar</button>
+      </form>
+    </div>
+    <button class="btn btn-outline" id="btn-notif-perm">🔔 Ativar notificações do navegador</button>
+    <button class="btn btn-danger mt" id="btn-logout">Sair da conta</button>
+  </section>
+</main>
+
+<nav class="bottomnav" id="bottomnav" hidden>
+  <button data-screen="screen-panel"><span class="nico">🏠</span>Início</button>
+  <button data-screen="screen-earnings"><span class="nico">💰</span>Ganhos</button>
+  <button data-screen="screen-profile"><span class="nico">👤</span>Perfil</button>
+</nav>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/js/common.js"></script>
+<script src="/js/driver.js"></script>
+</body>
+</html>

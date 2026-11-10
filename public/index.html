@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1b2e">
+  <title>Assis MotoTáxi — Peça sua corrida</title>
+  <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand" id="brand"></div>
+  <div class="spacer"></div>
+  <button class="iconbtn" id="btn-notifs" title="Notificações" hidden>🔔</button>
+</header>
+
+<main class="app">
+
+  <!-- ============ AUTENTICAÇÃO ============ -->
+  <section class="screen" id="screen-auth" hidden>
+    <div class="auth-hero" id="auth-hero"></div>
+    <div class="card">
+      <div class="seg mb">
+        <button id="tab-login" class="active">Entrar</button>
+        <button id="tab-register">Criar conta</button>
+      </div>
+      <form id="form-login">
+        <div class="field"><label>E-mail</label><input class="input" name="email" type="email" required autocomplete="email"></div>
+        <div class="field"><label>Senha</label><input class="input" name="password" type="password" required autocomplete="current-password"></div>
+        <button class="btn btn-primary" type="submit">Entrar</button>
+      </form>
+      <form id="form-register" hidden>
+        <div class="field"><label>Nome completo</label><input class="input" name="name" required autocomplete="name"></div>
+        <div class="field"><label>Telefone (WhatsApp)</label><input class="input" name="phone" type="tel" required placeholder="(44) 99999-9999"></div>
+        <div class="field"><label>E-mail</label><input class="input" name="email" type="email" required></div>
+        <div class="field"><label>Senha (mín. 8 caracteres)</label><input class="input" name="password" type="password" minlength="8" required autocomplete="new-password"></div>
+        <button class="btn btn-primary" type="submit">Criar minha conta</button>
+      </form>
+      <div id="google-slot" class="mt center"></div>
+      <p class="muted small center mt">É mototaxista? <a href="/motorista">Cadastre-se aqui</a></p>
+    </div>
+  </section>
+
+  <!-- ============ INÍCIO (pedir corrida) ============ -->
+  <section class="screen" id="screen-home" hidden>
+    <h2 id="greeting" style="margin:2px 0 12px;font-size:1.2rem"></h2>
+    <div class="row mb">
+      <span class="chip yellow" id="online-chip">🏍️ … mototaxistas disponíveis</span>
+    </div>
+    <div class="mapbox" id="map-home"></div>
+
+    <div class="card">
+      <div class="field ac-wrap">
+        <label>📍 Origem (embarque)</label>
+        <input class="input" id="in-origin" placeholder="De onde você sai?" autocomplete="off">
+        <div class="ac-list" id="ac-origin" hidden></div>
+      </div>
+      <button class="btn btn-outline btn-sm mb" id="btn-mylocation">🧭 Usar minha localização atual</button>
+      <div class="field ac-wrap">
+        <label>🏁 Destino</label>
+        <input class="input" id="in-dest" placeholder="Digite seu destino" autocomplete="off">
+        <div class="ac-list" id="ac-dest" hidden></div>
+      </div>
+      <div id="fav-chips" class="row mb" style="flex-wrap:wrap"></div>
+      <button class="btn btn-primary btn-lg" id="btn-quote">Ver preços e solicitar 🏍️</button>
+    </div>
+  </section>
+
+  <!-- ============ COTAÇÃO ============ -->
+  <section class="screen" id="screen-quote" hidden>
+    <button class="btn btn-outline btn-sm mb" id="btn-quote-back">← Voltar</button>
+    <div class="mapbox" id="map-quote"></div>
+    <div class="card">
+      <h2>Escolha a categoria</h2>
+      <p class="muted small mb" id="quote-summary"></p>
+      <div id="quote-cards"></div>
+      <div class="field mt">
+        <label>Forma de pagamento (ao mototaxista, no fim da corrida)</label>
+        <div class="seg" id="pay-seg">
+          <button data-pay="dinheiro" class="active">💵 Dinheiro</button>
+          <button data-pay="pix">⚡ Pix</button>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-lg mt" id="btn-request" disabled>Confirmar corrida</button>
+      <p class="muted small center mt" id="quote-expire"></p>
+    </div>
+  </section>
+
+  <!-- ============ CORRIDA ATIVA ============ -->
+  <section class="screen" id="screen-ride" hidden>
+    <div class="status-banner" id="ride-banner"></div>
+    <div class="mapbox tall" id="map-ride"></div>
+    <div class="card" id="ride-driver-card" hidden></div>
+    <div class="card" id="ride-details"></div>
+    <div class="card" id="ride-chat" hidden>
+      <h3>💬 Mensagens</h3>
+      <div class="chat-box" id="chat-box"></div>
+      <div class="row mt">
+        <input class="input" id="chat-input" placeholder="Mensagem ao mototaxista…" maxlength="500">
+        <button class="btn btn-navy btn-sm" id="chat-send">Enviar</button>
+      </div>
+    </div>
+    <button class="btn btn-danger" id="btn-cancel-ride" hidden>Cancelar corrida</button>
+  </section>
+
+  <!-- ============ HISTÓRICO ============ -->
+  <section class="screen" id="screen-history" hidden>
+    <div class="card"><h2>Minhas corridas</h2><div id="history-list"><div class="spinner"></div></div></div>
+  </section>
+
+  <!-- ============ PERFIL ============ -->
+  <section class="screen" id="screen-profile" hidden>
+    <div class="card">
+      <div class="driver-card mb">
+        <div class="avatar" id="profile-avatar"></div>
+        <div><div style="font-weight:800" id="profile-name"></div><div class="muted small" id="profile-email"></div></div>
+      </div>
+      <form id="form-profile">
+        <div class="field"><label>Nome</label><input class="input" name="name"></div>
+        <div class="field"><label>Telefone</label><input class="input" name="phone"></div>
+        <button class="btn btn-navy" type="submit">Salvar alterações</button>
+      </form>
+    </div>
+    <div class="card">
+      <h3>⭐ Endereços favoritos</h3>
+      <div id="fav-list"></div>
+      <p class="muted small mt">Para adicionar: escolha um destino na tela inicial e toque em "salvar como favorito".</p>
+    </div>
+    <div class="card">
+      <h3>🛟 Atendimento</h3>
+      <div id="support-list"></div>
+      <form id="form-support" class="mt">
+        <div class="field"><input class="input" name="subject" placeholder="Assunto" required maxlength="150"></div>
+        <div class="field"><textarea class="input" name="body" placeholder="Descreva sua dúvida ou problema…" required maxlength="2000"></textarea></div>
+        <button class="btn btn-outline" type="submit">Enviar mensagem</button>
+      </form>
+    </div>
+    <button class="btn btn-outline" id="btn-notif-perm">🔔 Ativar notificações do navegador</button>
+    <button class="btn btn-danger mt" id="btn-logout">Sair da conta</button>
+  </section>
+</main>
+
+<nav class="bottomnav" id="bottomnav" hidden>
+  <button data-screen="screen-home"><span class="nico">🏠</span>Início</button>
+  <button data-screen="screen-history"><span class="nico">🧾</span>Corridas</button>
+  <button data-screen="screen-profile"><span class="nico">👤</span>Perfil</button>
+</nav>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/js/common.js"></script>
+<script src="/js/passenger.js"></script>
+</body>
+</html>

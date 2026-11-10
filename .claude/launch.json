@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "assis-mototaxi",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["server/index.ts"],
+      "cwd": "C:\\Users\\T-GAMER\\Desktop\\files\\assis-mototaxi",
+      "port": 8780
+    }
+  ]
+}
