@@ -381,11 +381,109 @@ window.addEventListener('offline', () => {
 });
 window.addEventListener('online', () => { $('#offline-bar')?.remove(); toast('Conexão restabelecida', 'ok'); });
 
-/* ---------- mapa (Leaflet + OpenStreetMap) ---------- */
+/* ============================================================
+   MAPA — adaptador único para Google Maps e Leaflet/OpenStreetMap.
+   O resto do aplicativo usa sempre a mesma API (makeMap, emojiMarker,
+   drawRoute, accuracyCircle), sem saber qual provedor está ativo.
+   Google entra quando há chave de navegador configurada; sem ela, o
+   OpenStreetMap continua funcionando (mapa real, não simulado).
+   ============================================================ */
+
+let _mapsProvider = 'osm';
+let _googleReady = null;
+
+function mapsProvider() { return _mapsProvider; }
 function hasLeaflet() { return typeof L !== 'undefined'; }
+
+/** Chamado pelo próprio Google quando a chave é inválida ou o domínio não é autorizado. */
+window.gm_authFailure = () => {
+  _mapsProvider = 'osm';
+  toast('Chave do Google Maps recusada (verifique a restrição de domínio). Usando OpenStreetMap.', 'err');
+  // recria os mapas já abertos no provedor de reserva
+  document.dispatchEvent(new CustomEvent('maps-provider-changed', { detail: 'osm' }));
+};
+
+/** Carrega a Maps JavaScript API uma única vez. */
+function loadGoogleMaps(key) {
+  if (_googleReady) return _googleReady;
+  _googleReady = new Promise((resolve, reject) => {
+    if (window.google?.maps) { resolve(window.google.maps); return; }
+    const s = document.createElement('script');
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}`
+      + '&v=weekly&language=pt-BR&region=BR&libraries=geometry&loading=async';
+    s.async = true;
+    s.onload = () => (window.google?.maps
+      ? resolve(window.google.maps)
+      : reject(new Error('Google Maps carregou sem a biblioteca esperada.')));
+    s.onerror = () => reject(new Error('Falha ao carregar o Google Maps.'));
+    // rede lenta não pode travar a abertura do aplicativo
+    setTimeout(() => reject(new Error('Google Maps demorou demais para responder.')), 9000);
+    document.head.appendChild(s);
+  });
+  return _googleReady;
+}
+
+/**
+ * Prepara o provedor de mapas a partir de /api/config.
+ * Se a chave do Google falhar (domínio não autorizado, cota, sem rede),
+ * cai para o OpenStreetMap e avisa — nunca fica sem mapa silenciosamente.
+ */
+async function initMaps(config) {
+  const key = config?.maps?.browser_key;
+  if (!key) { _mapsProvider = 'osm'; return 'osm'; }
+  try {
+    await loadGoogleMaps(key);
+    _mapsProvider = 'google';
+  } catch {
+    _mapsProvider = 'osm';
+    toast('Google Maps indisponível — usando OpenStreetMap.', 'err');
+  }
+  return _mapsProvider;
+}
+
+/* ---------- adaptador Google com a mesma interface do Leaflet ---------- */
+function googleMapAdapter(el, center, zoom) {
+  const gm = window.google.maps;
+  const map = new gm.Map(el, {
+    center: { lat: center.lat, lng: center.lng },
+    zoom,
+    disableDefaultUI: true,
+    gestureHandling: 'greedy',
+    clickableIcons: false,
+    mapId: undefined,
+  });
+  const clickHandlers = new Map();
+
+  return {
+    _google: map,
+    _provider: 'google',
+    setView([lat, lng], z) { map.setCenter({ lat, lng }); if (z) map.setZoom(z); },
+    fitBounds(bounds, opts = {}) {
+      const pad = (opts.padding && opts.padding[0]) || 30;
+      map.fitBounds(bounds, pad);
+    },
+    invalidateSize() { gm.event.trigger(map, 'resize'); },
+    on(evt, fn) {
+      if (evt !== 'click') return;
+      const l = map.addListener('click', e => fn({ latlng: { lat: e.latLng.lat(), lng: e.latLng.lng() } }));
+      clickHandlers.set(fn, l);
+    },
+    off(evt, fn) {
+      const l = clickHandlers.get(fn);
+      if (l) { l.remove(); clickHandlers.delete(fn); }
+    },
+    remove() { el.innerHTML = ''; },
+  };
+}
 
 function makeMap(elId, center, zoom = 14) {
   const el = document.getElementById(elId);
+  if (!el) return null;
+
+  if (_mapsProvider === 'google' && window.google?.maps) {
+    try { return googleMapAdapter(el, center, zoom); }
+    catch { /* cai para o Leaflet abaixo */ }
+  }
   if (!hasLeaflet()) {
     el.innerHTML = '<div class="map-fallback">🗺️ O mapa não pôde ser carregado (sem internet?).<br>Os endereços e preços continuam funcionando normalmente.</div>';
     return null;
@@ -395,18 +493,74 @@ function makeMap(elId, center, zoom = 14) {
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, attribution: '© OpenStreetMap',
   }).addTo(map);
+  map._provider = 'osm';
   return map;
 }
+
 function emojiMarker(map, lat, lng, emoji, title = '') {
+  if (!map) return null;
+  if (map._provider === 'google') {
+    const gm = window.google.maps;
+    const marker = new gm.Marker({
+      position: { lat, lng }, map: map._google, title,
+      // emoji desenhado como rótulo: mesmo visual dos marcadores do Leaflet
+      label: { text: emoji, fontSize: '22px' },
+      icon: {
+        path: gm.SymbolPath.CIRCLE, scale: 0,
+        fillOpacity: 0, strokeOpacity: 0,
+      },
+    });
+    return {
+      setLatLng([la, ln]) { marker.setPosition({ lat: la, lng: ln }); },
+      remove() { marker.setMap(null); },
+      _google: marker,
+    };
+  }
   return L.marker([lat, lng], {
     title,
     icon: L.divIcon({ className: 'marker-moto', html: emoji, iconSize: [26, 26], iconAnchor: [13, 13] }),
   }).addTo(map);
 }
+
+/** geometry: [[lng,lat],...] (GeoJSON) */
 function drawRoute(map, geometry, color = '#0d1b2e') {
-  // geometry: [[lng,lat],...] (GeoJSON)
+  if (!map) return null;
+  if (map._provider === 'google') {
+    const gm = window.google.maps;
+    const path = geometry.map(([lng, lat]) => ({ lat, lng }));
+    const line = new gm.Polyline({
+      path, map: map._google,
+      strokeColor: color, strokeWeight: 5, strokeOpacity: .75,
+    });
+    const bounds = new gm.LatLngBounds();
+    path.forEach(p => bounds.extend(p));
+    return {
+      getBounds() { return bounds; },
+      remove() { line.setMap(null); },
+      _google: line,
+    };
+  }
   const latlngs = geometry.map(([lng, lat]) => [lat, lng]);
   return L.polyline(latlngs, { color, weight: 5, opacity: .75 }).addTo(map);
+}
+
+/** Círculo de precisão do GPS. */
+function accuracyCircle(map, lat, lng, radius) {
+  if (!map) return null;
+  if (map._provider === 'google') {
+    const c = new window.google.maps.Circle({
+      map: map._google, center: { lat, lng }, radius,
+      strokeColor: '#2563eb', strokeWeight: 1, fillColor: '#2563eb', fillOpacity: .08,
+    });
+    return {
+      setLatLng([la, ln]) { c.setCenter({ lat: la, lng: ln }); return this; },
+      setRadius(r) { c.setRadius(r); return this; },
+      remove() { c.setMap(null); },
+    };
+  }
+  return L.circle([lat, lng], {
+    radius, color: '#2563eb', weight: 1, fillOpacity: .08,
+  }).addTo(map);
 }
 
 /* ---------- geolocalização ---------- */

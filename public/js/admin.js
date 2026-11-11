@@ -65,7 +65,8 @@ function enter() {
 const SECTIONS = {
   dashboard: secDashboard, drivers: secDrivers, passengers: secPassengers,
   rides: secRides, finance: secFinance, issues: secIssues,
-  payments: secPayments, settings: secSettings, audit: secAudit, support: secSupport,
+  payments: secPayments, maps: secMaps, settings: secSettings,
+  audit: secAudit, support: secSupport,
 };
 
 function go(sec) {
@@ -655,6 +656,142 @@ async function secPayments() {
       </div>`).join('') +
       (r.test_mode ? '<div class="testbar mt">Ainda em modo de teste: nenhum valor real é movimentado.</div>'
         : '<div class="testbar mt" style="background:#dcfce7;border-color:#86efac;color:#166534">✅ Operando com dinheiro real.</div>');
+  });
+}
+
+/* ============ mapas (Google Maps Platform) ============ */
+async function secMaps() {
+  const m = await api('/api/admin/maps-config');
+  const cred = (k, label, help) => {
+    const v = m.credentials[k];
+    const origem = v.source === 'banco' ? '<span class="pill green">salva aqui</span>'
+      : v.source === 'ambiente' ? '<span class="pill blue">vem do .env</span>'
+        : '<span class="pill gray">não configurada</span>';
+    return `<div class="field">
+      <label>${label} ${origem}</label>
+      <input class="input" data-mk="${k}" type="password" autocomplete="off"
+        placeholder="${v.filled ? escapeHtml(v.value) : 'cole aqui'}">
+      <p class="muted small" style="margin-top:4px">${help}</p>
+    </div>`;
+  };
+  const cacheRows = m.cache.length
+    ? m.cache.map(c => `<tr>
+        <td data-l="Tipo">${escapeHtml(c.kind)}</td>
+        <td data-l="Entradas">${c.entradas}</td>
+        <td data-l="Chamadas evitadas"><b style="color:var(--green)">${c.acertos}</b></td>
+      </tr>`).join('')
+    : '<tr><td class="muted center">Nada em cache ainda.</td></tr>';
+
+  main().innerHTML = `
+    <h2 class="mb">🗺️ Mapas</h2>
+    <div class="fin-grid mb">
+      <div class="fin-card ${m.active_routing === 'google' ? 'in' : 'warn'}">
+        <div class="fv">${m.active_routing === 'google' ? 'Google' : 'OSRM'}</div>
+        <div class="fl">Rotas e distâncias (backend)</div></div>
+      <div class="fin-card ${m.active_visual === 'google' ? 'in' : 'warn'}">
+        <div class="fv">${m.active_visual === 'google' ? 'Google' : 'OpenStreetMap'}</div>
+        <div class="fl">Mapa visual (aplicativos)</div></div>
+    </div>
+    ${m.active_routing !== 'google' ? `<div class="testbar">
+      🗺️ Sem chave do Google: o sistema usa OpenStreetMap/OSRM — mapa real e gratuito,
+      porém com endereços menos completos e sem modo de motocicleta.</div>` : ''}
+
+    <div class="card">
+      <h3>Passo 1 · Criar as chaves no Google Cloud</h3>
+      <ol class="muted small" style="padding-left:18px;line-height:1.9">
+        <li>Acesse <a href="https://console.cloud.google.com/google/maps-apis/credentials" target="_blank" rel="noopener">console.cloud.google.com</a>, crie um projeto e <b>ative o faturamento</b> (o Google exige cartão; há US$ 200/mês de crédito gratuito).</li>
+        <li>Em <b>APIs e serviços</b>, ative: <b>Maps JavaScript API</b>, <b>Places API (New)</b>, <b>Geocoding API</b> e <b>Routes API</b>.</li>
+        <li>Crie <b>duas</b> chaves em Credenciais:
+          <ul>
+            <li><b>Chave do navegador</b> → restrição <i>Referenciadores HTTP</i> com o seu domínio, e restrita à <i>Maps JavaScript API</i>.</li>
+            <li><b>Chave de servidor</b> → restrição por <i>endereço IP</i> (o do servidor), restrita a <i>Places (New)</i>, <i>Geocoding</i> e <i>Routes</i>.</li>
+          </ul>
+        </li>
+        <li>Em <b>Cotas</b>, defina um teto diário por API e crie um <b>alerta de orçamento</b> para não ter surpresa na fatura.</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h3>Passo 2 · Colar as chaves</h3>
+      <p class="muted small mb">Ficam cifradas no banco. Campos em branco não alteram o que já está salvo.</p>
+      ${cred('GOOGLE_MAPS_SERVER_KEY', 'Chave de servidor',
+    'Usada só pelo backend (Routes, Places, Geocoding). <b>Nunca</b> vai para o navegador.')}
+      ${cred('GOOGLE_MAPS_BROWSER_KEY', 'Chave do navegador',
+    'Vai para o aplicativo (é pública por natureza) — por isso restrinja por domínio no Google Cloud.')}
+      <div class="field">
+        <label>Provedor de mapas</label>
+        <select class="input" id="mp-provider">
+          <option value="auto" ${m.provider === 'auto' ? 'selected' : ''}>Automático — Google quando houver chave</option>
+          <option value="osm" ${m.provider === 'osm' ? 'selected' : ''}>Forçar OpenStreetMap (sem custo)</option>
+        </select>
+      </div>
+      <h3 class="mt">Validade do cache (corta chamadas pagas)</h3>
+      <div class="grid2">
+        <div class="field"><label>Rotas (horas)</label>
+          <input class="input" id="ch-route" type="number" min="0" max="8760" value="${m.cache_hours.route}"></div>
+        <div class="field"><label>Endereços/Places (horas)</label>
+          <input class="input" id="ch-places" type="number" min="0" max="8760" value="${m.cache_hours.places}"></div>
+        <div class="field"><label>Geocodificação (horas)</label>
+          <input class="input" id="ch-geo" type="number" min="0" max="8760" value="${m.cache_hours.geocode}"></div>
+      </div>
+      <button class="btn btn-primary" id="mp-save">Salvar configuração de mapas</button>
+    </div>
+
+    <div class="card">
+      <h3>Passo 3 · Testar as APIs</h3>
+      <p class="muted small mb">Faz uma chamada real a cada API, usando Assis Chateaubriand como referência.</p>
+      <button class="btn btn-navy btn-sm" id="mp-test">Testar agora</button>
+      <div id="mp-result" class="mt"></div>
+    </div>
+
+    <div class="card">
+      <h3>Economia por cache</h3>
+      <table class="tbl"><thead><tr><th>Tipo</th><th>Entradas</th><th>Chamadas evitadas</th></tr></thead>
+        <tbody>${cacheRows}</tbody></table>
+      <button class="btn btn-outline btn-sm mt" id="mp-clear">Limpar cache</button>
+    </div>
+
+    <div class="card">
+      <h3>Rotas calculadas por procedência</h3>
+      <table class="tbl"><thead><tr><th>Provedor</th><th>Modo</th><th>Corridas</th></tr></thead><tbody>
+      ${m.usage.length ? m.usage.map(u => `<tr>
+        <td data-l="Provedor">${escapeHtml(u.provider)}</td>
+        <td data-l="Modo">${u.mode === 'two_wheeler' ? '🏍️ motocicleta'
+      : u.mode === 'drive' ? '🚗 carro' : '📏 estimativa'}</td>
+        <td data-l="Corridas">${u.qtd}</td></tr>`).join('')
+      : '<tr><td class="muted center">Nenhuma corrida registrada ainda.</td></tr>'}
+      </tbody></table>
+    </div>`;
+
+  $('#mp-save').onclick = () => withLoading($('#mp-save'), async () => {
+    const credentials = {};
+    $$('[data-mk]').forEach(i => { if (i.value.trim()) credentials[i.dataset.mk] = i.value.trim(); });
+    await api('/api/admin/maps-config', {
+      method: 'PUT',
+      body: {
+        credentials, provider: $('#mp-provider').value,
+        cache_hours: {
+          route: $('#ch-route').value, places: $('#ch-places').value, geocode: $('#ch-geo').value,
+        },
+      },
+    });
+    secMaps();
+  }, { okMsg: 'Configuração de mapas salva.' }).catch(() => { });
+
+  $('#mp-test').onclick = () => withLoading($('#mp-test'), async () => {
+    const r = await api('/api/admin/maps-config/test', { method: 'POST' });
+    $('#mp-result').innerHTML = r.checks.map(c => `
+      <div class="list-item">
+        <span style="font-size:1.2rem">${c.ok ? '✅' : '⚠️'}</span>
+        <div class="li-main"><div class="li-title">${escapeHtml(c.item)}</div>
+          <div class="li-sub">${escapeHtml(c.detail)}</div></div>
+      </div>`).join('');
+  });
+
+  $('#mp-clear').onclick = () => withLoading($('#mp-clear'), async () => {
+    const r = await api('/api/admin/maps-config/clear-cache', { method: 'POST' });
+    toast(`${r.removed} entrada(s) removida(s).`, 'ok');
+    secMaps();
   });
 }
 

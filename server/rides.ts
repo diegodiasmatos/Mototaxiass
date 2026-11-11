@@ -4,7 +4,9 @@ import {
 } from './util.ts';
 import { route, type Route, type SessionUser } from './router.ts';
 import { getFare, allFares, computePriceCents, splitCommission } from './fares.ts';
-import { route as osrmRoute, searchAddress, reverseGeocode, assertInCoverage } from './geo.ts';
+import {
+  route as computeRoute, searchAddress, reverseGeocode, assertInCoverage, resolvePlace,
+} from './geo.ts';
 import { notify, notifyAdmins, sseSend, sseSendMany } from './notify.ts';
 import {
   createCharge, getPaymentByRide, capturePayment, refundPayment, syncPayment,
@@ -450,7 +452,17 @@ export const rideRoutes: Route[] = [
     if (!rateLimit(`geo:${ip}`, 90, 60_000)) throw new ApiError(429, 'Aguarde um instante.');
     const q = (query.get('q') || '').trim();
     if (q.length < 2) { json(res, 200, { results: [] }); return; }
-    json(res, 200, { results: await searchAddress(q) });
+    // o token de sessão agrupa digitação + escolha numa só cobrança do Google
+    const session = (query.get('session') || '').slice(0, 64) || undefined;
+    json(res, 200, { results: await searchAddress(q, session) });
+  }),
+
+  /** Converte a sugestão escolhida em coordenada (Place Details). */
+  route('GET /api/geo/place', 'any', async ({ res, query, ip }) => {
+    if (!rateLimit(`place:${ip}`, 60, 60_000)) throw new ApiError(429, 'Aguarde um instante.');
+    const placeId = reqStr(query.get('place_id'), 'lugar', 300);
+    const session = (query.get('session') || '').slice(0, 64) || undefined;
+    json(res, 200, { place: await resolvePlace(placeId, session) });
   }),
 
   route('GET /api/geo/reverse', 'any', async ({ res, query }) => {
@@ -481,7 +493,9 @@ export const rideRoutes: Route[] = [
       throw new ApiError(422, 'Origem e destino são praticamente o mesmo ponto.');
     }
 
-    const rt = await osrmRoute(origin, dest);
+    // O preço SEMPRE usa a distância da rota calculada pelo serviço,
+    // nunca a linha reta (salvo quando nada responde — e aí fica marcado).
+    const rt = await computeRoute(origin, dest);
     const ttl = getSettingNum('quote_ttl_min') * 60_000;
     const t = now();
     const quotes = allFares().map(fare => {
@@ -490,12 +504,13 @@ export const rideRoutes: Route[] = [
       db.prepare(`INSERT INTO ride_quotes
         (id, user_id, category, origin_text, origin_lat, origin_lng, dest_text, dest_lat, dest_lng,
          distance_m, duration_s, price_cents, base_cents, included_m, per_km_cents,
-         route_geojson, route_estimated, created_at, expires_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+         route_geojson, route_estimated, route_provider, route_mode, created_at, expires_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(qid, user!.id, fare.category, origin.text, origin.lat, origin.lng,
           dest.text, dest.lat, dest.lng, rt.distance_m, rt.duration_s, price,
           fare.base_cents, fare.included_m, fare.per_km_cents,
-          JSON.stringify(rt.geometry), rt.estimated ? 1 : 0, t, t + ttl);
+          JSON.stringify(rt.geometry), rt.estimated ? 1 : 0,
+          rt.provider, rt.mode, t, t + ttl);
       return {
         id: qid, category: fare.category, label: fare.label,
         price_cents: price, distance_m: rt.distance_m, duration_s: rt.duration_s,
@@ -504,7 +519,10 @@ export const rideRoutes: Route[] = [
     });
     json(res, 200, {
       quotes,
-      route: { geometry: rt.geometry, estimated: rt.estimated },
+      route: {
+        geometry: rt.geometry, estimated: rt.estimated,
+        provider: rt.provider, mode: rt.mode, mode_fallback: !!rt.mode_fallback,
+      },
       online_drivers: eligibleDrivers(origin.lat, origin.lng).length,
       payment_methods: availableMethods(),
       test_mode: isTestMode(),
@@ -558,11 +576,11 @@ export const rideRoutes: Route[] = [
       db.prepare(`INSERT INTO rides
         (id, quote_id, passenger_id, category, status, origin_text, origin_lat, origin_lng,
          dest_text, dest_lat, dest_lng, distance_m, duration_s, price_cents, commission_pct,
-         payment_method, payment_status, route_geojson, requested_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'criado',?,?)`)
+         payment_method, payment_status, route_geojson, route_provider, route_mode, requested_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'criado',?,?,?,?)`)
         .run(rid, q.id, user!.id, q.category, initialStatus, q.origin_text, q.origin_lat, q.origin_lng,
           q.dest_text, q.dest_lat, q.dest_lng, q.distance_m, q.duration_s, q.price_cents,
-          commissionPct, method, q.route_geojson, t);
+          commissionPct, method, q.route_geojson, q.route_provider, q.route_mode, t);
       db.prepare('UPDATE ride_quotes SET used = 1 WHERE id = ?').run(q.id);
       db.exec('COMMIT');
     } catch (e) { db.exec('ROLLBACK'); throw e; }

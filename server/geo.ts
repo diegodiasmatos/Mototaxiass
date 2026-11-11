@@ -1,5 +1,8 @@
 import { haversineM, ApiError } from './util.ts';
 import { getSetting, getSettingNum } from './db.ts';
+import {
+  googleEnabled, googleRoute, googleAutocomplete, googlePlaceDetails, googleReverse,
+} from './google-maps.ts';
 
 const UA = 'AssisMotoTaxi/1.0 (plataforma de mototaxi; contato: admin local)';
 
@@ -10,6 +13,12 @@ export interface RouteResult {
   geometry: number[][];
   /** true quando calculado por estimativa (sem serviço de rotas) */
   estimated: boolean;
+  /** quem calculou: google | osrm | estimativa */
+  provider: 'google' | 'osrm' | 'estimativa';
+  /** modo de deslocamento realmente usado */
+  mode: 'two_wheeler' | 'drive' | 'estimativa';
+  /** true quando o modo de motocicleta não estava disponível e caiu para carro */
+  mode_fallback?: boolean;
 }
 
 export interface GeoPoint { lat: number; lng: number; text?: string }
@@ -17,11 +26,33 @@ export interface GeoPoint { lat: number; lng: number; text?: string }
 function offline(): boolean { return process.env.GEO_OFFLINE === '1'; }
 
 /**
- * Rota real por vias usando OSRM (perfil driving — adequado para motos em área
- * urbana). Fallback: haversine × 1.3 (fator de malha viária urbana) quando o
- * serviço estiver indisponível, marcado como `estimated`.
+ * Rota real por vias.
+ *
+ * 1º Google Routes API em modo TWO_WHEELER (motocicleta de verdade);
+ * 2º OSRM (perfil driving) quando não há chave do Google;
+ * 3º estimativa haversine × 1.3, sempre marcada como estimativa.
+ *
+ * O resultado diz quem calculou e em que modo — a interface mostra isso em
+ * vez de apresentar rota de carro como se fosse de moto.
  */
 export async function route(from: GeoPoint, to: GeoPoint): Promise<RouteResult> {
+  if (!offline() && googleEnabled()) {
+    try {
+      const g = await googleRoute(from, to);
+      if (g) {
+        return {
+          distance_m: g.distance_m,
+          duration_s: g.duration_s,
+          geometry: g.geometry,
+          estimated: false,
+          provider: 'google',
+          mode: g.mode === 'TWO_WHEELER' ? 'two_wheeler' : 'drive',
+          mode_fallback: g.fellBackToDrive,
+        };
+      }
+    } catch { /* cai para OSRM */ }
+  }
+
   if (!offline()) {
     try {
       const base = process.env.OSRM_BASE || 'https://router.project-osrm.org';
@@ -40,11 +71,14 @@ export async function route(from: GeoPoint, to: GeoPoint): Promise<RouteResult> 
             duration_s: Math.round(rt.duration),
             geometry: rt.geometry?.coordinates ?? [],
             estimated: false,
+            provider: 'osrm',
+            mode: 'drive',
           };
         }
       }
-    } catch { /* cai no fallback */ }
+    } catch { /* cai na estimativa */ }
   }
+
   const straight = haversineM(from.lat, from.lng, to.lat, to.lng);
   const dist = Math.round(straight * 1.3);
   return {
@@ -52,6 +86,8 @@ export async function route(from: GeoPoint, to: GeoPoint): Promise<RouteResult> 
     duration_s: Math.round(dist / (25000 / 3600)), // ~25 km/h urbano
     geometry: [[from.lng, from.lat], [to.lng, to.lat]],
     estimated: true,
+    provider: 'estimativa',
+    mode: 'estimativa',
   };
 }
 
@@ -71,13 +107,20 @@ const LOCAL_PLACES: { name: string; lat: number; lng: number; tags?: string }[] 
 
 export interface GeoSearchResult {
   text: string;
+  /** coordenada; nula nas sugestões do Google até o usuário escolher uma */
   lat: number;
   lng: number;
   /** metros até o centro da cidade — usado para ordenar e avisar o usuário */
   distance_m: number;
   in_coverage: boolean;
-  source: 'local' | 'osm';
+  source: 'local' | 'osm' | 'google';
   approx?: boolean;
+  /** identificador do Google; resolvido em /api/geo/place */
+  place_id?: string;
+  /** linha secundária (bairro, cidade) nas sugestões do Google */
+  secondary?: string;
+  /** true quando a coordenada ainda precisa ser resolvida */
+  needs_details?: boolean;
 }
 
 function normalize(s: string): string {
@@ -102,7 +145,7 @@ function decorate(text: string, lat: number, lng: number, source: 'local' | 'osm
  *  3. os resultados são ordenados pela distância ao centro e os de fora da
  *     área de cobertura vão para o fim, marcados como fora de área.
  */
-export async function searchAddress(q: string): Promise<GeoSearchResult[]> {
+export async function searchAddress(q: string, sessionToken?: string): Promise<GeoSearchResult[]> {
   const cLat = getSettingNum('center_lat'), cLng = getSettingNum('center_lng');
   const cityFull = getSetting('city_name');              // "Assis Chateaubriand - PR"
   const cityName = cityFull.split('-')[0].trim();        // "Assis Chateaubriand"
@@ -117,7 +160,26 @@ export async function searchAddress(q: string): Promise<GeoSearchResult[]> {
     }
   }
 
-  // 2) Nominatim, com a cidade no texto da consulta
+  // 2) Google Places (New): ruas, números, estabelecimentos e bairros.
+  // A coordenada só é buscada quando o usuário escolhe (economiza chamada).
+  if (!offline() && googleEnabled()) {
+    try {
+      const preds = await googleAutocomplete(q, sessionToken);
+      if (preds?.length) {
+        for (const p of preds) {
+          results.push({
+            text: p.text, secondary: p.secondary,
+            lat: NaN, lng: NaN, distance_m: 0, in_coverage: true,
+            source: 'google', place_id: p.place_id, needs_details: true,
+          });
+        }
+        // com Google respondendo, basta ele + os pontos locais
+        return results.slice(0, 8);
+      }
+    } catch { /* cai para o OSM abaixo */ }
+  }
+
+  // 3) Nominatim (OpenStreetMap), com a cidade no texto da consulta
   if (!offline()) {
     const base = process.env.NOMINATIM_BASE || 'https://nominatim.openstreetmap.org';
     const d = 0.22;
@@ -159,11 +221,25 @@ export async function searchAddress(q: string): Promise<GeoSearchResult[]> {
     }
   }
 
-  // 3) ordena: dentro da área primeiro, depois pela distância ao centro
+  // 4) ordena: dentro da área primeiro, depois pela distância ao centro
   results.sort((a, b) =>
     (a.in_coverage === b.in_coverage ? 0 : a.in_coverage ? -1 : 1) || a.distance_m - b.distance_m);
 
   return results.slice(0, 8);
+}
+
+/**
+ * Resolve a sugestão do Google em coordenada + endereço, já validando a
+ * área de cobertura. Chamado só quando o usuário escolhe um item da lista.
+ */
+export async function resolvePlace(placeId: string, sessionToken?: string):
+  Promise<GeoSearchResult> {
+  const place = await googlePlaceDetails(placeId, sessionToken);
+  if (!place) throw new ApiError(404, 'Não conseguimos localizar esse endereço. Tente outro.');
+  const item = decorate(place.address || place.text, place.lat, place.lng, 'google');
+  item.place_id = place.place_id;
+  item.secondary = place.address;
+  return item;
 }
 
 /**
@@ -173,6 +249,12 @@ export async function searchAddress(q: string): Promise<GeoSearchResult[]> {
  */
 export async function reverseGeocode(lat: number, lng: number):
   Promise<{ text: string; exact: boolean }> {
+  if (!offline() && googleEnabled()) {
+    try {
+      const g = await googleReverse(lat, lng);
+      if (g) return g;
+    } catch { /* cai para o Nominatim */ }
+  }
   if (!offline()) {
     try {
       const base = process.env.NOMINATIM_BASE || 'https://nominatim.openstreetmap.org';

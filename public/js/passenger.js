@@ -24,6 +24,7 @@ async function init() {
     city_name: 'Assis Chateaubriand - PR', center: { lat: -24.4156, lng: -53.5216 },
     welcome_message: 'Olá! Para onde vamos?',
   }));
+  await initMaps(S.config);
   $('#auth-hero').innerHTML = `${LOGO_SVG}<h1>Assis MotoTáxi</h1>
     <p>Transporte rápido e seguro em ${escapeHtml(S.config.city_name)}</p>`;
 
@@ -218,9 +219,7 @@ function drawMeOnMaps(lat, lng, accuracy) {
     if (!map) continue;
     if (!map._meMarker) {
       map._meMarker = emojiMarker(map, lat, lng, '🔵', 'Você');
-      map._accCircle = L.circle([lat, lng], {
-        radius: accuracy, color: '#2563eb', weight: 1, fillOpacity: .08,
-      }).addTo(map);
+      map._accCircle = accuracyCircle(map, lat, lng, accuracy);
     } else {
       map._meMarker.setLatLng([lat, lng]);
       map._accCircle.setLatLng([lat, lng]).setRadius(accuracy);
@@ -293,6 +292,19 @@ function initHomeMap() {
   S.maps.home = makeMap('map-home', S.config.center, 14);
   addMapTools('map-home', S.maps.home, true);
 }
+
+// Se o Google for recusado em tempo de execução, refaz os mapas no OpenStreetMap
+document.addEventListener('maps-provider-changed', () => {
+  for (const k of ['home', 'quote', 'ride']) {
+    const el = document.getElementById(`map-${k}`);
+    if (el) el.innerHTML = '';
+    S.maps[k] = null;
+  }
+  homeMarkers = []; S.rideLayers = []; S.driverMarker = null;
+  initHomeMap();
+  if (S.activeRide) renderRideMap();
+  if (S.gps.lat != null) drawMeOnMaps(S.gps.lat, S.gps.lng, S.gps.accuracy || 30);
+});
 
 /** Botões sobre o mapa: centralizar em mim e escolher ponto tocando no mapa. */
 function addMapTools(elId, map, allowPick) {
@@ -404,8 +416,19 @@ function placeHomePin(p, kind) {
  * invalida a seleção anterior — assim o texto nunca fica diferente do ponto
  * realmente usado no cálculo.
  */
+/**
+ * Autocomplete de endereços.
+ *
+ * Com o Google Places, a coordenada só é buscada quando o usuário ESCOLHE
+ * um item (Place Details) — digitar não gera chamada cara, e o `session`
+ * agrupa a digitação + a escolha numa única cobrança.
+ * Digitar depois de escolher invalida a seleção: o texto nunca fica
+ * diferente do ponto realmente usado no cálculo.
+ */
 function setupAutocomplete(input, list, onPick, onEdit) {
-  let timer = null, lastQuery = '';
+  let timer = null, lastQuery = '', session = null;
+  const newSession = () => (session = (crypto.randomUUID?.() || String(Math.random()).slice(2)));
+
   input.addEventListener('input', () => {
     onEdit?.();
     clearTimeout(timer);
@@ -413,35 +436,51 @@ function setupAutocomplete(input, list, onPick, onEdit) {
     if (q.length < 2) { list.hidden = true; return; }
     if (q === lastQuery) return;
     lastQuery = q;
+    if (!session) newSession();
     list.innerHTML = '<button type="button" disabled>Buscando…</button>';
     list.hidden = false;
+    // espera o usuário parar de digitar: menos chamadas, menos custo
     timer = setTimeout(async () => {
       try {
-        const { results } = await api(`/api/geo/search?q=${encodeURIComponent(q)}`);
+        const { results } = await api(
+          `/api/geo/search?q=${encodeURIComponent(q)}&session=${encodeURIComponent(session)}`);
         if (!results.length) {
           list.innerHTML = `<button type="button" disabled>
             Nada encontrado. Tente a rua + bairro, ou use 📌 para marcar no mapa.</button>`;
           return;
         }
-        list.innerHTML = results.map((r, i) => `
-          <button type="button" data-i="${i}">
-            ${escapeHtml(r.text)}
-            <span class="muted small">· ${fmt.dist(r.distance_m)} do centro${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>
-          </button>`).join('');
-        $$('button[data-i]', list).forEach(b => b.onclick = () => {
-          const r = results[Number(b.dataset.i)];
+        list.innerHTML = results.map((r, i) => {
+          const detalhe = r.needs_details
+            ? (r.secondary ? `<span class="muted small">${escapeHtml(r.secondary)}</span>` : '')
+            : `<span class="muted small">· ${fmt.dist(r.distance_m)} do centro${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>`;
+          return `<button type="button" data-i="${i}">${escapeHtml(r.text)}<br>${detalhe}</button>`;
+        }).join('');
+
+        $$('button[data-i]', list).forEach(b => b.onclick = async () => {
+          let r = results[Number(b.dataset.i)];
+          // sugestão do Google: resolve a coordenada agora
+          if (r.needs_details && r.place_id) {
+            b.textContent = 'Localizando…';
+            try {
+              const { place } = await api(
+                `/api/geo/place?place_id=${encodeURIComponent(r.place_id)}&session=${encodeURIComponent(session)}`);
+              r = place;
+            } catch (e) { toast(e.message, 'err'); list.hidden = true; return; }
+          }
           if (!r.in_coverage) {
-            toast('Esse endereço está fora da área de atendimento de Assis Chateaubriand.', 'err');
+            toast(`"${r.text}" está fora da área de atendimento (${fmt.dist(r.distance_m)} do centro).`, 'err');
+            list.hidden = true;
             return;
           }
           input.value = r.text;
           list.hidden = true;
+          session = null;                     // sessão encerrada na escolha
           onPick({ lat: r.lat, lng: r.lng, text: r.text });
         });
       } catch (e) {
         list.innerHTML = `<button type="button" disabled>${escapeHtml(e.message)}</button>`;
       }
-    }, 320);
+    }, 450);
   });
   input.addEventListener('focus', () => { if (list.innerHTML && input.value.length >= 2) list.hidden = false; });
   document.addEventListener('click', e => {
@@ -481,10 +520,21 @@ function bindQuote() {
 
 function renderQuotes(r) {
   const q0 = S.quotes[0];
+  // procedência da rota: o passageiro vê se é rota de moto, de carro ou estimativa
+  const PROC = {
+    two_wheeler: '<span class="pill green">rota de motocicleta</span>',
+    drive: '<span class="pill blue">rota de carro</span>',
+    estimativa: '<span class="pill yellow">distância estimada</span>',
+  };
+  const procedencia = PROC[r.route.mode] || '';
+  const aviso = r.route.mode_fallback
+    ? '<br><span class="muted small">⚠️ Rota de motocicleta indisponível neste trajeto; usamos a rota de carro.</span>'
+    : '';
+
   $('#quote-summary').innerHTML =
     `📍 ${escapeHtml(S.origin.text)}<br>🏁 ${escapeHtml(S.dest.text)}<br>` +
     `Distância: <b>${fmt.dist(q0.distance_m)}</b> · Tempo estimado: <b>${fmt.dur(q0.duration_s)}</b>` +
-    (r.route.estimated ? ' · <span class="pill yellow">distância estimada</span>' : '') +
+    ` · ${procedencia}${aviso}` +
     `<br>🏍️ ${r.online_drivers} mototaxista(s) próximos disponíveis`;
 
   const DESC = {

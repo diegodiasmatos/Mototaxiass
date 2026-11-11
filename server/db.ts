@@ -540,6 +540,32 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     ALTER TABLE payments ADD COLUMN application_fee_cents INTEGER;
     `,
   },
+
+  // ----------------------------------------------------------------
+  // V2.2 — Google Maps Platform: cache de respostas (corta custo) e
+  // procedência da rota gravada em cada cotação/corrida.
+  // ----------------------------------------------------------------
+  {
+    version: 4,
+    sql: `
+    CREATE TABLE geo_cache (
+      key        TEXT PRIMARY KEY,
+      kind       TEXT NOT NULL,
+      payload    TEXT NOT NULL,
+      hits       INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_geo_cache_exp ON geo_cache(expires_at);
+    CREATE INDEX idx_geo_cache_kind ON geo_cache(kind);
+
+    -- de onde veio a rota e em que modo (two_wheeler / drive / estimativa)
+    ALTER TABLE ride_quotes ADD COLUMN route_provider TEXT;
+    ALTER TABLE ride_quotes ADD COLUMN route_mode TEXT;
+    ALTER TABLE rides ADD COLUMN route_provider TEXT;
+    ALTER TABLE rides ADD COLUMN route_mode TEXT;
+    `,
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {
@@ -558,6 +584,11 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   // automático direto na conta do mototaxista.
   charge_timing: 'antes',
   payment_deadline_min: '10',      // prazo para pagar depois do aceite (modo split)
+  // Mapas: 'auto' usa Google quando há chave de servidor; 'osm' força OpenStreetMap
+  maps_provider: 'auto',
+  cache_route_hours: '72',         // rota entre dois pontos muda pouco
+  cache_places_hours: '168',       // endereços mudam muito pouco
+  cache_geocode_hours: '168',
 
   city_name: 'Assis Chateaubriand - PR',
   center_lat: '-24.4156',

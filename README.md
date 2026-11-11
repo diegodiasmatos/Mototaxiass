@@ -43,16 +43,86 @@ em produção coloque o app atrás de HTTPS (ver "Publicação").
 | Backend | Node 24 + TypeScript nativo (sem build) | simples, estável, sem toolchain |
 | Banco | SQLite (`node:sqlite`) com migrações versionadas | persistente, zero instalação, WAL |
 | Tempo real | Server-Sent Events (SSE) | ofertas de corrida, GPS e notificações ao vivo |
-| Mapas | Leaflet + OpenStreetMap | sem chave de API e sem cartão de crédito |
-| Rotas/ETA | OSRM público (fallback: haversine ×1,3) | distância pela malha viária real |
-| Geocodificação | Nominatim restrito à região da cidade | busca de endereços em pt-BR |
+| Mapas | **Google Maps** quando há chave; Leaflet + OpenStreetMap como reserva | precisão de endereços no Brasil; a reserva mantém o sistema funcionando sem custo |
+| Rotas/ETA | **Google Routes API (TWO_WHEELER)** → OSRM → estimativa | rota de motocicleta de verdade, com a procedência marcada |
+| Endereços | **Google Places (New) + Geocoding** → Nominatim | autocomplete de ruas, números, bairros e estabelecimentos |
 | Senhas | scrypt + salt (node:crypto) | hash forte, sem texto puro |
 | Sessões | cookie HttpOnly + tabela `sessions` | revogável no servidor (bloqueio derruba sessão) |
 
-> **Google Maps Platform** pode substituir OSM/OSRM/Nominatim no futuro: basta
-> trocar as funções em `server/geo.ts` (route/searchAddress/reverseGeocode) —
-> o resto do sistema não conhece o provedor. Exige chave com billing no
-> console.cloud.google.com (Maps JavaScript API, Places, Routes).
+## Google Maps Platform
+
+### APIs utilizadas
+
+| API | Onde | Para quê |
+|---|---|---|
+| **Routes API** | servidor | rota real em modo `TWO_WHEELER` (motocicleta); distância e tempo que alimentam a tarifa |
+| **Places API (New)** | servidor | autocomplete de ruas, números, bairros e estabelecimentos + detalhes do lugar escolhido |
+| **Geocoding API** | servidor | geocodificação reversa (coordenada → endereço) |
+| **Maps JavaScript API** | navegador | mapa visual do passageiro, do mototaxista e dos pontos |
+
+### Duas chaves, com responsabilidades diferentes
+
+- **Chave de servidor** — usada só pelo backend (Routes, Places, Geocoding).
+  **Nunca** sai do servidor; fica cifrada no banco. Restrinja por **IP** no
+  Google Cloud e limite às três APIs.
+- **Chave do navegador** — vai no `/api/config` para carregar o mapa visual (é
+  pública por natureza). Restrinja por **referenciador HTTP** (seu domínio) e
+  limite à Maps JavaScript API.
+
+Há um teste automatizado garantindo que a chave de servidor **não aparece** em
+nenhuma resposta ao frontend.
+
+### Configurar (central → 🗺️ Mapas)
+
+1. No [Google Cloud](https://console.cloud.google.com/google/maps-apis/credentials),
+   crie o projeto e **ative o faturamento** (exige cartão; há US$ 200/mês de
+   crédito gratuito, que cobre um piloto com folga).
+2. Ative **Maps JavaScript API**, **Places API (New)**, **Geocoding API** e **Routes API**.
+3. Crie as duas chaves com as restrições acima.
+4. Cole as duas na central → 🗺️ Mapas → **Salvar**.
+5. **Testar agora**: o sistema chama as três APIs de verdade, usando Assis
+   Chateaubriand como referência, e diz item por item o que funcionou.
+
+Sem chave, tudo continua funcionando em **OpenStreetMap/OSRM** — mapa real e
+gratuito, com endereços menos completos e sem modo de motocicleta. A central
+mostra qual provedor está ativo em cada camada.
+
+### Rotas de motocicleta (e quando não dá)
+
+O sistema pede `TWO_WHEELER` à Routes API. Se o Google recusar esse modo para o
+trajeto, ele usa `DRIVE` e **marca isso**: a tela de preço mostra
+`rota de motocicleta` / `rota de carro` / `distância estimada`, e avisa quando
+houve a troca. Nunca apresentamos rota de carro como se fosse de moto. A
+procedência fica gravada em cada cotação e corrida (`route_provider`,
+`route_mode`) e aparece na central em "Rotas calculadas por procedência".
+
+### Custos e como eles são contidos
+
+Todas as chamadas pagas passam por **cache persistente** (`geo_cache`), com
+validade configurável na central (padrão: rotas 72 h, endereços/geocodificação
+168 h). Além disso:
+
+- o autocomplete só dispara **450 ms depois** que o usuário para de digitar;
+- a **coordenada só é buscada quando o usuário escolhe** um endereço (Place
+  Details), não a cada tecla;
+- um **session token** agrupa digitação + escolha numa única cobrança do Google;
+- rotas idênticas (mesma origem/destino arredondados) reaproveitam o resultado;
+- a central mostra quantas chamadas o cache já evitou.
+
+**Recursos que geram cobrança:** Routes, Places Autocomplete, Place Details,
+Geocoding e carregamento do mapa (Maps JavaScript). Configure **tetos diários
+por API** e um **alerta de orçamento** no Google Cloud — o passo a passo está na
+própria tela de Mapas.
+
+### Falhas tratadas
+
+| Situação | O que acontece |
+|---|---|
+| Chave inválida ou domínio não autorizado | o Google chama `gm_authFailure`; o app avisa e **recria os mapas no OpenStreetMap** sem quebrar |
+| Google lento ou fora do ar | tempo limite de 9 s no carregamento e 7–8 s por chamada; cai para OSRM/Nominatim |
+| Modo motocicleta indisponível | usa rota de carro e informa na tela |
+| Nada responde | distância estimada, sempre marcada como estimativa |
+| Service worker | **não intercepta** requisições do Google (ele gerencia o próprio cache) |
 
 ### Estrutura
 
@@ -147,6 +217,12 @@ data/            banco, segredo de sessão e uploads privados (criado em runtime
 - **Notificações**: replay por `since`, confirmação de entrega, chave VAPID.
 - **Permissões**: parceiro não confirma pela passageira, não mexe em tarifas nem
   no financeiro; passageiro não controla a corrida do parceiro.
+- **Google Maps**: decodificação do polyline conferida contra o exemplo oficial
+  do Google; chave de servidor **não vaza** em nenhuma resposta ao frontend e
+  fica cifrada no banco; "forçar OpenStreetMap" ignora a chave; validade de
+  cache validada; limpeza de cache; diagnóstico sem chave; `/api/geo/place`
+  exige `place_id` e autenticação; procedência da rota gravada na cotação e na
+  corrida, com o preço batendo com a distância da rota (não a linha reta).
 
 ### Verificação manual no navegador (V2)
 
@@ -195,7 +271,8 @@ aprovação pela central e dashboard.
 
 | Item | Situação |
 |---|---|
-| OpenStreetMap/OSRM/Nominatim | públicos e gratuitos; para alto volume, hospede o seu ou migre para Google Maps (chave + billing) |
+| Google Maps Platform | **integrado** (Routes/Places/Geocoding/Maps JS). Falta você criar as chaves no Google Cloud com faturamento ativo e colá-las na central → 🗺️ Mapas |
+| OpenStreetMap/OSRM/Nominatim | reserva automática, pública e gratuita; usada enquanto não houver chave do Google |
 | Login com Google | opcional; exige `GOOGLE_CLIENT_ID` (gratuito) — instruções no `.env.example` |
 | Pix e cartão | **integrado** (Mercado Pago). Falta só você colar as credenciais na central → 💳 Pagamentos; sem elas, modo de teste identificado |
 | Split automático | **implementado** (OAuth + `application_fee`). Depende do Client ID/Secret e de cobrar depois do aceite |

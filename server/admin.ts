@@ -19,6 +19,8 @@ const CREDENTIAL_KEYS = [
   'MP_CLIENT_ID', 'MP_CLIENT_SECRET', 'PUBLIC_URL',
 ] as const;
 
+const MAPS_CREDENTIAL_KEYS = ['GOOGLE_MAPS_SERVER_KEY', 'GOOGLE_MAPS_BROWSER_KEY'] as const;
+
 function dayKey(ts: number): string {
   const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -505,6 +507,74 @@ export const adminRoutes: Route[] = [
       FROM drivers d JOIN users u ON u.id = d.user_id
       WHERE d.status = 'approved' ORDER BY connected DESC, u.name`).all();
     json(res, 200, { drivers: rows, split_available: splitAvailable() });
+  }),
+
+  // ---------- Google Maps ----------
+  route('GET /api/admin/maps-config', 'admin', async ({ res }) => {
+    const { googleEnabled, cacheStats, browserKey, serverKey } = await import('./google-maps.ts');
+    const usage = db.prepare(`SELECT route_provider provider, route_mode mode, COUNT(*) qtd
+      FROM rides WHERE route_provider IS NOT NULL
+      GROUP BY route_provider, route_mode`).all();
+    json(res, 200, {
+      credentials: Object.fromEntries(MAPS_CREDENTIAL_KEYS.map(k => {
+        const v = getCredential(k);
+        return [k, { value: maskSecret(v), filled: !!v, source: credentialSource(k) }];
+      })),
+      provider: getSetting('maps_provider'),
+      active_routing: googleEnabled() ? 'google' : 'osrm',
+      active_visual: browserKey() ? 'google' : 'osm',
+      has_server_key: !!serverKey(),
+      cache: cacheStats(),
+      usage,
+      cache_hours: {
+        route: getSettingNum('cache_route_hours'),
+        places: getSettingNum('cache_places_hours'),
+        geocode: getSettingNum('cache_geocode_hours'),
+      },
+    });
+  }),
+
+  route('PUT /api/admin/maps-config', 'admin', async ({ req, res, user }) => {
+    const b = await readBody(req);
+    const changed: string[] = [];
+    for (const k of MAPS_CREDENTIAL_KEYS) {
+      const v = b.credentials?.[k];
+      if (v === undefined || v === null) continue;
+      const value = String(v).trim();
+      if (value.startsWith('••••')) continue;
+      setCredential(k, value, user!.id);
+      changed.push(value ? `${k} definida` : `${k} removida`);
+    }
+    if (b.provider === 'auto' || b.provider === 'osm') {
+      setSetting('maps_provider', b.provider);
+      changed.push(`provedor: ${b.provider}`);
+    }
+    for (const [key, setting] of [['route', 'cache_route_hours'],
+    ['places', 'cache_places_hours'], ['geocode', 'cache_geocode_hours']] as const) {
+      const v = b.cache_hours?.[key];
+      if (v === undefined) continue;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0 || n > 8760) {
+        throw new ApiError(400, 'Validade de cache deve estar entre 0 e 8760 horas.');
+      }
+      setSetting(setting, String(Math.round(n)));
+      changed.push(`cache ${key}: ${Math.round(n)}h`);
+    }
+    if (changed.length) audit(user!.id, 'maps_config', 'settings', undefined, changed.join('; '));
+    json(res, 200, { ok: true, changed });
+  }),
+
+  /** Chama as três APIs de verdade e relata o que funciona. */
+  route('POST /api/admin/maps-config/test', 'admin', async ({ res }) => {
+    const { testGoogleKeys } = await import('./google-maps.ts');
+    json(res, 200, { checks: await testGoogleKeys() });
+  }),
+
+  route('POST /api/admin/maps-config/clear-cache', 'admin', async ({ res, user }) => {
+    const before = (db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c;
+    db.prepare('DELETE FROM geo_cache').run();
+    audit(user!.id, 'maps_cache_clear', 'settings', undefined, `${before} entrada(s)`);
+    json(res, 200, { ok: true, removed: before });
   }),
 
   // ---------- ocorrências / disputas ----------

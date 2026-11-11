@@ -15,6 +15,7 @@ init();
 async function init() {
   renderBrand($('#brand'), 'Parceiro');
   S.config = await api('/api/config').catch(() => ({ city_name: 'Assis Chateaubriand - PR', center: { lat: -24.4156, lng: -53.5216 } }));
+  await initMaps(S.config);
   $('#auth-hero').innerHTML = `${LOGO_SVG}<h1>Seja parceiro</h1>
     <p>Ganhe dinheiro com sua moto em ${escapeHtml(S.config.city_name)} — 85% de cada corrida é seu</p>`;
 

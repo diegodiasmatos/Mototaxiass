@@ -560,6 +560,128 @@ test('cobrança após o aceite: corrida inicia só com pagamento confirmado', as
   }
 });
 
+// ================= Google Maps =================
+
+test('polyline do Google é decodificado corretamente', async () => {
+  const { decodePolyline } = await import('../server/google-maps.ts');
+  // exemplo da documentação do Google: (38.5,-120.2) (40.7,-120.95) (43.252,-126.453)
+  const pts = decodePolyline('_p~iF~ps|U_ulLnnqC_mqNvxq`@');
+  assert.equal(pts.length, 3);
+  const round = (n: number) => Math.round(n * 1e4) / 1e4;
+  assert.deepEqual(pts.map(([lng, lat]) => [round(lat), round(lng)]), [
+    [38.5, -120.2], [40.7, -120.95], [43.252, -126.453],
+  ]);
+  assert.deepEqual(decodePolyline(''), []);
+});
+
+test('sem chave do Google o sistema usa OSM/estimativa e diz qual foi', async () => {
+  const cfg = await pax.req('GET', '/api/config');
+  assert.equal(cfg.data.maps.browser_key, null);
+  assert.equal(cfg.data.maps.provider, 'osm');
+  assert.equal(cfg.data.maps.server_routing, 'osrm');
+
+  // GEO_OFFLINE=1 nos testes → estimativa, sempre marcada como tal
+  const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+  assert.equal(q.data.route.provider, 'estimativa');
+  assert.equal(q.data.route.mode, 'estimativa');
+  assert.equal(q.data.route.estimated, true);
+  assert.equal(q.data.route.mode_fallback, false);
+});
+
+test('procedência da rota é gravada na cotação e na corrida', async () => {
+  const rid = await newRide('dinheiro');
+  const row = db.prepare('SELECT route_provider, route_mode, distance_m FROM rides WHERE id = ?')
+    .get(rid) as any;
+  assert.equal(row.route_provider, 'estimativa');
+  assert.equal(row.route_mode, 'estimativa');
+
+  // o preço usa a distância da ROTA gravada, não a linha reta
+  const ride = (await adm.req('GET', `/api/admin/rides/${rid}`)).data.ride;
+  const esperado = 550 + Math.round(Math.max(0, row.distance_m - 2000) * 200 / 1000);
+  assert.equal(ride.price_cents, esperado);
+
+  await pax.req('POST', `/api/rides/${rid}/cancel`, { reason: 'fim do teste' });
+});
+
+test('chave de servidor do Google nunca vaza para o frontend', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', {
+    credentials: {
+      GOOGLE_MAPS_SERVER_KEY: 'CHAVE-SERVIDOR-SECRETA',
+      GOOGLE_MAPS_BROWSER_KEY: 'CHAVE-NAVEGADOR-PUBLICA',
+    },
+  });
+  try {
+    // /api/config só entrega a chave do NAVEGADOR
+    const cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.browser_key, 'CHAVE-NAVEGADOR-PUBLICA');
+    assert.equal(JSON.stringify(cfg.data).includes('CHAVE-SERVIDOR-SECRETA'), false);
+    assert.equal(cfg.data.maps.provider, 'google');
+
+    // na central a chave de servidor volta mascarada
+    const mc = await adm.req('GET', '/api/admin/maps-config');
+    assert.equal(mc.data.credentials.GOOGLE_MAPS_SERVER_KEY.value, '••••••RETA');
+    assert.equal(mc.data.active_routing, 'google');
+
+    // no banco está cifrada
+    const row = db.prepare(
+      `SELECT value_enc FROM provider_credentials WHERE key = 'GOOGLE_MAPS_SERVER_KEY'`).get() as any;
+    assert.ok(!row.value_enc.includes('CHAVE-SERVIDOR-SECRETA'));
+
+    // passageiro e motoboy não acessam a configuração de mapas
+    assert.equal((await pax.req('GET', '/api/admin/maps-config')).status, 403);
+    assert.equal((await drv.req('PUT', '/api/admin/maps-config', { credentials: {} })).status, 403);
+  } finally {
+    await adm.req('PUT', '/api/admin/maps-config', {
+      credentials: { GOOGLE_MAPS_SERVER_KEY: '', GOOGLE_MAPS_BROWSER_KEY: '' },
+    });
+  }
+});
+
+test('forçar OpenStreetMap ignora a chave do Google', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', {
+    credentials: { GOOGLE_MAPS_SERVER_KEY: 'CHAVE-QUALQUER' }, provider: 'osm',
+  });
+  try {
+    const mc = await adm.req('GET', '/api/admin/maps-config');
+    assert.equal(mc.data.has_server_key, true);
+    assert.equal(mc.data.active_routing, 'osrm');   // provedor forçado
+  } finally {
+    await adm.req('PUT', '/api/admin/maps-config', {
+      credentials: { GOOGLE_MAPS_SERVER_KEY: '' }, provider: 'auto',
+    });
+  }
+});
+
+test('cache de geo: validade é validada e a limpeza funciona', async () => {
+  assert.equal((await adm.req('PUT', '/api/admin/maps-config',
+    { cache_hours: { route: 99999 } })).status, 400);
+  assert.equal((await adm.req('PUT', '/api/admin/maps-config',
+    { cache_hours: { route: -1 } })).status, 400);
+
+  const ok = await adm.req('PUT', '/api/admin/maps-config', { cache_hours: { route: 48 } });
+  assert.equal(ok.status, 200);
+
+  db.prepare(`INSERT INTO geo_cache (key, kind, payload, created_at, expires_at)
+    VALUES ('x','route','{}',?,?)`).run(Date.now(), Date.now() + 60000);
+  const limpa = await adm.req('POST', '/api/admin/maps-config/clear-cache');
+  assert.equal(limpa.status, 200);
+  assert.ok(limpa.data.removed >= 1);
+  assert.equal((db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c, 0);
+});
+
+test('diagnóstico de mapas avisa quando não há chave', async () => {
+  const r = await adm.req('POST', '/api/admin/maps-config/test');
+  assert.equal(r.status, 200);
+  assert.equal(r.data.checks[0].item, 'Chave de servidor');
+  assert.equal(r.data.checks[0].ok, false);
+  assert.match(r.data.checks[0].detail, /OpenStreetMap/i);
+});
+
+test('busca de lugar exige place_id e respeita permissão', async () => {
+  assert.equal((await pax.req('GET', '/api/geo/place')).status, 400);
+  assert.equal((await actor().req('GET', '/api/geo/place?place_id=abc')).status, 401);
+});
+
 // ================= permissões =================
 
 test('permissões: cada perfil só faz o que lhe cabe', async () => {

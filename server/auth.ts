@@ -147,8 +147,13 @@ export const authRoutes: Route[] = [
     json(res, 200, { ok: true });
   }),
 
-  // Configuração pública consumida pelo frontend (sem segredos).
-  route('GET /api/config', null, ({ res }) => {
+  /**
+   * Configuração pública consumida pelo frontend.
+   * A chave do Maps que vai aqui é a do NAVEGADOR (restrita por domínio no
+   * Google Cloud). A chave de servidor nunca sai do backend.
+   */
+  route('GET /api/config', null, async ({ res }) => {
+    const { browserKey, googleEnabled } = await import('./google-maps.ts');
     json(res, 200, {
       city_name: getSetting('city_name'),
       center: { lat: Number(getSetting('center_lat')), lng: Number(getSetting('center_lng')) },
@@ -156,6 +161,11 @@ export const authRoutes: Route[] = [
       welcome_message: getSetting('welcome_message'),
       google_client_id: process.env.GOOGLE_CLIENT_ID || null,
       review_sla_hours: Number(getSetting('review_sla_hours')),
+      maps: {
+        browser_key: browserKey(),      // pública por natureza; restrinja por domínio
+        provider: browserKey() ? 'google' : 'osm',
+        server_routing: googleEnabled() ? 'google' : 'osrm',
+      },
     });
   }),
 ];

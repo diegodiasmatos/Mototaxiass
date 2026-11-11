@@ -101,6 +101,10 @@ self.addEventListener('fetch', event => {
   }
 
   // imagens próprias e tiles de mapa: cache primeiro
+  // Nunca interceptar o Google Maps: ele gerencia o próprio cache e
+  // precisa das requisições originais para a cobrança/uso funcionarem.
+  if (/(^|\.)googleapis\.com$|(^|\.)gstatic\.com$|(^|\.)google\.com$/.test(url.hostname)) return;
+
   const isMedia = /\.(png|jpg|jpeg|svg|webp|ico)$/i.test(url.pathname)
     || url.hostname.endsWith('tile.openstreetmap.org');
   if (isMedia) {
