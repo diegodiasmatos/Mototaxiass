@@ -5,7 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0d1b2e">
   <title>Assis MotoTáxi — Peça sua corrida</title>
+  <meta name="description" content="Peça seu mototáxi em Assis Chateaubriand - PR. Preço na hora, rastreamento em tempo real.">
   <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MotoTáxi">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/css/app.css">
 </head>
@@ -74,16 +80,12 @@
     <button class="btn btn-outline btn-sm mb" id="btn-quote-back">← Voltar</button>
     <div class="mapbox" id="map-quote"></div>
     <div class="card">
+      <div class="testbar" id="quote-testbar" hidden>🧪 Pagamentos em MODO DE TESTE — nenhum valor real é cobrado</div>
       <h2>Escolha a categoria</h2>
       <p class="muted small mb" id="quote-summary"></p>
       <div id="quote-cards"></div>
-      <div class="field mt">
-        <label>Forma de pagamento (ao mototaxista, no fim da corrida)</label>
-        <div class="seg" id="pay-seg">
-          <button data-pay="dinheiro" class="active">💵 Dinheiro</button>
-          <button data-pay="pix">⚡ Pix</button>
-        </div>
-      </div>
+      <h3 class="mt">Forma de pagamento</h3>
+      <div id="pay-options"></div>
       <button class="btn btn-primary btn-lg mt" id="btn-request" disabled>Confirmar corrida</button>
       <p class="muted small center mt" id="quote-expire"></p>
     </div>
@@ -92,6 +94,7 @@
   <!-- ============ CORRIDA ATIVA ============ -->
   <section class="screen" id="screen-ride" hidden>
     <div class="status-banner" id="ride-banner"></div>
+    <div class="card" id="ride-payment" hidden></div>
     <div class="mapbox tall" id="map-ride"></div>
     <div class="card" id="ride-driver-card" hidden></div>
     <div class="card" id="ride-details"></div>
@@ -138,7 +141,7 @@
         <button class="btn btn-outline" type="submit">Enviar mensagem</button>
       </form>
     </div>
-    <button class="btn btn-outline" id="btn-notif-perm">🔔 Ativar notificações do navegador</button>
+    <div class="card"><h3>🔔 Notificações</h3><div id="notif-status"></div></div>
     <button class="btn btn-danger mt" id="btn-logout">Sair da conta</button>
   </section>
 </main>

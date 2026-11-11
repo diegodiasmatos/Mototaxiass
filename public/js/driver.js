@@ -69,11 +69,17 @@ function authTab(login) {
 async function enterApp() {
   $('#btn-notifs').hidden = false;
   $('#btn-notifs').onclick = openNotifications;
+  refreshPushSubscription();
+
+  navigator.serviceWorker?.addEventListener('message', e => {
+    if (e.data?.type === 'notification-click') refreshDriver();
+  });
 
   connectSSE({
-    notification: n => { toast(n.title); browserNotify(n.title, n.body || ''); refreshDriver(); },
+    notification: n => { toast(n.title); browserNotify(n.title, n.body || ''); },
     ride_offer: o => onOffer(o),
     ride_update: () => refreshActive(),
+    passenger_location: p => onPassengerLocation(p),
   });
   await refreshDriver();
 }
@@ -82,6 +88,9 @@ async function refreshDriver() {
   const me = await api('/api/driver/me').catch(() => ({ driver: null }));
   S.driver = me.driver;
   S.documents = me.documents || [];
+  S.balance = me.balance;
+  S.debtLimit = me.debt_limit_cents;
+  if (me.server_time) S.serverSkew = me.server_time - Date.now();
 
   clearInterval(S.pendingTimer);
   if (!S.driver) { showScreen('screen-apply'); return; }
@@ -104,7 +113,10 @@ function bindNav() {
     if (id === 'screen-panel' && S.activeRide) { showScreen('screen-drive'); return; }
     showScreen(id);
     if (id === 'screen-earnings') { loadEarnings(); loadDrvHistory(); }
-    if (id === 'screen-profile') fillDriverProfile();
+    if (id === 'screen-profile') {
+      fillDriverProfile(); loadDriverRatings(); loadMpConnect();
+      renderNotificationStatus($('#notif-status'));
+    }
   });
 }
 
@@ -226,8 +238,17 @@ function renderPanel() {
   $('#drv-greeting').textContent = `Olá, ${S.user.name.split(' ')[0]}! 👋`;
   paintToggle();
   $('#stat-rides').textContent = d.rides_count;
+
+  const warn = $('#drv-debt-warn');
+  if (warn && S.balance && S.balance.debt_cents > (S.debtLimit ?? Infinity)) {
+    warn.innerHTML = `<div class="testbar" style="background:#fee2e2;border-color:#fca5a5;color:#991b1b">
+      ⛔ Comissão em aberto de ${fmt.money(S.balance.debt_cents)} (limite ${fmt.money(S.debtLimit)}).
+      Quite com a plataforma para voltar a receber corridas.</div>`;
+  } else if (warn) warn.innerHTML = '';
+
   refreshPanelStats();
   if (S.online) { startLocationWatch(); pollOffers(); }
+  else setDriverGps('off', 'desligado');
 }
 
 function paintToggle() {
@@ -242,13 +263,14 @@ function paintToggle() {
 async function toggleOnline() {
   try {
     if (!S.online) {
-      // exige localização para ficar online
+      // exige localização real e precisa para entrar na fila
       const pos = await getPosition();
       await api('/api/driver/online', { method: 'POST', body: { online: true } });
       await api('/api/driver/location', { method: 'POST', body: pos });
       S.online = true;
       startLocationWatch();
-      askNotifPermission();
+      const push = await enablePush();
+      if (!push.ok) toast(push.msg, 'err');
       pollOffers();
       toast('Você está online! Boas corridas 🏍️', 'ok');
     } else {
@@ -267,20 +289,39 @@ function startLocationWatch() {
   if (!navigator.geolocation) { toast('GPS indisponível neste navegador.', 'err'); return; }
   S.watchId = navigator.geolocation.watchPosition(
     p => {
+      const { latitude: lat, longitude: lng, accuracy } = p.coords;
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return;
+      setDriverGps(accuracy > 150 ? 'weak' : 'ok', `±${Math.round(accuracy)} m`);
+      if (S.meMarker && S.maps.drive) S.meMarker.setLatLng([lat, lng]);
+
       const t = Date.now();
-      if (t - S.lastSent < 4000) return; // envia no máx a cada 4s
+      if (t - S.lastSent < 4000) return;        // envia no máximo a cada 4 s
       S.lastSent = t;
-      api('/api/driver/location', {
-        method: 'POST',
-        body: { lat: p.coords.latitude, lng: p.coords.longitude },
-      }).catch(() => { });
-      if (S.meMarker && S.maps.drive) S.meMarker.setLatLng([p.coords.latitude, p.coords.longitude]);
+      api('/api/driver/location', { method: 'POST', body: { lat, lng, accuracy_m: accuracy } })
+        .then(r => { if (!r.accuracy_ok) setDriverGps('weak', `impreciso (±${Math.round(accuracy)} m)`); })
+        .catch(() => setDriverGps('off', 'sem conexão'));
     },
-    () => toast('Sinal de GPS perdido. Verifique a permissão de localização.', 'err'),
-    { enableHighAccuracy: true, maximumAge: 5000 });
+    err => {
+      setDriverGps('off', err.code === 1 ? 'permissão negada' : 'sem sinal');
+      toast('Sinal de GPS perdido — você pode parar de receber corridas.', 'err');
+    },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
 }
 function stopLocationWatch() {
   if (S.watchId != null) { navigator.geolocation.clearWatch(S.watchId); S.watchId = null; }
+  setDriverGps('off', 'desligado');
+}
+function setDriverGps(state, label) {
+  S.gpsState = state;
+  const cls = state === 'ok' ? '' : (state === 'weak' ? 'weak' : 'off');
+  const icon = state === 'ok' ? '🛰️' : (state === 'weak' ? '📶' : '⚠️');
+  $$('.gps-chip').forEach(el => { el.className = `gps-chip ${cls}`; el.textContent = `${icon} GPS ${label}`; });
+}
+
+function onPassengerLocation(p) {
+  if (!S.activeRide || p.ride_id !== S.activeRide.id || !S.maps.drive) return;
+  if (S.paxMarker) S.paxMarker.setLatLng([p.lat, p.lng]);
+  else { S.paxMarker = emojiMarker(S.maps.drive, p.lat, p.lng, '🧍'); S.driveLayers.push(S.paxMarker); }
 }
 
 async function refreshPanelStats() {
@@ -308,16 +349,18 @@ function offerHtml(o) {
     </div>`;
 }
 
+/** Uma única cadeia de polling por vez (a V1 criava uma a cada toque no botão). */
 async function pollOffers() {
+  clearTimeout(S.offersTimer);
   if (!S.online || S.activeRide) return;
   try {
     const { offers } = await api('/api/driver/offers');
     $('#offers-list').innerHTML = offers.length
       ? offers.map(offerHtml).join('')
       : '<div class="empty"><div class="eico">🔎</div>Nenhuma corrida aberta agora.<br>Você será avisado na hora!</div>';
-    $$('#offers-list [data-accept]').forEach(b => b.onclick = () => acceptRide(b.dataset.accept));
+    $$('#offers-list [data-accept]').forEach(b => b.onclick = () => acceptRide(b.dataset.accept, b));
   } catch { }
-  setTimeout(pollOffers, 12000);
+  S.offersTimer = setTimeout(pollOffers, 12000);
 }
 
 function onOffer(o) {
@@ -348,14 +391,18 @@ function onOffer(o) {
   $('[data-no]', m).onclick = () => { clearInterval(timer); m.close(); };
 }
 
-async function acceptRide(rideId) {
-  try {
+async function acceptRide(rideId, btn) {
+  const run = async () => {
     const { ride } = await api(`/api/driver/rides/${rideId}/accept`, { method: 'POST' });
     S.activeRide = ride;
     toast('Corrida aceita! Vá até o passageiro. 🏍️', 'ok');
     renderDrive();
     showScreen('screen-drive');
-  } catch (e) { toast(e.message, 'err'); pollOffers(); }
+  };
+  try {
+    if (btn) await withLoading(btn, run, { errToast: true });
+    else await run();
+  } catch { pollOffers(); }
 }
 
 /* ================= corrida ativa ================= */
@@ -376,11 +423,21 @@ function renderDrive() {
   const r = S.activeRide;
   if (!r) return;
   const toPassenger = r.status === 'accepted';
-  $('#drive-banner').innerHTML = toPassenger
-    ? `<span class="sico">📍</span><div><div class="stitle">Vá até o passageiro</div>
-       <div class="ssub">${escapeHtml(r.passenger.name)} aguarda em: ${escapeHtml(r.origin.text)}</div></div>`
-    : `<span class="sico">🛣️</span><div><div class="stitle">Corrida em andamento</div>
-       <div class="ssub">Destino: ${escapeHtml(r.dest.text)}</div></div>`;
+  if (r.status === 'awaiting_confirmation') {
+    $('#drive-banner').innerHTML = `<span class="sico pulse">⏳</span><div>
+      <div class="stitle">Aguardando confirmação do passageiro</div>
+      <div class="ssub">Se ele não responder, confirmamos automaticamente em instantes.</div></div>`;
+  } else if (r.status === 'disputed') {
+    $('#drive-banner').innerHTML = `<span class="sico">⚠️</span><div>
+      <div class="stitle">Passageiro registrou uma ocorrência</div>
+      <div class="ssub">A administração vai analisar antes de liberar o valor.</div></div>`;
+  } else {
+    $('#drive-banner').innerHTML = toPassenger
+      ? `<span class="sico">📍</span><div><div class="stitle">Vá até o passageiro</div>
+         <div class="ssub">${escapeHtml(r.passenger.name)} aguarda em: ${escapeHtml(r.origin.text)}</div></div>`
+      : `<span class="sico">🛣️</span><div><div class="stitle">Corrida em andamento</div>
+         <div class="ssub">Destino: ${escapeHtml(r.dest.text)}</div></div>`;
+  }
 
   $('#drive-details').innerHTML = `
     <div class="driver-card mb">
@@ -391,31 +448,51 @@ function renderDrive() {
     </div>
     <div class="list-item"><div class="li-main"><div class="li-sub">📍 Embarque</div><div class="li-title">${escapeHtml(r.origin.text)}</div></div></div>
     <div class="list-item"><div class="li-main"><div class="li-sub">🏁 Destino</div><div class="li-title">${escapeHtml(r.dest.text)}</div></div></div>
-    <div class="row between mt">
+    ${r.pickup_updated_at ? `<p class="muted small mt" style="color:#b45309">
+      📍 O passageiro atualizou o ponto de embarque em ${fmt.time(r.pickup_updated_at)}.</p>` : ''}
+    <div class="row between mt" style="flex-wrap:wrap;gap:8px">
       <span class="chip soft">${fmt.dist(r.distance_m)}</span>
       <span class="chip soft">${PAY_PT[r.payment_method]}</span>
       <span class="chip yellow">Você recebe ${fmt.money(r.driver_cents)}</span>
+      <span class="gps-chip">🛰️ GPS</span>
     </div>
-    <p class="muted small mt">Valor da corrida: ${fmt.money(r.price_cents)} · Taxa da plataforma: ${fmt.money(r.commission_cents)}</p>`;
+    ${r.paid_upfront
+      ? `<p class="muted small mt">✅ <b>Já pago pela plataforma</b> — não cobre nada do passageiro.
+         ${fmt.money(r.driver_cents)} entram no seu saldo após a confirmação.</p>`
+      : `<p class="muted small mt">💵 <b>Receba ${fmt.money(r.collect_cash_cents)} em dinheiro</b> do passageiro.
+         A comissão de ${fmt.money(r.commission_cents)} fica registrada como sua dívida com a plataforma.</p>`}
+    <p class="muted small">Valor da corrida: ${fmt.money(r.price_cents)} · Taxa da plataforma: ${fmt.money(r.commission_cents)}</p>`;
 
   const navTarget = toPassenger ? r.origin : r.dest;
   const gmaps = `https://www.google.com/maps/dir/?api=1&destination=${navTarget.lat},${navTarget.lng}&travelmode=driving`;
-  let actions = `<a class="btn btn-navy mb" href="${gmaps}" target="_blank" rel="noopener">🧭 Abrir navegação (Google Maps)</a>`;
+  let actions = '';
+  if (['accepted', 'in_progress'].includes(r.status)) {
+    actions += `<a class="btn btn-navy mb" href="${gmaps}" target="_blank" rel="noopener">
+      🧭 Navegar até ${toPassenger ? 'o passageiro' : 'o destino'}</a>`;
+  }
   if (r.status === 'accepted' && !r.arrived_at) {
     actions += `<button class="btn btn-primary btn-lg" id="act-arrived">Cheguei ao passageiro 📍</button>`;
   } else if (r.status === 'accepted') {
     actions += `<button class="btn btn-primary btn-lg" id="act-start">Iniciar corrida ▶</button>`;
   } else if (r.status === 'in_progress') {
     actions += `<button class="btn btn-green btn-lg" id="act-complete">Finalizar corrida ✓</button>`;
+  } else if (r.status === 'awaiting_confirmation') {
+    actions += `<div class="card center" style="margin:0">
+      <div class="spinner mb"></div>
+      <p class="muted small">Aguardando o passageiro confirmar a chegada.
+      A corrida fecha sozinha em poucos segundos.</p></div>`;
   }
   if (r.status === 'accepted' || r.status === 'in_progress') {
     actions += `<button class="btn btn-danger mt" id="act-cancel">Cancelar corrida</button>`;
   }
   $('#drive-actions').innerHTML = actions;
 
-  $('#act-arrived') && ($('#act-arrived').onclick = () => rideAction('arrived'));
+  $('#act-arrived') && ($('#act-arrived').onclick = () =>
+    withLoading($('#act-arrived'), () => rideAction('arrived')));
   $('#act-start') && ($('#act-start').onclick = async () => {
-    if (await confirmModal('Iniciar corrida?', 'O passageiro embarcou na moto?', 'Sim, iniciar')) rideAction('start');
+    if (await confirmModal('Iniciar corrida?', 'O passageiro embarcou na moto?', 'Sim, iniciar')) {
+      await withLoading($('#act-start'), () => rideAction('start'));
+    }
   });
   $('#act-complete') && ($('#act-complete').onclick = completeFlow);
   $('#act-cancel') && ($('#act-cancel').onclick = cancelFlow);
@@ -433,20 +510,30 @@ async function rideAction(action, body = {}) {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+/**
+ * O mototaxista declara a conclusão; o passageiro confirma (ou o servidor
+ * confirma sozinho ao fim do prazo). Nada de marcar pagamento por aqui.
+ */
 async function completeFlow() {
   const r = S.activeRide;
   const m = openModal(`
     <h3>Finalizar corrida</h3>
-    <p class="muted mb">Cobre do passageiro: <b style="font-size:1.2rem">${fmt.money(r.price_cents)}</b> (${PAY_PT[r.payment_method]})</p>
-    <label class="row mb" style="gap:8px"><input type="checkbox" id="pay-ok" checked> Recebi o pagamento</label>
-    <button class="btn btn-green btn-lg" data-ok>Confirmar e finalizar ✓</button>
+    ${r.paid_upfront
+      ? `<p class="muted mb">Corrida <b>já paga pela plataforma</b> (${PAY_PT[r.payment_method]}).
+         Não cobre nada do passageiro.<br>
+         Você recebe <b style="font-size:1.15rem;color:var(--green)">${fmt.money(r.driver_cents)}</b>.</p>`
+      : `<p class="muted mb">Receba <b style="font-size:1.2rem">${fmt.money(r.collect_cash_cents)}</b>
+         em dinheiro do passageiro.<br>
+         A comissão de ${fmt.money(r.commission_cents)} fica registrada como sua dívida.</p>`}
+    <p class="muted small mb">O passageiro vai confirmar a chegada. Sem resposta dele,
+    confirmamos automaticamente em poucos segundos.</p>
+    <button class="btn btn-green btn-lg" data-ok>Declarar conclusão ✓</button>
     <button class="btn btn-outline mt" data-no>Voltar</button>`);
-  $('[data-ok]', m).onclick = async () => {
-    const received = $('#pay-ok', m).checked;
+  $('[data-ok]', m).onclick = () => withLoading($('[data-ok]', m), async () => {
+    await rideAction('complete');
     m.close();
-    await rideAction('complete', { payment_received: received });
-    toast(`Corrida finalizada! Você recebe ${fmt.money(r.driver_cents)} 💰`, 'ok');
-  };
+    toast('Aguardando a confirmação do passageiro…');
+  });
   $('[data-no]', m).onclick = () => m.close();
 }
 
@@ -507,20 +594,109 @@ async function sendDChat() {
 async function loadEarnings() {
   try {
     const e = await api('/api/driver/earnings');
+    S.balance = e.balance;
     const row = (label, a) => `
       <div class="list-item">
         <div class="li-main"><div class="li-title">${label}</div>
         <div class="li-sub">${a.rides} corrida(s) · bruto ${fmt.money(a.gross)} · comissão ${fmt.money(a.commission)}</div></div>
         <b style="color:var(--green)">${fmt.money(a.net)}</b>
       </div>`;
-    $('#earnings-box').innerHTML =
-      row('Hoje', e.day) + row('Esta semana', e.week) + row('Este mês', e.month) + row('Total', e.total) +
-      `<div class="row between mt">
-        <span class="pill yellow">A receber: ${fmt.money(e.pending_cents)}</span>
-        <span class="pill green">Já recebido: ${fmt.money(e.received_cents)}</span>
+    const debtWarn = e.debt_cents > e.debt_limit_cents;
+    $('#earnings-box').innerHTML = `
+      <div class="fin-grid mb">
+        <div class="fin-card in"><div class="fv">${fmt.money(e.balance.pending_cents)}</div>
+          <div class="fl">A receber da plataforma</div></div>
+        <div class="fin-card out"><div class="fv">${fmt.money(e.balance.paid_cents)}</div>
+          <div class="fl">Já repassado a você</div></div>
+        <div class="fin-card ${debtWarn ? 'bad' : 'warn'}"><div class="fv">${fmt.money(e.debt_cents)}</div>
+          <div class="fl">Comissão a pagar (corridas em dinheiro)</div></div>
       </div>
-      <p class="muted small mt">Apenas corridas concluídas entram nos ganhos. Valores "a receber" são pagamentos em dinheiro/Pix ainda não confirmados por você.</p>`;
+      ${debtWarn ? `<div class="testbar" style="background:#fee2e2;border-color:#fca5a5;color:#991b1b">
+        ⛔ Sua dívida passou do limite de ${fmt.money(e.debt_limit_cents)} — você não recebe novas corridas
+        até quitar com a plataforma.</div>` : ''}
+      ${row('Hoje', e.day) + row('Esta semana', e.week) + row('Este mês', e.month) + row('Total', e.total)}
+      <h3 class="mt">Repasses recebidos</h3>
+      ${e.payouts.length ? e.payouts.map(p => `
+        <div class="list-item"><div class="li-main">
+          <div class="li-title">${fmt.money(p.amount_cents)} · ${escapeHtml(p.method || 'pix')}</div>
+          <div class="li-sub">${fmt.dt(p.created_at)}${p.reference ? ` · ${escapeHtml(p.reference)}` : ''}</div>
+        </div><span class="pill ${p.status === 'pago' ? 'green' : 'yellow'}">${p.status}</span></div>`).join('')
+        : '<p class="muted small">Nenhum repasse registrado ainda.</p>'}
+      <p class="muted small mt">Só corridas concluídas entram nos ganhos. Pix e cartão são recebidos
+      pela plataforma e repassados a você; em dinheiro você recebe na hora e fica devendo a comissão.</p>`;
   } catch (err) { $('#earnings-box').innerHTML = `<p class="muted">${escapeHtml(err.message)}</p>`; }
+}
+
+/** Conexão da conta Mercado Pago do parceiro (recebimento direto). */
+async function loadMpConnect() {
+  const box = $('#mp-connect');
+  if (!box) return;
+  try {
+    const s = await api('/api/driver/mp/status');
+    if (!s.available || !s.configured) {
+      box.innerHTML = `
+        <div class="list-item"><span style="font-size:1.2rem">💵</span>
+          <div class="li-main"><div class="li-title">Você recebe por repasse da plataforma</div>
+            <div class="li-sub">Pix e cartão são recebidos pela plataforma e repassados a você;
+            corridas em dinheiro você recebe na hora e a comissão fica registrada.</div></div></div>
+        <p class="muted small mt">O recebimento direto na sua conta ainda não foi liberado pela administração.</p>`;
+      return;
+    }
+    if (s.connected) {
+      box.innerHTML = `
+        <div class="list-item"><span style="font-size:1.2rem">✅</span>
+          <div class="li-main"><div class="li-title">Recebendo direto na sua conta Mercado Pago</div>
+            <div class="li-sub">${escapeHtml(s.nickname || 'Conta conectada')} · desde ${fmt.dt(s.connected_at)}<br>
+            O valor da corrida cai na sua conta na hora e a comissão da plataforma
+            é descontada automaticamente.</div></div></div>
+        <button class="btn btn-outline btn-sm mt" id="mp-off">Desconectar conta</button>`;
+      $('#mp-off').onclick = async () => {
+        if (!await confirmModal('Desconectar a conta?',
+          'Você voltará a receber por repasse da plataforma.', 'Desconectar', true)) return;
+        await api('/api/driver/mp/disconnect', { method: 'POST' });
+        toast('Conta desconectada.');
+        loadMpConnect();
+      };
+      return;
+    }
+    box.innerHTML = `
+      <div class="list-item"><span style="font-size:1.2rem">⚡</span>
+        <div class="li-main"><div class="li-title">Receba direto na sua conta Mercado Pago</div>
+          <div class="li-sub">Conectando sua conta, o valor das corridas pagas por Pix e cartão
+          cai na hora para você — sem esperar repasse. A comissão da plataforma é
+          descontada automaticamente.</div></div></div>
+      <button class="btn btn-primary mt" id="mp-on">Conectar minha conta Mercado Pago</button>
+      <p class="muted small mt">Você será levado ao site do Mercado Pago para autorizar.
+      A plataforma nunca vê sua senha.</p>`;
+    $('#mp-on').onclick = () => withLoading($('#mp-on'), async () => {
+      const { url } = await api('/api/driver/mp/connect-url');
+      location.href = url;
+    });
+  } catch (e) {
+    box.innerHTML = `<p class="muted small">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function loadDriverRatings() {
+  try {
+    const { ratings, averages } = await api('/api/driver/ratings');
+    const avg = v => v ? `★ ${Number(v).toFixed(1)}` : '—';
+    $('#drv-ratings').innerHTML = `
+      <div class="fin-grid mb">
+        <div class="fin-card in"><div class="fv">${avg(averages.stars)}</div>
+          <div class="fl">Nota geral (${averages.total} avaliações)</div></div>
+        <div class="fin-card"><div class="fv">${avg(averages.atendimento)}</div><div class="fl">Atendimento</div></div>
+        <div class="fin-card"><div class="fv">${avg(averages.pontualidade)}</div><div class="fl">Pontualidade</div></div>
+        <div class="fin-card"><div class="fv">${avg(averages.educacao)}</div><div class="fl">Educação</div></div>
+        <div class="fin-card"><div class="fv">${avg(averages.seguranca)}</div><div class="fl">Segurança</div></div>
+      </div>
+      ${ratings.length ? ratings.map(r => `
+        <div class="list-item"><div class="li-main">
+          <div class="li-title">${'★'.repeat(r.stars)}${'☆'.repeat(5 - r.stars)}</div>
+          <div class="li-sub">${escapeHtml(r.comment || 'Sem comentário')} · ${fmt.date(r.created_at)}</div>
+        </div></div>`).join('')
+        : '<div class="empty"><div class="eico">⭐</div>Você ainda não recebeu avaliações.</div>'}`;
+  } catch { }
 }
 
 async function loadDrvHistory() {
@@ -551,9 +727,7 @@ function bindProfile() {
       toast('Mensagem enviada!', 'ok'); e.target.reset();
     } catch (err) { toast(err.message, 'err'); }
   };
-  $('#btn-notif-perm').onclick = async () => {
-    toast(await askNotifPermission() ? 'Notificações ativadas! 🔔' : 'Não autorizado pelo navegador.');
-  };
+  $('#btn-notif-perm')?.remove();   // substituído pelo diagnóstico completo
   $('#btn-logout').onclick = logout;
 }
 

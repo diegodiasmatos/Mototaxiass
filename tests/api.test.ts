@@ -229,8 +229,18 @@ test('corrida: solicitação, aceite atômico, fluxo até conclusão', async () 
   const create = await passenger.req('POST', '/api/rides', { quote_id: eco.id, payment_method: 'pix' });
   assert.equal(create.status, 201);
   rideId = create.data.ride.id;
-  assert.equal(create.data.ride.status, 'requested');
-  assert.equal(create.data.notified_drivers, 2);
+
+  // V2: Pix nasce aguardando pagamento e NÃO vai para os mototaxistas ainda
+  assert.equal(create.data.ride.status, 'pending_payment');
+  assert.equal(create.data.notified_drivers, 0);
+  assert.equal(create.data.ride.payment.test_mode, true);
+  assert.equal((await driver.req('GET', '/api/driver/offers')).data.offers.length, 0);
+
+  // só após a confirmação do pagamento a corrida é despachada
+  const approve = await passenger.req('POST', `/api/rides/${rideId}/payment/test-approve`);
+  assert.equal(approve.status, 200);
+  assert.equal(approve.data.notified_drivers, 2);
+  assert.equal((await passenger.req('GET', '/api/rides/active')).data.ride.status, 'requested');
 
   // cotação não pode ser reutilizada
   assert.equal((await passenger.req('POST', '/api/rides', { quote_id: eco.id, payment_method: 'pix' })).status, 409);
@@ -272,28 +282,53 @@ test('corrida: solicitação, aceite atômico, fluxo até conclusão', async () 
   assert.equal((await passenger2.req('GET', `/api/rides/${rideId}`)).status, 403);
   assert.equal((await passenger2.req('GET', `/api/rides/${rideId}/messages`)).status, 403);
 
-  // fluxo: cheguei → iniciar → finalizar
+  // fluxo: cheguei → iniciar → declarar conclusão → confirmação do passageiro
   assert.equal((await winner.req('POST', `/api/driver/rides/${rideId}/arrived`)).status, 200);
   // concluir antes de iniciar é inválido
   assert.equal((await winner.req('POST', `/api/driver/rides/${rideId}/complete`)).status, 409);
   assert.equal((await winner.req('POST', `/api/driver/rides/${rideId}/start`)).status, 200);
   // passageiro não cancela corrida em andamento
   assert.equal((await passenger.req('POST', `/api/rides/${rideId}/cancel`, {})).status, 409);
-  const done = await winner.req('POST', `/api/driver/rides/${rideId}/complete`, { payment_received: true });
-  assert.equal(done.status, 200);
-  assert.equal(done.data.ride.status, 'completed');
 
-  // financeiro: comissão 15% consistente
-  const price = done.data.ride.price_cents;
-  assert.equal(done.data.ride.commission_cents, Math.round(price * 0.15));
-  assert.equal(done.data.ride.driver_cents, price - Math.round(price * 0.15));
+  const declared = await winner.req('POST', `/api/driver/rides/${rideId}/complete`);
+  assert.equal(declared.status, 200);
+  // V2: o mototaxista NÃO conclui sozinho
+  assert.equal(declared.data.ride.status, 'awaiting_confirmation');
+  assert.ok(declared.data.auto_confirm_at > declared.data.server_time);
+
+  const waiting = await passenger.req('GET', '/api/rides/active');
+  assert.equal(waiting.data.ride.status, 'awaiting_confirmation');
+
+  // o passageiro confirma e a corrida fecha na hora
+  assert.equal((await passenger.req('POST', `/api/rides/${rideId}/confirm`)).status, 200);
+  const done = await passenger.req('GET', `/api/rides/${rideId}`);
+  assert.equal(done.data.ride.status, 'completed');
+  assert.equal(done.data.ride.confirmed_by, 'passenger');
+  // confirmar de novo é inofensivo (sem pagamento duplicado)
+  assert.equal((await passenger.req('POST', `/api/rides/${rideId}/confirm`)).data.already, true);
+
+  // financeiro: comissão 15% consistente e pagamento capturado
+  const adminRide = await admin.req('GET', `/api/admin/rides/${rideId}`);
+  const price = adminRide.data.ride.price_cents;
+  assert.equal(adminRide.data.ride.commission_cents, Math.round(price * 0.15));
+  assert.equal(adminRide.data.ride.driver_cents, price - Math.round(price * 0.15));
+  assert.equal(adminRide.data.payment.status, 'pago');
+
   const earn = await winner.req('GET', '/api/driver/earnings');
   assert.equal(earn.data.day.rides, 1);
-  assert.equal(earn.data.day.net, done.data.ride.driver_cents);
+  assert.equal(earn.data.day.net, adminRide.data.ride.driver_cents);
+  // Pix: valor entra como "a receber" da plataforma, sem dívida de comissão
+  assert.equal(earn.data.balance.pending_cents, adminRide.data.ride.driver_cents);
+  assert.equal(earn.data.balance.debt_cents, 0);
 
-  // avaliação: ok uma vez, duplicada falha
-  assert.equal((await passenger.req('POST', `/api/rides/${rideId}/rate`, { stars: 5, comment: 'Ótimo!' })).status, 201);
+  // avaliação detalhada: ok uma vez, duplicada falha
+  assert.equal((await passenger.req('POST', `/api/rides/${rideId}/rate`, {
+    stars: 5, comment: 'Ótimo!', atendimento: 5, pontualidade: 4, educacao: 5, seguranca: 5,
+  })).status, 201);
   assert.equal((await passenger.req('POST', `/api/rides/${rideId}/rate`, { stars: 1 })).status, 409);
+  const rt = await winner.req('GET', '/api/driver/ratings');
+  assert.equal(rt.data.averages.total, 1);
+  assert.equal(rt.data.averages.pontualidade, 4);
   // corrida concluída não pode ser cancelada
   assert.equal((await passenger.req('POST', `/api/rides/${rideId}/cancel`, {})).status, 409);
 });

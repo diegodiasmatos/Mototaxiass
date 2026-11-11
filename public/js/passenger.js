@@ -1,14 +1,19 @@
-/* Assis MotoTáxi — aplicativo do passageiro */
+/* Assis MotoTáxi — aplicativo do passageiro (V2) */
 'use strict';
 
 const S = {
   config: null, user: null,
   origin: null, dest: null,          // {lat,lng,text}
-  quotes: [], quoteRoute: null, selectedQuote: null, payment: 'dinheiro',
+  originConfirmed: false, destConfirmed: false,
+  quotes: [], quoteRoute: null, selectedQuote: null,
+  payment: null, payMethods: [], testMode: false,
   activeRide: null,
   maps: { home: null, quote: null, ride: null },
-  rideLayers: [], driverMarker: null,
-  statsTimer: null, ratePromptFor: null,
+  rideLayers: [], driverMarker: null, meMarker: null, accCircle: null,
+  statsTimer: null, payTimer: null, confirmTimer: null,
+  gps: { lat: null, lng: null, accuracy: null, at: 0, watchId: null, state: 'off' },
+  moveAlertShown: false, pickingOnMap: null,
+  serverSkew: 0,                     // diferença entre relógio do servidor e do aparelho
 };
 
 init();
@@ -16,12 +21,17 @@ init();
 async function init() {
   renderBrand($('#brand'));
   S.config = await api('/api/config').catch(() => ({
-    city_name: 'Assis Chateaubriand - PR', center: { lat: -24.4156, lng: -53.5216 }, welcome_message: 'Olá! Para onde vamos?',
+    city_name: 'Assis Chateaubriand - PR', center: { lat: -24.4156, lng: -53.5216 },
+    welcome_message: 'Olá! Para onde vamos?',
   }));
   $('#auth-hero').innerHTML = `${LOGO_SVG}<h1>Assis MotoTáxi</h1>
     <p>Transporte rápido e seguro em ${escapeHtml(S.config.city_name)}</p>`;
 
   bindAuth(); bindHome(); bindQuote(); bindRide(); bindProfile(); bindNav();
+
+  navigator.serviceWorker?.addEventListener('message', e => {
+    if (e.data?.type === 'notification-click') refreshActiveRide();
+  });
 
   try {
     const me = await api('/api/me');
@@ -45,22 +55,27 @@ function bindAuth() {
   $('#form-login').onsubmit = async e => {
     e.preventDefault();
     const f = new FormData(e.target);
-    try {
-      const r = await api('/api/auth/login', { method: 'POST', body: { email: f.get('email'), password: f.get('password') } });
+    await withLoading(e.target.querySelector('button[type=submit]'), async () => {
+      const r = await api('/api/auth/login', {
+        method: 'POST', body: { email: f.get('email'), password: f.get('password') },
+      });
       if (r.user.role !== 'passenger') { location.href = r.user.role === 'admin' ? '/admin' : '/motorista'; return; }
       S.user = r.user; enterApp();
-    } catch (err) { toast(err.message, 'err'); }
+    }).catch(() => { });
   };
   $('#form-register').onsubmit = async e => {
     e.preventDefault();
     const f = new FormData(e.target);
-    try {
+    await withLoading(e.target.querySelector('button[type=submit]'), async () => {
       const r = await api('/api/auth/register', {
         method: 'POST',
-        body: { role: 'passenger', name: f.get('name'), phone: f.get('phone'), email: f.get('email'), password: f.get('password') },
+        body: {
+          role: 'passenger', name: f.get('name'), phone: f.get('phone'),
+          email: f.get('email'), password: f.get('password'),
+        },
       });
       S.user = r.user; toast('Conta criada! Bem-vindo(a) 🎉', 'ok'); enterApp();
-    } catch (err) { toast(err.message, 'err'); }
+    }).catch(() => { });
   };
 }
 function authTab(login) {
@@ -79,7 +94,9 @@ function setupGoogleButton() {
       client_id: S.config.google_client_id,
       callback: async resp => {
         try {
-          const r = await api('/api/auth/google', { method: 'POST', body: { credential: resp.credential, role: 'passenger' } });
+          const r = await api('/api/auth/google', {
+            method: 'POST', body: { credential: resp.credential, role: 'passenger' },
+          });
           S.user = r.user; enterApp();
         } catch (err) { toast(err.message, 'err'); }
       },
@@ -94,8 +111,9 @@ async function enterApp() {
   $('#bottomnav').hidden = false;
   $('#btn-notifs').hidden = false;
   $('#btn-notifs').onclick = openNotifications;
-  $('#greeting').textContent = `${S.config.welcome_message} `;
+  $('#greeting').textContent = S.config.welcome_message;
   fillProfile();
+  refreshPushSubscription();
 
   connectSSE({
     notification: n => { toast(n.title); browserNotify(n.title, n.body || ''); bumpBadge(); },
@@ -104,13 +122,24 @@ async function enterApp() {
     ride_message: m => onChatMessage(m),
   });
 
+  await loadPaymentMethods();
   await refreshActiveRide();
   if (!S.activeRide) showScreen('screen-home');
   initHomeMap();
+  startGpsWatch();
   refreshStats();
   clearInterval(S.statsTimer);
   S.statsTimer = setInterval(refreshStats, 15000);
   loadFavorites();
+}
+
+async function loadPaymentMethods() {
+  try {
+    const f = await api('/api/public/fares');
+    S.payMethods = f.payment_methods;
+    S.testMode = f.test_mode;
+    S.payment = (f.payment_methods.find(m => m.enabled) || {}).method || 'dinheiro';
+  } catch { S.payMethods = []; }
 }
 
 function bumpBadge() {
@@ -124,8 +153,137 @@ function bindNav() {
     if (id === 'screen-home' && S.activeRide) { showScreen('screen-ride'); return; }
     showScreen(id);
     if (id === 'screen-history') loadHistory();
-    if (id === 'screen-profile') { fillProfile(); loadFavorites(); loadSupport(); }
+    if (id === 'screen-profile') {
+      fillProfile(); loadFavorites(); loadSupport();
+      renderNotificationStatus($('#notif-status'));
+    }
   });
+}
+
+/* ================= GPS contínuo ================= */
+/**
+ * O marcador do passageiro acompanha o aparelho de verdade: `watchPosition`
+ * atualiza posição, precisão e horário. Posições inválidas, imprecisas demais
+ * ou antigas não são tratadas como atuais.
+ */
+function startGpsWatch() {
+  if (!navigator.geolocation) { setGpsState('off', 'GPS indisponível neste navegador'); return; }
+  if (S.gps.watchId != null) return;
+  setGpsState('wait', 'Obtendo sua localização…');
+  S.gps.watchId = navigator.geolocation.watchPosition(
+    pos => onGpsFix(pos),
+    err => {
+      setGpsState('off', err.code === 1
+        ? 'Permissão de localização negada'
+        : 'Sem sinal de GPS no momento');
+    },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 });
+}
+
+function onGpsFix(pos) {
+  const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return;
+  const maxAcc = 150;
+  const prev = { lat: S.gps.lat, lng: S.gps.lng };
+  S.gps = { ...S.gps, lat, lng, accuracy, at: Date.now() };
+  setGpsState(accuracy > maxAcc ? 'weak' : 'ok',
+    accuracy > maxAcc ? `Sinal fraco (±${Math.round(accuracy)} m)` : `GPS ativo (±${Math.round(accuracy)} m)`);
+
+  drawMeOnMaps(lat, lng, accuracy);
+
+  // durante a corrida, compartilha a posição com o mototaxista
+  if (S.activeRide && ['requested', 'accepted', 'in_progress'].includes(S.activeRide.status)) {
+    api(`/api/rides/${S.activeRide.id}/location`, {
+      method: 'POST', body: { lat, lng, accuracy_m: accuracy },
+    }).catch(() => { });
+  }
+
+  // avisa se o passageiro se afastou do ponto de embarque escolhido
+  if (accuracy <= maxAcc) checkPickupDrift(lat, lng, prev);
+}
+
+function setGpsState(state, label) {
+  S.gps.state = state;
+  const cls = state === 'ok' ? '' : (state === 'weak' ? 'weak' : 'off');
+  const icon = state === 'ok' ? '🛰️' : (state === 'weak' ? '📶' : '⚠️');
+  $$('.gps-chip').forEach(el => {
+    el.className = `gps-chip ${cls}`;
+    el.textContent = `${icon} ${label}`;
+  });
+}
+
+/** Mantém o marcador "você" e o círculo de precisão nos mapas visíveis. */
+function drawMeOnMaps(lat, lng, accuracy) {
+  for (const map of [S.maps.home, S.maps.ride]) {
+    if (!map) continue;
+    if (!map._meMarker) {
+      map._meMarker = emojiMarker(map, lat, lng, '🔵', 'Você');
+      map._accCircle = L.circle([lat, lng], {
+        radius: accuracy, color: '#2563eb', weight: 1, fillOpacity: .08,
+      }).addTo(map);
+    } else {
+      map._meMarker.setLatLng([lat, lng]);
+      map._accCircle.setLatLng([lat, lng]).setRadius(accuracy);
+    }
+  }
+}
+
+/** Se a origem escolhida ficou longe de onde o passageiro está, pergunta. */
+function checkPickupDrift(lat, lng, prev) {
+  if (!S.origin || S.moveAlertShown) return;
+  const ride = S.activeRide;
+  if (ride && !['pending_payment', 'requested', 'accepted'].includes(ride.status)) return;
+  const ref = ride ? ride.origin : S.origin;
+  const dist = haversineClient(lat, lng, ref.lat, ref.lng);
+  if (dist < 80) return;
+  S.moveAlertShown = true;
+  showMoveAlert(lat, lng, Math.round(dist));
+}
+
+function haversineClient(lat1, lng1, lat2, lng2) {
+  const R = 6371000, r = d => d * Math.PI / 180;
+  const dLat = r(lat2 - lat1), dLng = r(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(r(lat1)) * Math.cos(r(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+async function showMoveAlert(lat, lng, dist) {
+  const rev = await api(`/api/geo/reverse?lat=${lat}&lng=${lng}`).catch(() => null);
+  const text = rev?.text || `Ponto no mapa (${lat.toFixed(5)}, ${lng.toFixed(5)})`;
+  const m = openModal(`
+    <h3>📍 Você mudou de localização</h3>
+    <p class="muted mb">Percebemos que você está a cerca de <b>${fmt.dist(dist)}</b> do ponto
+    de embarque escolhido. Deseja atualizar?</p>
+    <div class="list-item"><div class="li-main">
+      <div class="li-sub">Nova posição</div><div class="li-title">${escapeHtml(text)}</div></div></div>
+    <button class="btn btn-primary mt" data-upd>Atualizar local de embarque</button>
+    <button class="btn btn-outline mt" data-keep>Manter o local selecionado</button>`,
+    { onClose: () => { setTimeout(() => { S.moveAlertShown = false; }, 60000); } });
+
+  $('[data-upd]', m).onclick = () => withLoading($('[data-upd]', m), async () => {
+    if (S.activeRide) {
+      const r = await api(`/api/rides/${S.activeRide.id}/pickup`, {
+        method: 'PATCH', body: { lat, lng, text },
+      });
+      toast(S.activeRide.driver
+        ? `Embarque atualizado (${fmt.dist(r.moved_m)}). O mototaxista foi avisado.`
+        : 'Ponto de embarque atualizado.', 'ok');
+      await refreshActiveRide();
+    } else {
+      S.origin = { lat, lng, text };
+      S.originConfirmed = true;
+      $('#in-origin').value = text;
+      placeHomePin(S.origin, 'origin');
+      toast('Ponto de embarque atualizado.', 'ok');
+    }
+    m.close();
+  });
+  $('[data-keep]', m).onclick = () => m.close();
+}
+
+function centerOnMe(map) {
+  if (S.gps.lat == null) { toast('Ainda estamos obtendo sua localização.', 'err'); return; }
+  map?.setView([S.gps.lat, S.gps.lng], 16);
 }
 
 /* ================= tela inicial ================= */
@@ -133,12 +291,61 @@ let homeMarkers = [];
 function initHomeMap() {
   if (S.maps.home) return;
   S.maps.home = makeMap('map-home', S.config.center, 14);
+  addMapTools('map-home', S.maps.home, true);
 }
+
+/** Botões sobre o mapa: centralizar em mim e escolher ponto tocando no mapa. */
+function addMapTools(elId, map, allowPick) {
+  if (!map) return;
+  const host = document.getElementById(elId);
+  const tools = document.createElement('div');
+  tools.className = 'map-tools';
+  tools.innerHTML = `<button title="Centralizar em mim" data-center>🎯</button>` +
+    (allowPick ? `<button title="Escolher no mapa" data-pick>📌</button>` : '');
+  host.appendChild(tools);
+  $('[data-center]', tools).onclick = () => centerOnMe(map);
+  if (allowPick) $('[data-pick]', tools).onclick = () => startMapPick(map, host);
+}
+
+/** Seleção manual do ponto tocando no mapa (pedido comum em bairros sem número). */
+function startMapPick(map, host) {
+  if (S.pickingOnMap) return;
+  const which = S.origin && !S.dest ? 'dest' : 'origin';
+  const hint = document.createElement('div');
+  hint.className = 'map-hint';
+  hint.textContent = which === 'origin'
+    ? 'Toque no mapa para marcar o EMBARQUE' : 'Toque no mapa para marcar o DESTINO';
+  host.appendChild(hint);
+  S.pickingOnMap = which;
+
+  const onClick = async e => {
+    map.off('click', onClick);
+    hint.remove();
+    S.pickingOnMap = null;
+    const { lat, lng } = e.latlng;
+    const rev = await api(`/api/geo/reverse?lat=${lat}&lng=${lng}`).catch(() => null);
+    if (rev && !rev.in_coverage) {
+      toast('Esse ponto está fora da área de atendimento.', 'err');
+      return;
+    }
+    const text = rev?.text || `Ponto no mapa (${lat.toFixed(5)}, ${lng.toFixed(5)})`;
+    const point = { lat, lng, text };
+    if (which === 'origin') {
+      S.origin = point; S.originConfirmed = true; $('#in-origin').value = text;
+    } else {
+      S.dest = point; S.destConfirmed = true; $('#in-dest').value = text;
+    }
+    placeHomePin(point, which);
+    toast(`${which === 'origin' ? 'Embarque' : 'Destino'} marcado no mapa${rev?.exact ? '' : ' (endereço aproximado)'}.`, 'ok');
+  };
+  map.on('click', onClick);
+}
+
 async function refreshStats() {
   try {
     const st = await api('/api/public/stats');
     $('#online-chip').textContent = st.online_drivers === 0
-      ? '🏍️ Nenhum mototaxista online agora'
+      ? '🏍️ Nenhum mototaxista disponível agora'
       : `🏍️ ${st.online_drivers} mototaxista${st.online_drivers > 1 ? 's' : ''} disponíve${st.online_drivers > 1 ? 'is' : 'l'} agora`;
     if (S.maps.home) {
       homeMarkers.forEach(m => m.remove());
@@ -148,36 +355,40 @@ async function refreshStats() {
 }
 
 function bindHome() {
-  setupAutocomplete($('#in-origin'), $('#ac-origin'), p => { S.origin = p; placeHomePin(p, 'origin'); });
-  setupAutocomplete($('#in-dest'), $('#ac-dest'), p => { S.dest = p; placeHomePin(p, 'dest'); });
+  setupAutocomplete($('#in-origin'), $('#ac-origin'),
+    p => { S.origin = p; S.originConfirmed = true; placeHomePin(p, 'origin'); },
+    () => { S.originConfirmed = false; });
+  setupAutocomplete($('#in-dest'), $('#ac-dest'),
+    p => { S.dest = p; S.destConfirmed = true; placeHomePin(p, 'dest'); },
+    () => { S.destConfirmed = false; });
 
-  $('#btn-mylocation').onclick = async () => {
-    const btn = $('#btn-mylocation');
-    btn.disabled = true; btn.textContent = '🧭 Localizando…';
-    try {
-      const pos = await getPosition();
-      const { text } = await api(`/api/geo/reverse?lat=${pos.lat}&lng=${pos.lng}`).catch(() => ({ text: 'Minha localização atual' }));
-      S.origin = { ...pos, text };
-      $('#in-origin').value = text;
-      placeHomePin(S.origin, 'origin');
-      if (S.maps.home) S.maps.home.setView([pos.lat, pos.lng], 16);
-    } catch (e) { toast(e.message, 'err'); }
-    btn.disabled = false; btn.textContent = '🧭 Usar minha localização atual';
-  };
+  $('#btn-mylocation').onclick = () => withLoading($('#btn-mylocation'), async () => {
+    const pos = S.gps.lat != null && Date.now() - S.gps.at < 30000
+      ? { lat: S.gps.lat, lng: S.gps.lng }
+      : await getPosition();
+    const rev = await api(`/api/geo/reverse?lat=${pos.lat}&lng=${pos.lng}`)
+      .catch(() => ({ text: 'Minha localização atual', in_coverage: true }));
+    if (!rev.in_coverage) throw new Error('Você está fora da área de atendimento da cidade.');
+    S.origin = { ...pos, text: rev.text };
+    S.originConfirmed = true;
+    $('#in-origin').value = rev.text;
+    placeHomePin(S.origin, 'origin');
+    if (S.maps.home) S.maps.home.setView([pos.lat, pos.lng], 16);
+  });
 
-  $('#btn-quote').onclick = async () => {
-    if (!S.origin) { toast('Informe o local de embarque (ou use sua localização).', 'err'); return; }
-    if (!S.dest) { toast('Informe o destino.', 'err'); return; }
-    const btn = $('#btn-quote');
-    btn.disabled = true; btn.textContent = 'Calculando…';
-    try {
-      const r = await api('/api/quotes', { method: 'POST', body: { origin: S.origin, dest: S.dest } });
-      S.quotes = r.quotes; S.quoteRoute = r.route; S.selectedQuote = null;
-      renderQuotes(r);
-      showScreen('screen-quote');
-    } catch (e) { toast(e.message, 'err'); }
-    btn.disabled = false; btn.textContent = 'Ver preços e solicitar 🏍️';
-  };
+  $('#btn-quote').onclick = () => withLoading($('#btn-quote'), async () => {
+    if (!S.origin || !S.originConfirmed) {
+      throw new Error('Escolha o local de embarque na lista de sugestões, no mapa ou use sua localização.');
+    }
+    if (!S.dest || !S.destConfirmed) {
+      throw new Error('Escolha o destino na lista de sugestões ou marque no mapa.');
+    }
+    const r = await api('/api/quotes', { method: 'POST', body: { origin: S.origin, dest: S.dest } });
+    S.quotes = r.quotes; S.quoteRoute = r.route; S.selectedQuote = null;
+    S.payMethods = r.payment_methods; S.testMode = r.test_mode;
+    renderQuotes(r);
+    showScreen('screen-quote');
+  });
 }
 
 const homePins = {};
@@ -185,31 +396,57 @@ function placeHomePin(p, kind) {
   if (!S.maps.home) return;
   homePins[kind]?.remove();
   homePins[kind] = emojiMarker(S.maps.home, p.lat, p.lng, kind === 'origin' ? '📍' : '🏁');
+  S.maps.home.setView([p.lat, p.lng], 15);
 }
 
-function setupAutocomplete(input, list, onPick) {
-  let timer = null;
+/**
+ * Autocomplete de endereços. Diferente da V1, digitar sem escolher da lista
+ * invalida a seleção anterior — assim o texto nunca fica diferente do ponto
+ * realmente usado no cálculo.
+ */
+function setupAutocomplete(input, list, onPick, onEdit) {
+  let timer = null, lastQuery = '';
   input.addEventListener('input', () => {
+    onEdit?.();
     clearTimeout(timer);
     const q = input.value.trim();
     if (q.length < 2) { list.hidden = true; return; }
+    if (q === lastQuery) return;
+    lastQuery = q;
+    list.innerHTML = '<button type="button" disabled>Buscando…</button>';
+    list.hidden = false;
     timer = setTimeout(async () => {
       try {
         const { results } = await api(`/api/geo/search?q=${encodeURIComponent(q)}`);
-        list.innerHTML = results.length
-          ? results.map((r, i) => `<button type="button" data-i="${i}">${escapeHtml(r.text)}${r.approx ? ' <span class="muted small">(aprox.)</span>' : ''}</button>`).join('')
-          : '<button type="button" disabled>Nenhum endereço encontrado</button>';
-        list.hidden = false;
+        if (!results.length) {
+          list.innerHTML = `<button type="button" disabled>
+            Nada encontrado. Tente a rua + bairro, ou use 📌 para marcar no mapa.</button>`;
+          return;
+        }
+        list.innerHTML = results.map((r, i) => `
+          <button type="button" data-i="${i}">
+            ${escapeHtml(r.text)}
+            <span class="muted small">· ${fmt.dist(r.distance_m)} do centro${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>
+          </button>`).join('');
         $$('button[data-i]', list).forEach(b => b.onclick = () => {
           const r = results[Number(b.dataset.i)];
+          if (!r.in_coverage) {
+            toast('Esse endereço está fora da área de atendimento de Assis Chateaubriand.', 'err');
+            return;
+          }
           input.value = r.text;
           list.hidden = true;
           onPick({ lat: r.lat, lng: r.lng, text: r.text });
         });
-      } catch { list.hidden = true; }
-    }, 350);
+      } catch (e) {
+        list.innerHTML = `<button type="button" disabled>${escapeHtml(e.message)}</button>`;
+      }
+    }, 320);
   });
-  document.addEventListener('click', e => { if (!list.contains(e.target) && e.target !== input) list.hidden = true; });
+  input.addEventListener('focus', () => { if (list.innerHTML && input.value.length >= 2) list.hidden = false; });
+  document.addEventListener('click', e => {
+    if (!list.contains(e.target) && e.target !== input) list.hidden = true;
+  });
 }
 
 async function loadFavorites() {
@@ -220,6 +457,7 @@ async function loadFavorites() {
     $$('#fav-chips .chip').forEach(b => b.onclick = () => {
       const f = favorites.find(x => x.id === b.dataset.id);
       S.dest = { lat: f.lat, lng: f.lng, text: f.text };
+      S.destConfirmed = true;
       $('#in-dest').value = f.text;
       placeHomePin(S.dest, 'dest');
     });
@@ -235,21 +473,16 @@ async function loadFavorites() {
   } catch { /* sem favoritos */ }
 }
 
-/* ================= cotação ================= */
+/* ================= cotação e pagamento ================= */
 function bindQuote() {
   $('#btn-quote-back').onclick = () => showScreen('screen-home');
-  $$('#pay-seg button').forEach(b => b.onclick = () => {
-    $$('#pay-seg button').forEach(x => x.classList.remove('active'));
-    b.classList.add('active');
-    S.payment = b.dataset.pay;
-  });
-  $('#btn-request').onclick = requestRide;
+  $('#btn-request').onclick = () => requestRide($('#btn-request'));
 }
 
 function renderQuotes(r) {
   const q0 = S.quotes[0];
   $('#quote-summary').innerHTML =
-    `📍 ${escapeHtml(S.origin.text)} → 🏁 ${escapeHtml(S.dest.text)}<br>` +
+    `📍 ${escapeHtml(S.origin.text)}<br>🏁 ${escapeHtml(S.dest.text)}<br>` +
     `Distância: <b>${fmt.dist(q0.distance_m)}</b> · Tempo estimado: <b>${fmt.dur(q0.duration_s)}</b>` +
     (r.route.estimated ? ' · <span class="pill yellow">distância estimada</span>' : '') +
     `<br>🏍️ ${r.online_drivers} mototaxista(s) próximos disponíveis`;
@@ -272,12 +505,33 @@ function renderQuotes(r) {
     $$('#quote-cards .cat-card').forEach(x => x.classList.remove('selected'));
     c.classList.add('selected');
     S.selectedQuote = S.quotes.find(q => q.id === c.dataset.id);
-    $('#btn-request').disabled = false;
-    $('#btn-request').textContent = `Confirmar corrida ${escapeHtml(S.selectedQuote.label)} — ${fmt.money(S.selectedQuote.price_cents)}`;
+    updateRequestButton();
   });
-  $('#quote-expire').textContent = `Preços válidos até ${fmt.time(q0.expires_at)}. O valor pode variar se o trajeto mudar.`;
 
-  // mapa da cotação
+  // formas de pagamento reais, vindas do servidor
+  const ICONS = { pix: '⚡', cartao: '💳', dinheiro: '💵' };
+  $('#pay-options').innerHTML = S.payMethods.map(m => `
+    <button class="pay-option ${m.method === S.payment ? 'selected' : ''}"
+            data-pay="${m.method}" ${m.enabled ? '' : 'disabled'}>
+      <span class="pico">${ICONS[m.method]}</span>
+      <span class="pinfo">
+        <span class="pname">${escapeHtml(m.label)}</span>
+        ${m.note ? `<br><span class="pnote">${escapeHtml(m.note)}</span>` : ''}
+      </span>
+      ${m.enabled ? '' : '<span class="pill gray">indisponível</span>'}
+    </button>`).join('');
+  $$('#pay-options .pay-option').forEach(b => b.onclick = () => {
+    $$('#pay-options .pay-option').forEach(x => x.classList.remove('selected'));
+    b.classList.add('selected');
+    S.payment = b.dataset.pay;
+    updateRequestButton();
+  });
+
+  $('#quote-testbar').hidden = !S.testMode;
+  $('#quote-expire').textContent =
+    `Preços válidos até ${fmt.time(q0.expires_at)}. O valor é calculado e conferido no servidor.`;
+  updateRequestButton();
+
   setTimeout(() => {
     if (S.maps.quote) { S.maps.quote.remove(); S.maps.quote = null; }
     S.maps.quote = makeMap('map-quote', S.origin, 14);
@@ -290,27 +544,28 @@ function renderQuotes(r) {
   }, 60);
 }
 
-async function requestRide() {
-  if (!S.selectedQuote) return;
+function updateRequestButton() {
   const btn = $('#btn-request');
-  btn.disabled = true; btn.textContent = 'Solicitando…';
-  try {
+  btn.disabled = !S.selectedQuote || !S.payment;
+  if (!S.selectedQuote) { btn.textContent = 'Escolha a categoria'; return; }
+  const label = { pix: 'Pagar com Pix', cartao: 'Pagar com cartão', dinheiro: 'Confirmar (pago em dinheiro)' };
+  btn.textContent = `${label[S.payment] || 'Confirmar'} — ${fmt.money(S.selectedQuote.price_cents)}`;
+}
+
+async function requestRide(btn) {
+  if (!S.selectedQuote) return;
+  await withLoading(btn, async () => {
     const r = await api('/api/rides', {
       method: 'POST',
       body: { quote_id: S.selectedQuote.id, payment_method: S.payment },
     });
     S.activeRide = r.ride;
-    askNotifPermission();
-    toast(r.notified_drivers > 0
-      ? `Corrida solicitada! ${r.notified_drivers} mototaxista(s) avisados.`
-      : 'Corrida solicitada! Aguardando mototaxistas ficarem disponíveis…', 'ok');
+    enablePush();
     renderRide();
     showScreen('screen-ride');
-  } catch (e) {
-    toast(e.message, 'err');
+  }).catch(e => {
     if (e.status === 410 || e.status === 409) showScreen('screen-home');
-  }
-  btn.disabled = false;
+  });
 }
 
 /* ================= corrida ativa ================= */
@@ -318,14 +573,16 @@ function bindRide() {
   $('#btn-cancel-ride').onclick = async () => {
     if (!S.activeRide) return;
     const ok = await confirmModal('Cancelar corrida?',
-      'O mototaxista será avisado. Cancelamentos frequentes podem limitar sua conta.', 'Sim, cancelar', true);
+      'O mototaxista será avisado e o valor pago será estornado.', 'Sim, cancelar', true);
     if (!ok) return;
-    try {
-      await api(`/api/rides/${S.activeRide.id}/cancel`, { method: 'POST', body: { reason: 'Cancelada pelo passageiro no app' } });
+    await withLoading($('#btn-cancel-ride'), async () => {
+      await api(`/api/rides/${S.activeRide.id}/cancel`, {
+        method: 'POST', body: { reason: 'Cancelada pelo passageiro no app' },
+      });
       toast('Corrida cancelada.');
       S.activeRide = null;
       showScreen('screen-home');
-    } catch (e) { toast(e.message, 'err'); }
+    }).catch(() => { });
   };
   $('#chat-send').onclick = sendChat;
   $('#chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
@@ -333,18 +590,21 @@ function bindRide() {
 
 async function refreshActiveRide() {
   try {
-    const { ride } = await api('/api/rides/active');
+    const { ride, server_time } = await api('/api/rides/active');
+    if (server_time) S.serverSkew = server_time - Date.now();
     const prev = S.activeRide;
     S.activeRide = ride;
     if (ride) {
       renderRide();
       if (!prev || ['screen-ride', 'screen-home'].includes(currentScreen())) showScreen('screen-ride');
     } else if (prev) {
-      // corrida terminou — buscar estado final para avaliar/cancelamento
       const final = await api(`/api/rides/${prev.id}`).catch(() => null);
+      stopPaymentPolling();
+      closeConfirmModal();
       if (final?.ride?.status === 'completed' && !final.ride.rated) promptRating(final.ride);
       else if (final?.ride?.status === 'cancelled') {
-        toast(final.ride.cancelled_by === 'driver' ? 'O mototaxista cancelou a corrida.' : 'Corrida cancelada.');
+        toast(final.ride.cancelled_by === 'driver'
+          ? 'O mototaxista cancelou a corrida.' : 'Corrida cancelada.');
       }
       showScreen('screen-home');
       refreshStats();
@@ -357,16 +617,21 @@ function renderRide() {
   const r = S.activeRide;
   if (!r) return;
   const BANNERS = {
+    pending_payment: ['💳', 'Aguardando pagamento',
+      r.payment_method === 'pix' ? 'Escaneie o Pix para liberar sua corrida.' : 'Confirmando seu pagamento…', true],
     requested: ['🔎', 'Procurando mototaxista…', 'Avisamos os parceiros próximos. Aguarde um instante.', true],
     accepted: ['🏍️', r.arrived_at ? 'Seu mototaxista chegou!' : 'Mototaxista a caminho!',
       r.eta_s && !r.arrived_at ? `Chegada em aproximadamente ${fmt.dur(r.eta_s)}` : 'Encontre-o no ponto de embarque.', !r.arrived_at],
     in_progress: ['🛣️', 'Corrida em andamento', r.eta_s ? `Chegada ao destino em ~${fmt.dur(r.eta_s)}` : 'Boa viagem!', false],
+    awaiting_confirmation: ['✅', 'Confirme sua chegada', 'Seu mototaxista informou que a corrida terminou.', true],
+    disputed: ['⚠️', 'Ocorrência em análise', 'Nossa equipe está avaliando o seu relato.', false],
   };
-  const [ico, title, sub, pulse] = BANNERS[r.status] || ['ℹ️', STATUS_PT[r.status], '', false];
+  const [ico, title, sub, pulse] = BANNERS[r.status] || ['ℹ️', r.status, '', false];
   $('#ride-banner').innerHTML =
     `<span class="sico ${pulse ? 'pulse' : ''}">${ico}</span><div><div class="stitle">${title}</div><div class="ssub">${sub}</div></div>`;
 
-  // cartão do mototaxista
+  renderPaymentBox(r);
+
   const dc = $('#ride-driver-card');
   if (r.driver) {
     dc.hidden = false;
@@ -374,38 +639,182 @@ function renderRide() {
       <p class="muted small mb" style="font-weight:700;letter-spacing:.5px">MOTOTAXISTA ${r.status === 'in_progress' ? 'CONDUZINDO VOCÊ' : 'A CAMINHO'}</p>
       <div class="driver-card">
         <div class="avatar">${r.driver.photo ? `<img src="${r.driver.photo}" alt="">` : fmt.initials(r.driver.name)}</div>
-        <div style="flex:1">
+        <div style="flex:1;min-width:0">
           <div style="font-weight:800">${escapeHtml(r.driver.name)}</div>
           <div class="muted small">${escapeHtml([r.driver.moto.brand, r.driver.moto.model].filter(Boolean).join(' '))} · ${escapeHtml(r.driver.moto.color || '')}</div>
-          <div class="mt" style="margin-top:6px"><span class="plate">${escapeHtml(r.driver.moto.plate || '—')}</span></div>
+          <div style="margin-top:6px"><span class="plate">${escapeHtml(r.driver.moto.plate || '—')}</span></div>
         </div>
         <div class="center">
           <div class="star-sm">★ ${r.driver.rating ?? 'novo'}</div>
           <div class="muted small">${r.driver.rides_count} corridas</div>
         </div>
-      </div>`;
+      </div>
+      ${r.driver.loc_stale ? '<p class="muted small mt">📡 Localização do mototaxista desatualizada — pode estar sem sinal.</p>' : ''}`;
   } else dc.hidden = true;
 
   $('#ride-details').innerHTML = `
-    <div class="list-item"><div class="li-main"><div class="li-sub">📍 Embarque</div><div class="li-title">${escapeHtml(r.origin.text)}</div></div></div>
-    <div class="list-item"><div class="li-main"><div class="li-sub">🏁 Destino</div><div class="li-title">${escapeHtml(r.dest.text)}</div></div></div>
-    <div class="row between mt">
+    <div class="list-item"><div class="li-main"><div class="li-sub">📍 Embarque</div>
+      <div class="li-title">${escapeHtml(r.origin.text)}</div></div></div>
+    <div class="list-item"><div class="li-main"><div class="li-sub">🏁 Destino</div>
+      <div class="li-title">${escapeHtml(r.dest.text)}</div></div></div>
+    <div class="row between mt" style="flex-wrap:wrap">
       <span class="chip soft">${fmt.dist(r.distance_m)}</span>
       <span class="chip soft">${PAY_PT[r.payment_method]}</span>
       <span class="chip yellow">${fmt.money(r.price_cents)}</span>
-    </div>`;
+    </div>
+    <div class="mt"><span class="gps-chip">🛰️ GPS</span></div>`;
+  setGpsState(S.gps.state, S.gps.state === 'ok' ? `GPS ativo (±${Math.round(S.gps.accuracy || 0)} m)`
+    : S.gps.state === 'weak' ? 'Sinal fraco' : 'GPS indisponível');
 
-  $('#ride-chat').hidden = !(r.status === 'accepted' || r.status === 'in_progress');
+  $('#ride-chat').hidden = !['accepted', 'in_progress'].includes(r.status);
   if (!$('#ride-chat').hidden) loadChat();
-  $('#btn-cancel-ride').hidden = !(r.status === 'requested' || r.status === 'accepted');
+  $('#btn-cancel-ride').hidden = !['pending_payment', 'requested', 'accepted'].includes(r.status);
+
+  if (r.status === 'awaiting_confirmation') openConfirmModal(r); else closeConfirmModal();
+  if (r.status === 'pending_payment') startPaymentPolling(); else stopPaymentPolling();
 
   renderRideMap();
+}
+
+/* ---------- pagamento ---------- */
+function renderPaymentBox(r) {
+  const box = $('#ride-payment');
+  const p = r.payment;
+  if (!p || r.status !== 'pending_payment') { box.hidden = true; return; }
+  box.hidden = false;
+
+  if (p.method === 'pix') {
+    box.innerHTML = `
+      ${p.test_mode ? '<div class="testbar">🧪 MODO DE TESTE — nenhum valor real será cobrado</div>' : ''}
+      <h2>Pague com Pix para liberar a corrida</h2>
+      <div class="pix-box">
+        ${p.pix_qr_base64
+        ? `<img src="data:image/png;base64,${p.pix_qr_base64}" alt="QR Code Pix">`
+        : `<div class="qr-placeholder muted small">${p.test_mode
+          ? '🧪 QR de teste<br>(sem valor real)'
+          : 'QR Code indisponível<br>use o código abaixo'}</div>`}
+        <div class="pix-code" id="pix-code">${escapeHtml(p.pix_qr_code || '')}</div>
+        <button class="btn btn-outline btn-sm mt" id="btn-copy-pix">📋 Copiar código Pix</button>
+      </div>
+      <p class="muted small center mt">Assim que o pagamento cair, procuramos seu mototaxista automaticamente.
+      ${p.pix_expires_at ? `<br>Expira às ${fmt.time(p.pix_expires_at)}.` : ''}</p>
+      ${p.test_mode ? '<button class="btn btn-navy mt" id="btn-test-pay">Simular aprovação (modo de teste)</button>' : ''}`;
+    $('#btn-copy-pix').onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(p.pix_qr_code || '');
+        toast('Código Pix copiado!', 'ok');
+      } catch { toast('Copie o código manualmente.', 'err'); }
+    };
+  } else {
+    box.innerHTML = `
+      ${p.test_mode ? '<div class="testbar">🧪 MODO DE TESTE — nenhum valor real será cobrado</div>' : ''}
+      <h2>Confirmando o pagamento</h2>
+      <div class="spinner mt mb"></div>
+      <p class="muted small center">Status: <b>${escapeHtml(p.status)}</b>
+      ${p.failure_reason ? `<br>${escapeHtml(p.failure_reason)}` : ''}</p>
+      ${p.test_mode ? '<button class="btn btn-navy mt" id="btn-test-pay">Simular aprovação (modo de teste)</button>' : ''}`;
+  }
+
+  const tp = $('#btn-test-pay');
+  if (tp) tp.onclick = () => withLoading(tp, async () => {
+    await api(`/api/rides/${r.id}/payment/test-approve`, { method: 'POST' });
+    await refreshActiveRide();
+  }, { okMsg: 'Pagamento de teste aprovado.' });
+}
+
+function startPaymentPolling() {
+  if (S.payTimer) return;
+  S.payTimer = setInterval(async () => {
+    if (!S.activeRide) { stopPaymentPolling(); return; }
+    try {
+      const r = await api(`/api/rides/${S.activeRide.id}/payment`);
+      if (r.ride_status !== 'pending_payment') { stopPaymentPolling(); refreshActiveRide(); }
+    } catch { /* tenta de novo */ }
+  }, 4000);
+}
+function stopPaymentPolling() { clearInterval(S.payTimer); S.payTimer = null; }
+
+/* ---------- confirmação da conclusão (contagem do servidor) ---------- */
+let confirmModalRef = null;
+function openConfirmModal(r) {
+  if (confirmModalRef) return;
+  const total = Math.max(1000, (r.auto_confirm_at || 0) - (r.completion_requested_at || 0));
+  confirmModalRef = openModal(`
+    <h3>Seu mototaxista informou que a corrida foi concluída</h3>
+    <p class="muted mb">Confirme se você chegou ao destino.</p>
+    <div class="confirm-ring" id="cf-ring"><span id="cf-num">5</span></div>
+    <p class="muted small center mb">Sem resposta, confirmamos automaticamente.</p>
+    <button class="btn btn-green btn-lg" data-ok>Confirmar chegada ✓</button>
+    <button class="btn btn-outline mt" data-issue>Informar um problema</button>`,
+    { onClose: () => { confirmModalRef = null; clearInterval(S.confirmTimer); } });
+
+  const tick = () => {
+    const left = (r.auto_confirm_at || 0) - (Date.now() + S.serverSkew);
+    const ring = $('#cf-ring', confirmModalRef);
+    const num = $('#cf-num', confirmModalRef);
+    if (!ring || !num) return;
+    ring.style.setProperty('--p', Math.max(0, Math.min(1, left / total)));
+    num.textContent = Math.max(0, Math.ceil(left / 1000));
+    if (left <= 0) { clearInterval(S.confirmTimer); num.textContent = '✓'; }
+  };
+  tick();
+  S.confirmTimer = setInterval(tick, 100);
+
+  $('[data-ok]', confirmModalRef).onclick = () =>
+    withLoading($('[data-ok]', confirmModalRef), async () => {
+      await api(`/api/rides/${r.id}/confirm`, { method: 'POST' });
+      closeConfirmModal();
+      await refreshActiveRide();
+    });
+  $('[data-issue]', confirmModalRef).onclick = () => { closeConfirmModal(); openIssueModal(r); };
+}
+function closeConfirmModal() {
+  clearInterval(S.confirmTimer);
+  confirmModalRef?.close();
+  confirmModalRef = null;
+}
+
+function openIssueModal(r) {
+  const KINDS = [
+    ['nao_cheguei_ao_destino', 'Não cheguei ao destino'],
+    ['corrida_nao_realizada', 'A corrida não aconteceu'],
+    ['cobranca_incorreta', 'Valor cobrado errado'],
+    ['conduta_do_mototaxista', 'Problema de conduta'],
+    ['seguranca', 'Me senti inseguro(a)'],
+    ['outro', 'Outro motivo'],
+  ];
+  let kind = null;
+  const m = openModal(`
+    <h3>Informar um problema</h3>
+    <p class="muted mb">Sua corrida fica em análise e o pagamento não é liberado até resolvermos.</p>
+    <div id="issue-kinds">${KINDS.map(([k, l]) =>
+    `<button class="btn btn-outline mb" data-k="${k}" style="text-align:left">${l}</button>`).join('')}</div>
+    <div class="field"><textarea class="input" id="issue-desc" maxlength="1000"
+      placeholder="Conte o que aconteceu (opcional)"></textarea></div>
+    <button class="btn btn-danger" data-send disabled>Enviar para análise</button>`);
+  $$('[data-k]', m).forEach(b => b.onclick = () => {
+    $$('[data-k]', m).forEach(x => x.classList.remove('btn-navy'));
+    b.classList.add('btn-navy');
+    kind = b.dataset.k;
+    $('[data-send]', m).disabled = false;
+  });
+  $('[data-send]', m).onclick = () => withLoading($('[data-send]', m), async () => {
+    await api(`/api/rides/${r.id}/issue`, {
+      method: 'POST', body: { kind, description: $('#issue-desc', m).value },
+    });
+    m.close();
+    toast('Ocorrência registrada. Nossa equipe vai analisar.', 'ok');
+    await refreshActiveRide();
+  });
 }
 
 function renderRideMap() {
   const r = S.activeRide;
   setTimeout(() => {
-    if (!S.maps.ride) S.maps.ride = makeMap('map-ride', { lat: r.origin.lat, lng: r.origin.lng }, 14);
+    if (!S.maps.ride) {
+      S.maps.ride = makeMap('map-ride', { lat: r.origin.lat, lng: r.origin.lng }, 14);
+      addMapTools('map-ride', S.maps.ride, false);
+    }
     const map = S.maps.ride;
     if (!map) return;
     S.rideLayers.forEach(l => l.remove()); S.rideLayers = [];
@@ -420,6 +829,7 @@ function renderRideMap() {
       S.driverMarker = emojiMarker(map, r.driver.last_lat, r.driver.last_lng, '🏍️');
       S.rideLayers.push(S.driverMarker);
     } else S.driverMarker = null;
+    if (S.gps.lat != null) drawMeOnMaps(S.gps.lat, S.gps.lng, S.gps.accuracy || 30);
     map.invalidateSize();
   }, 80);
 }
@@ -433,9 +843,10 @@ function onDriverLocation(d) {
   if (d.eta_s != null && S.activeRide.status !== 'requested') {
     const sub = $('#ride-banner .ssub');
     if (sub && !S.activeRide.arrived_at) {
+      const dist = d.remaining_m != null ? ` · ${fmt.dist(d.remaining_m)}` : '';
       sub.textContent = S.activeRide.status === 'in_progress'
-        ? `Chegada ao destino em ~${fmt.dur(d.eta_s)}`
-        : `Chegada em aproximadamente ${fmt.dur(d.eta_s)}`;
+        ? `Chegada ao destino em ~${fmt.dur(d.eta_s)}${dist}`
+        : `Chegada em aproximadamente ${fmt.dur(d.eta_s)}${dist}`;
     }
   }
 }
@@ -464,28 +875,57 @@ function onChatMessage(m) {
   if (S.activeRide && m.ride_id === S.activeRide.id) { loadChat(); toast(`💬 ${m.sender_name}: ${m.body}`); }
 }
 
-/* ---------- avaliação ---------- */
+/* ---------- avaliação detalhada ---------- */
+let ratingModalFor = null;
 function promptRating(ride) {
+  // SSE e refresh manual podem chegar juntos: uma avaliação por corrida
+  if (ratingModalFor === ride.id) return;
+  ratingModalFor = ride.id;
+  const CRITERIA = [
+    ['atendimento', 'Atendimento'],
+    ['pontualidade', 'Pontualidade'],
+    ['educacao', 'Educação'],
+    ['seguranca', 'Segurança na corrida'],
+  ];
+  const scores = {};
   let stars = 0;
   const m = openModal(`
-    <h3>Como foi sua corrida?</h3>
+    <h3>Como foi sua experiência com o mototaxista?</h3>
     <p class="muted small mb">${escapeHtml(ride.driver?.name || 'Mototaxista')} · ${fmt.money(ride.price_cents)}</p>
     <div class="stars mb" id="rate-stars">${[1, 2, 3, 4, 5].map(i => `<button data-s="${i}">⭐</button>`).join('')}</div>
-    <div class="field"><textarea class="input" id="rate-comment" placeholder="Comentário (opcional)" maxlength="500"></textarea></div>
+    <div class="mb">${CRITERIA.map(([k, l]) => `
+      <div class="rate-row">
+        <span class="rl">${l}</span>
+        <span class="rate-stars" data-c="${k}">${[1, 2, 3, 4, 5].map(i => `<button data-v="${i}">★</button>`).join('')}</span>
+      </div>`).join('')}</div>
+    <div class="field"><textarea class="input" id="rate-comment" maxlength="500"
+      placeholder="Comentário (opcional)"></textarea></div>
     <button class="btn btn-primary" id="rate-send" disabled>Enviar avaliação</button>
-    <button class="btn btn-outline mt" id="rate-skip">Agora não</button>`);
+    <button class="btn btn-outline mt" id="rate-issue">Tive um problema nesta corrida</button>
+    <button class="btn btn-outline mt" id="rate-skip">Agora não</button>`,
+    { onClose: () => { ratingModalFor = null; } });
+
   $$('#rate-stars button', m).forEach(b => b.onclick = () => {
     stars = Number(b.dataset.s);
     $$('#rate-stars button', m).forEach(x => x.classList.toggle('on', Number(x.dataset.s) <= stars));
     $('#rate-send', m).disabled = false;
   });
-  $('#rate-send', m).onclick = async () => {
-    try {
-      await api(`/api/rides/${ride.id}/rate`, { method: 'POST', body: { stars, comment: $('#rate-comment', m).value } });
-      toast('Avaliação enviada. Obrigado! ⭐', 'ok');
-      m.close();
-    } catch (e) { toast(e.message, 'err'); }
-  };
+  $$('.rate-stars[data-c]', m).forEach(group => {
+    $$('button', group).forEach(b => b.onclick = () => {
+      const v = Number(b.dataset.v);
+      scores[group.dataset.c] = v;
+      $$('button', group).forEach(x => x.classList.toggle('on', Number(x.dataset.v) <= v));
+    });
+  });
+  $('#rate-send', m).onclick = () => withLoading($('#rate-send', m), async () => {
+    await api(`/api/rides/${ride.id}/rate`, {
+      method: 'POST',
+      body: { stars, comment: $('#rate-comment', m).value, ...scores },
+    });
+    m.close();
+    loadHistory();
+  }, { okMsg: 'Avaliação enviada. Obrigado! ⭐' });
+  $('#rate-issue', m).onclick = () => { m.close(); openIssueModal(ride); };
   $('#rate-skip', m).onclick = () => m.close();
 }
 
@@ -503,12 +943,14 @@ async function loadHistory() {
       <div class="list-item">
         <div class="li-main">
           <div class="li-title">${escapeHtml(r.origin.text)} → ${escapeHtml(r.dest.text)}</div>
-          <div class="li-sub">${fmt.dt(r.requested_at)} · ${fmt.dist(r.distance_m)} · ${fmt.money(r.price_cents)}</div>
+          <div class="li-sub">${fmt.dt(r.requested_at)} · ${fmt.dist(r.distance_m)} · ${fmt.money(r.price_cents)}
+            · ${PAY_PT[r.payment_method]}${r.payment?.test_mode ? ' <span class="pill yellow">teste</span>' : ''}</div>
         </div>
         <div class="center">
-          <span class="pill ${STATUS_PILL[r.status]}">${STATUS_PT[r.status]}</span>
+          <span class="pill ${STATUS_PILL[r.status] || 'gray'}">${STATUS_PT[r.status] || r.status}</span>
           ${r.status === 'completed' && !r.rated ? `<br><button class="btn btn-outline btn-sm mt" data-rate="${r.id}">Avaliar ⭐</button>` : ''}
           ${r.rated ? `<div class="star-sm">★ ${r.rated}</div>` : ''}
+          ${r.issue ? `<div class="pill yellow">ocorrência ${escapeHtml(r.issue.status)}</div>` : ''}
         </div>
       </div>`).join('');
     $$('[data-rate]', box).forEach(b => b.onclick = () => {
@@ -524,23 +966,19 @@ function bindProfile() {
   $('#form-profile').onsubmit = async e => {
     e.preventDefault();
     const f = new FormData(e.target);
-    try {
+    await withLoading(e.target.querySelector('button[type=submit]'), async () => {
       await api('/api/me', { method: 'PATCH', body: { name: f.get('name'), phone: f.get('phone') } });
       S.user.name = f.get('name'); S.user.phone = f.get('phone');
-      toast('Perfil atualizado!', 'ok'); fillProfile();
-    } catch (err) { toast(err.message, 'err'); }
+      fillProfile();
+    }, { okMsg: 'Perfil atualizado!' }).catch(() => { });
   };
   $('#form-support').onsubmit = async e => {
     e.preventDefault();
     const f = new FormData(e.target);
-    try {
+    await withLoading(e.target.querySelector('button[type=submit]'), async () => {
       await api('/api/support', { method: 'POST', body: { subject: f.get('subject'), body: f.get('body') } });
-      toast('Mensagem enviada ao suporte!', 'ok');
       e.target.reset(); loadSupport();
-    } catch (err) { toast(err.message, 'err'); }
-  };
-  $('#btn-notif-perm').onclick = async () => {
-    toast(await askNotifPermission() ? 'Notificações ativadas! 🔔' : 'Notificações não autorizadas pelo navegador.', 'ok');
+    }, { okMsg: 'Mensagem enviada ao suporte!' }).catch(() => { });
   };
   $('#btn-logout').onclick = async () => {
     await api('/api/auth/logout', { method: 'POST' }).catch(() => { });

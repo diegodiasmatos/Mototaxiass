@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Sem conexão — Assis MotoTáxi</title>
+  <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <main class="app">
+    <div class="card center" style="margin-top:28vh">
+      <div style="font-size:3rem">📡</div>
+      <h2 class="mt">Você está sem internet</h2>
+      <p class="muted mt">O Assis MotoTáxi precisa de conexão para mostrar mapas,
+        calcular preços e chamar mototaxistas.</p>
+      <p class="muted small mt">Verifique seus dados móveis ou Wi-Fi e tente de novo.</p>
+      <button class="btn btn-primary mt" onclick="location.reload()">Tentar novamente</button>
+    </div>
+  </main>
+  <script>
+    addEventListener('online', () => location.replace('/'));
+  </script>
+</body>
+</html>

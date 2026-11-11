@@ -55,67 +55,149 @@ export async function route(from: GeoPoint, to: GeoPoint): Promise<RouteResult> 
   };
 }
 
-/** Pontos de referência locais — fallback quando o geocodificador está fora. */
-const LOCAL_PLACES: { name: string; lat: number; lng: number }[] = [
-  { name: 'Centro - Assis Chateaubriand', lat: -24.4156, lng: -53.5216 },
-  { name: 'Rodoviária de Assis Chateaubriand (aprox.)', lat: -24.4190, lng: -53.5180 },
-  { name: 'Hospital Municipal (aprox.)', lat: -24.4120, lng: -53.5250 },
-  { name: 'Lago Municipal (aprox.)', lat: -24.4080, lng: -53.5160 },
-  { name: 'Av. Tupãssi (aprox.)', lat: -24.4210, lng: -53.5280 },
-  { name: 'Bairro Jardim Paraná (aprox.)', lat: -24.4230, lng: -53.5150 },
+/** Pontos de referência locais de Assis Chateaubriand (sempre pesquisáveis). */
+const LOCAL_PLACES: { name: string; lat: number; lng: number; tags?: string }[] = [
+  { name: 'Centro', lat: -24.4156, lng: -53.5216, tags: 'centro praça matriz' },
+  { name: 'Rodoviária Municipal', lat: -24.4190, lng: -53.5180, tags: 'rodoviaria onibus terminal' },
+  { name: 'Hospital Municipal', lat: -24.4120, lng: -53.5250, tags: 'hospital pronto socorro upa saude' },
+  { name: 'Lago Municipal', lat: -24.4080, lng: -53.5160, tags: 'lago parque lazer' },
+  { name: 'Prefeitura Municipal', lat: -24.4147, lng: -53.5203, tags: 'prefeitura paço municipal' },
+  { name: 'Jardim Paraná', lat: -24.4230, lng: -53.5150, tags: 'bairro jardim parana' },
+  { name: 'Jardim Europa', lat: -24.4190, lng: -53.5120, tags: 'bairro jardim europa' },
+  { name: 'Jardim América', lat: -24.3970, lng: -53.5123, tags: 'bairro jardim america' },
+  { name: 'Jardim Progresso', lat: -24.3852, lng: -53.5195, tags: 'bairro jardim progresso' },
+  { name: 'Jardim Mônaco', lat: -24.4240, lng: -53.5190, tags: 'bairro jardim monaco' },
 ];
 
-export interface GeoSearchResult { text: string; lat: number; lng: number; approx?: boolean }
-
-/** Busca de endereços via Nominatim, limitada à região da cidade. */
-export async function searchAddress(q: string): Promise<GeoSearchResult[]> {
-  const cLat = getSettingNum('center_lat'), cLng = getSettingNum('center_lng');
-  const city = getSetting('city_name');
-  if (!offline()) {
-    try {
-      const base = process.env.NOMINATIM_BASE || 'https://nominatim.openstreetmap.org';
-      const d = 0.25; // ~25 km de viewbox
-      const url = `${base}/search?format=jsonv2&limit=6&countrycodes=br&bounded=1` +
-        `&viewbox=${cLng - d},${cLat - d},${cLng + d},${cLat + d}` +
-        `&q=${encodeURIComponent(q)}`;
-      const r = await fetch(url, {
-        headers: { 'User-Agent': UA, 'Accept-Language': 'pt-BR' },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (r.ok) {
-        const data: any[] = await r.json() as any[];
-        if (Array.isArray(data) && data.length) {
-          return data.map(p => ({
-            text: String(p.display_name).split(',').slice(0, 4).join(','),
-            lat: Number(p.lat), lng: Number(p.lon),
-          }));
-        }
-      }
-    } catch { /* cai no fallback */ }
-  }
-  const qn = q.toLowerCase();
-  return LOCAL_PLACES
-    .filter(p => p.name.toLowerCase().includes(qn) || qn.length < 3)
-    .map(p => ({ text: `${p.name}, ${city}`, lat: p.lat, lng: p.lng, approx: true }));
+export interface GeoSearchResult {
+  text: string;
+  lat: number;
+  lng: number;
+  /** metros até o centro da cidade — usado para ordenar e avisar o usuário */
+  distance_m: number;
+  in_coverage: boolean;
+  source: 'local' | 'osm';
+  approx?: boolean;
 }
 
-/** Reverse geocoding com fallback honesto para coordenadas. */
-export async function reverseGeocode(lat: number, lng: number): Promise<string> {
+function normalize(s: string): string {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+}
+
+function decorate(text: string, lat: number, lng: number, source: 'local' | 'osm'): GeoSearchResult {
+  const cLat = getSettingNum('center_lat'), cLng = getSettingNum('center_lng');
+  const radius = getSettingNum('coverage_radius_km') * 1000;
+  const distance_m = Math.round(haversineM(lat, lng, cLat, cLng));
+  return { text, lat, lng, distance_m, in_coverage: distance_m <= radius, source };
+}
+
+/**
+ * Busca de endereços priorizando a cidade atendida.
+ *
+ * A V1 usava apenas `viewbox` do Nominatim (±25 km), o que trazia resultados de
+ * municípios vizinhos (Cafelândia, Tupãssi, Palotina…) sem qualquer ordenação —
+ * o passageiro escolhia "Rodoviária" e recebia a de outra cidade. Agora:
+ *  1. pontos de referência locais entram sempre;
+ *  2. a consulta ao Nominatim é feita com o nome da cidade anexado;
+ *  3. os resultados são ordenados pela distância ao centro e os de fora da
+ *     área de cobertura vão para o fim, marcados como fora de área.
+ */
+export async function searchAddress(q: string): Promise<GeoSearchResult[]> {
+  const cLat = getSettingNum('center_lat'), cLng = getSettingNum('center_lng');
+  const cityFull = getSetting('city_name');              // "Assis Chateaubriand - PR"
+  const cityName = cityFull.split('-')[0].trim();        // "Assis Chateaubriand"
+  const qn = normalize(q);
+  const results: GeoSearchResult[] = [];
+
+  // 1) pontos de referência locais
+  for (const p of LOCAL_PLACES) {
+    const hay = normalize(`${p.name} ${p.tags || ''}`);
+    if (qn.length >= 2 && (hay.includes(qn) || qn.split(/\s+/).every(w => w.length < 3 || hay.includes(w)))) {
+      results.push(decorate(`${p.name}, ${cityName}`, p.lat, p.lng, 'local'));
+    }
+  }
+
+  // 2) Nominatim, com a cidade no texto da consulta
+  if (!offline()) {
+    const base = process.env.NOMINATIM_BASE || 'https://nominatim.openstreetmap.org';
+    const d = 0.22;
+    const attempts = [
+      // consulta ancorada na cidade — evita o vizinho com nome parecido
+      `${base}/search?format=jsonv2&limit=8&countrycodes=br&addressdetails=1` +
+      `&q=${encodeURIComponent(`${q}, ${cityName}, Paraná`)}`,
+      // reserva: dentro da caixa geográfica, caso a consulta ancorada falhe
+      `${base}/search?format=jsonv2&limit=8&countrycodes=br&addressdetails=1&bounded=1` +
+      `&viewbox=${cLng - d},${cLat - d},${cLng + d},${cLat + d}&q=${encodeURIComponent(q)}`,
+    ];
+    for (const url of attempts) {
+      try {
+        const r = await fetch(url, {
+          headers: { 'User-Agent': UA, 'Accept-Language': 'pt-BR' },
+          signal: AbortSignal.timeout(6000),
+        });
+        if (!r.ok) continue;
+        const data = await r.json() as any[];
+        if (!Array.isArray(data)) continue;
+        for (const p of data) {
+          const lat = Number(p.lat), lng = Number(p.lon);
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+          const a = p.address || {};
+          const line = [
+            p.name || a.road || a.suburb,
+            a.house_number,
+            a.suburb || a.neighbourhood,
+            a.city || a.town || a.village || a.municipality,
+          ].filter(Boolean).join(', ') || String(p.display_name).split(',').slice(0, 3).join(',');
+          const item = decorate(line, lat, lng, 'osm');
+          // evita duplicados muito próximos (mesmo ponto vindo das duas consultas)
+          if (results.some(x => haversineM(x.lat, x.lng, lat, lng) < 40)) continue;
+          results.push(item);
+        }
+        // a primeira consulta já trouxe resultados dentro da área: basta
+        if (results.some(x => x.in_coverage)) break;
+      } catch { /* tenta a próxima */ }
+    }
+  }
+
+  // 3) ordena: dentro da área primeiro, depois pela distância ao centro
+  results.sort((a, b) =>
+    (a.in_coverage === b.in_coverage ? 0 : a.in_coverage ? -1 : 1) || a.distance_m - b.distance_m);
+
+  return results.slice(0, 8);
+}
+
+/**
+ * Reverse geocoding. Quando o serviço não responde, devolve as coordenadas de
+ * forma explícita — nunca inventa um endereço que o usuário possa confundir
+ * com o real (`exact: false` sinaliza isso à interface).
+ */
+export async function reverseGeocode(lat: number, lng: number):
+  Promise<{ text: string; exact: boolean }> {
   if (!offline()) {
     try {
       const base = process.env.NOMINATIM_BASE || 'https://nominatim.openstreetmap.org';
-      const url = `${base}/reverse?format=jsonv2&lat=${lat}&lon=${lng}`;
+      const url = `${base}/reverse?format=jsonv2&addressdetails=1&zoom=18&lat=${lat}&lon=${lng}`;
       const r = await fetch(url, {
         headers: { 'User-Agent': UA, 'Accept-Language': 'pt-BR' },
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(6000),
       });
       if (r.ok) {
         const data: any = await r.json();
-        if (data?.display_name) return String(data.display_name).split(',').slice(0, 4).join(',');
+        const a = data?.address || {};
+        const line = [
+          a.road || data?.name,
+          a.house_number,
+          a.suburb || a.neighbourhood,
+          a.city || a.town || a.village,
+        ].filter(Boolean).join(', ');
+        if (line) return { text: line, exact: true };
+        if (data?.display_name) {
+          return { text: String(data.display_name).split(',').slice(0, 4).join(','), exact: true };
+        }
       }
     } catch { /* fallback */ }
   }
-  return `Localização (${lat.toFixed(5)}, ${lng.toFixed(5)})`;
+  return { text: `Ponto no mapa (${lat.toFixed(5)}, ${lng.toFixed(5)})`, exact: false };
 }
 
 /** Valida que o ponto está dentro da área de cobertura configurada. */

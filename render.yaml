@@ -1,0 +1,23 @@
+# Deploy no Render (https://render.com) — conecte o repositório e ele lê este arquivo.
+# O plano "starter" é necessário porque o disco persistente guarda o banco e os
+# documentos dos mototaxistas. No plano gratuito o serviço hiberna e PERDE os dados.
+services:
+  - type: web
+    name: assis-mototaxi
+    runtime: docker
+    plan: starter
+    region: oregon
+    healthCheckPath: /api/config
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: SESSION_SECRET
+        generateValue: true      # o Render gera um segredo forte automaticamente
+      - key: ADMIN_EMAIL
+        sync: false              # você preenche no painel do Render
+      - key: ADMIN_PASSWORD
+        sync: false              # idem — nunca comite a senha
+    disk:
+      name: dados
+      mountPath: /data
+      sizeGB: 1

@@ -8,9 +8,10 @@ import { route, type Route } from './router.ts';
 import { splitCommission } from './fares.ts';
 import {
   getRide, rideEvent, etaSeconds, cancelRide, dispatchRide, assertCanTransition,
-  rideViewForPassenger,
+  rideViewForPassenger, BUSY_STATES, chargeAcceptedRide, ridePaymentOk, chargeAfterAccept,
 } from './rides.ts';
 import { notify, notifyAdmins, sseSend } from './notify.ts';
+import { driverBalance, getPaymentByRide } from './payments.ts';
 
 // ---------------- armazenamento privado de documentos ----------------
 
@@ -62,9 +63,21 @@ function requireApprovedDriver(userId: string): any {
   return d;
 }
 
+/** Bloqueia o parceiro que acumulou comissão de corridas em dinheiro. */
+function assertNoExcessiveDebt(userId: string): void {
+  const limit = getSettingNum('driver_debt_limit_cents');
+  const { debt_cents } = driverBalance(userId);
+  if (debt_cents > limit) {
+    throw new ApiError(402,
+      `Você tem R$ ${(debt_cents / 100).toFixed(2)} de comissão em aberto (limite R$ ${(limit / 100).toFixed(2)}). ` +
+      `Quite com a plataforma para voltar a receber corridas.`);
+  }
+}
+
 function activeRideOf(driverId: string): any {
   return db.prepare(`SELECT * FROM rides WHERE driver_id = ?
-    AND status IN ('accepted','in_progress') LIMIT 1`).get(driverId) as any;
+    AND status IN (${BUSY_STATES.map(() => '?').join(',')}) LIMIT 1`)
+    .get(driverId, ...BUSY_STATES) as any;
 }
 
 /** Visão da corrida para o mototaxista (sem dados sensíveis do passageiro). */
@@ -83,6 +96,11 @@ function rideViewForDriver(r: any): any {
     route_geojson: r.route_geojson ? JSON.parse(r.route_geojson) : null,
     requested_at: r.requested_at, accepted_at: r.accepted_at, arrived_at: r.arrived_at,
     started_at: r.started_at, completed_at: r.completed_at,
+    completion_requested_at: r.completion_requested_at, auto_confirm_at: r.auto_confirm_at,
+    confirmed_at: r.confirmed_at, confirmed_by: r.confirmed_by,
+    pickup_updated_at: r.pickup_updated_at,
+    paid_upfront: r.payment_method !== 'dinheiro',
+    collect_cash_cents: r.payment_method === 'dinheiro' ? r.price_cents : 0,
     passenger: { name: p?.name?.split(' ')[0] ?? 'Passageiro', photo: p?.photo ?? null },
   };
 }
@@ -147,39 +165,59 @@ export const driverRoutes: Route[] = [
       driver: d ? { ...d, rating: d.rating_count ? Math.round(d.rating_sum / d.rating_count * 10) / 10 : null } : null,
       documents: docs,
       active_ride: active ? rideViewForDriver(active) : null,
+      balance: d ? driverBalance(user!.id) : null,
+      debt_limit_cents: getSettingNum('driver_debt_limit_cents'),
+      server_time: now(),
     });
   }),
 
   route('POST /api/driver/online', 'driver', async ({ req, res, user }) => {
-    const d = requireApprovedDriver(user!.id);
+    requireApprovedDriver(user!.id);
     const b = await readBody(req);
     const online = b.online ? 1 : 0;
-    if (online && activeRideOf(user!.id)) throw new ApiError(409, 'Finalize a corrida atual primeiro.');
-    db.prepare('UPDATE drivers SET online = ? WHERE user_id = ?').run(online, user!.id);
+    if (online) {
+      assertNoExcessiveDebt(user!.id);
+      if (activeRideOf(user!.id)) throw new ApiError(409, 'Finalize a corrida atual primeiro.');
+    }
+    db.prepare('UPDATE drivers SET online = ?, last_seen_at = ? WHERE user_id = ?')
+      .run(online, now(), user!.id);
     json(res, 200, { ok: true, online: !!online });
   }),
 
   route('POST /api/driver/location', 'driver', async ({ req, res, user }) => {
-    const d = requireApprovedDriver(user!.id);
+    requireApprovedDriver(user!.id);
     const b = await readBody(req);
     const lat = reqNum(b.lat, 'lat'), lng = reqNum(b.lng, 'lng');
-    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) throw new ApiError(400, 'Coordenadas inválidas.');
-    db.prepare('UPDATE drivers SET last_lat = ?, last_lng = ?, last_loc_at = ? WHERE user_id = ?')
-      .run(lat, lng, now(), user!.id);
+    const acc = Number(b.accuracy_m);
+    if (Math.abs(lat) > 90 || Math.abs(lng) > 180 || (lat === 0 && lng === 0)) {
+      throw new ApiError(400, 'Coordenadas inválidas.');
+    }
+    const maxAcc = getSettingNum('gps_max_accuracy_m');
+    const accuracy = Number.isFinite(acc) ? acc : null;
+    const t = now();
+    db.prepare(`UPDATE drivers SET last_lat = ?, last_lng = ?, last_loc_at = ?,
+      last_accuracy_m = ?, last_seen_at = ? WHERE user_id = ?`)
+      .run(lat, lng, t, accuracy, t, user!.id);
 
     const active = activeRideOf(user!.id);
     if (active) {
-      db.prepare('INSERT INTO ride_locations (ride_id, who, lat, lng, at) VALUES (?,?,?,?,?)')
-        .run(active.id, 'driver', lat, lng, now());
+      db.prepare('INSERT INTO ride_locations (ride_id, who, lat, lng, accuracy_m, at) VALUES (?,?,?,?,?,?)')
+        .run(active.id, 'driver', lat, lng, accuracy, t);
       const target = active.status === 'in_progress'
         ? { lat: active.dest_lat, lng: active.dest_lng }
         : { lat: active.origin_lat, lng: active.origin_lng };
+      const remaining = haversineM(lat, lng, target.lat, target.lng) * 1.3;
       sseSend(active.passenger_id, 'driver_location', {
-        ride_id: active.id, lat, lng,
-        eta_s: etaSeconds(haversineM(lat, lng, target.lat, target.lng) * 1.3),
+        ride_id: active.id, lat, lng, accuracy_m: accuracy,
+        remaining_m: Math.round(remaining),
+        eta_s: etaSeconds(remaining),
       });
     }
-    json(res, 200, { ok: true });
+    json(res, 200, {
+      ok: true,
+      accuracy_ok: accuracy === null || accuracy <= maxAcc,
+      max_accuracy_m: maxAcc,
+    });
   }),
 
   // Corridas abertas (reconexão / lista além do SSE)
@@ -208,9 +246,10 @@ export const driverRoutes: Route[] = [
   }),
 
   // ACEITE ATÔMICO: só um mototaxista consegue — UPDATE condicional no servidor.
-  route('POST /api/driver/rides/:id/accept', 'driver', ({ res, user, params }) => {
+  route('POST /api/driver/rides/:id/accept', 'driver', async ({ res, user, params }) => {
     const d = requireApprovedDriver(user!.id);
     if (!d.online) throw new ApiError(409, 'Fique online para aceitar corridas.');
+    assertNoExcessiveDebt(user!.id);
     if (activeRideOf(user!.id)) throw new ApiError(409, 'Você já está em uma corrida.');
 
     const result = db.prepare(`UPDATE rides SET status = 'accepted', driver_id = ?, accepted_at = ?
@@ -220,11 +259,20 @@ export const driverRoutes: Route[] = [
       throw new ApiError(409, 'Esta corrida já foi aceita por outro mototaxista.');
     }
     const r = getRide(params.id);
-    rideEvent(r.id, 'accepted', user!.id);
-    notify(r.passenger_id, 'ride_accepted', 'Mototaxista a caminho!',
-      `${user!.name.split(' ')[0]} aceitou sua corrida.`, r.id);
-    notifyRideUpdate(r);
-    json(res, 200, { ride: rideViewForDriver(r) });
+    rideEvent(r.id, 'accepted', user!.id, undefined, 'requested', 'accepted');
+    notify(r.passenger_id, 'ride_accepted', '🏍️ Mototaxista a caminho!',
+      { body: `${user!.name.split(' ')[0]} aceitou sua corrida.`, rideId: r.id, url: '/' });
+
+    // No modo split a cobrança nasce agora, já na conta deste parceiro.
+    if (chargeAfterAccept()) {
+      try { await chargeAcceptedRide(r); }
+      catch (e: any) {
+        notifyAdmins('payment_failed', 'Falha ao abrir a cobrança após o aceite',
+          { body: `Corrida ${r.id}: ${e?.message || e}`, rideId: r.id });
+      }
+    }
+    notifyRideUpdate(getRide(r.id));
+    json(res, 200, { ride: rideViewForDriver(getRide(r.id)) });
   }),
 
   route('POST /api/driver/rides/:id/arrived', 'driver', ({ res, user, params }) => {
@@ -234,8 +282,8 @@ export const driverRoutes: Route[] = [
     db.prepare('UPDATE rides SET arrived_at = ? WHERE id = ? AND status = ?')
       .run(now(), r.id, 'accepted');
     rideEvent(r.id, 'arrived', user!.id);
-    notify(r.passenger_id, 'driver_arrived', 'Seu mototaxista chegou!',
-      'Ele está aguardando no ponto de embarque.', r.id);
+    notify(r.passenger_id, 'driver_arrived', '🏍️ Seu mototaxista chegou!',
+      { body: 'Ele está aguardando no ponto de embarque.', rideId: r.id, url: '/' });
     notifyRideUpdate(getRide(r.id));
     json(res, 200, { ok: true });
   }),
@@ -244,46 +292,49 @@ export const driverRoutes: Route[] = [
     const r = getRide(params.id);
     if (r.driver_id !== user!.id) throw new ApiError(403, 'Esta corrida não é sua.');
     assertCanTransition(r.status, 'in_progress');
+    // dinheiro garantido: a corrida não começa sem o pagamento confirmado
+    if (!ridePaymentOk(r)) {
+      throw new ApiError(402, 'O pagamento do passageiro ainda não foi confirmado.');
+    }
     const result = db.prepare(`UPDATE rides SET status = 'in_progress', started_at = ?
       WHERE id = ? AND status = 'accepted'`).run(now(), r.id);
     if (result.changes !== 1) throw new ApiError(409, 'A corrida mudou de estado.');
-    rideEvent(r.id, 'started', user!.id);
-    notify(r.passenger_id, 'ride_started', 'Corrida iniciada', 'Boa viagem!', r.id);
+    rideEvent(r.id, 'started', user!.id, undefined, 'accepted', 'in_progress');
+    notify(r.passenger_id, 'ride_started', 'Corrida iniciada', { body: 'Boa viagem!', rideId: r.id });
     notifyRideUpdate(getRide(r.id));
     json(res, 200, { ok: true });
   }),
 
-  route('POST /api/driver/rides/:id/complete', 'driver', async ({ req, res, user, params }) => {
+  /**
+   * O mototaxista DECLARA a conclusão; quem confirma é o passageiro.
+   * A corrida vai para `awaiting_confirmation` com prazo gravado no servidor
+   * (`auto_confirm_at`); a varredura em rides.ts confirma sozinha se o
+   * passageiro não responder. O mototaxista não conclui nem marca pagamento.
+   */
+  route('POST /api/driver/rides/:id/complete', 'driver', async ({ res, user, params }) => {
     const r = getRide(params.id);
     if (r.driver_id !== user!.id) throw new ApiError(403, 'Esta corrida não é sua.');
-    assertCanTransition(r.status, 'completed');
-    const b = await readBody(req);
-    const received = !!b.payment_received;
-    const split = splitCommission(r.price_cents, r.commission_pct);
+    assertCanTransition(r.status, 'awaiting_confirmation');
+
     const t = now();
+    const windowMs = Math.max(1, getSettingNum('confirm_window_s')) * 1000;
+    const result = db.prepare(`UPDATE rides SET status = 'awaiting_confirmation',
+        completion_requested_at = ?, auto_confirm_at = ?
+      WHERE id = ? AND status = 'in_progress'`).run(t, t + windowMs, r.id);
+    if (result.changes !== 1) throw new ApiError(409, 'A corrida mudou de estado.');
 
-    db.exec('BEGIN');
-    try {
-      const result = db.prepare(`UPDATE rides SET status = 'completed', completed_at = ?,
-        commission_cents = ?, driver_cents = ?, payment_status = ?
-        WHERE id = ? AND status = 'in_progress'`)
-        .run(t, split.commission_cents, split.driver_cents,
-          received ? 'recebido' : 'pendente', r.id);
-      if (result.changes !== 1) throw new ApiError(409, 'A corrida mudou de estado.');
-      db.prepare(`INSERT INTO payments (id, ride_id, method, amount_cents, status, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?)`)
-        .run(id('pay'), r.id, r.payment_method, r.price_cents,
-          received ? 'recebido' : 'pendente', t, t);
-      db.prepare('UPDATE drivers SET rides_count = rides_count + 1 WHERE user_id = ?').run(user!.id);
-      db.exec('COMMIT');
-    } catch (e) { db.exec('ROLLBACK'); throw e; }
-
-    rideEvent(r.id, 'completed', user!.id,
-      `pagamento ${r.payment_method} ${received ? 'recebido' : 'pendente'}`);
-    notify(r.passenger_id, 'ride_completed', 'Corrida concluída!',
-      'Obrigado por viajar com o Assis MotoTáxi. Avalie sua corrida!', r.id);
+    rideEvent(r.id, 'completion_requested', user!.id, undefined, 'in_progress', 'awaiting_confirmation');
+    notify(r.passenger_id, 'confirm_required', 'Confirme a chegada ao destino',
+      {
+        body: 'Seu mototaxista informou que a corrida foi concluída.',
+        rideId: r.id, url: '/',
+      });
     notifyRideUpdate(getRide(r.id));
-    json(res, 200, { ride: rideViewForDriver(getRide(r.id)) });
+    json(res, 200, {
+      ride: rideViewForDriver(getRide(r.id)),
+      auto_confirm_at: t + windowMs,
+      server_time: t,
+    });
   }),
 
   // Cancelamento pelo mototaxista: antes do embarque a corrida VOLTA para a fila.
@@ -299,16 +350,16 @@ export const driverRoutes: Route[] = [
       const result = db.prepare(`UPDATE rides SET status = 'requested', driver_id = NULL,
         accepted_at = NULL, arrived_at = NULL WHERE id = ? AND status = 'accepted'`).run(r.id);
       if (result.changes !== 1) throw new ApiError(409, 'A corrida mudou de estado.');
-      rideEvent(r.id, 'driver_gave_up', user!.id, reason);
+      rideEvent(r.id, 'driver_gave_up', user!.id, reason, 'accepted', 'requested');
       notify(r.passenger_id, 'ride_redispatch', 'Procurando outro mototaxista…',
-        'O mototaxista anterior não pôde continuar. Já estamos avisando outros parceiros.', r.id);
+        { body: 'O parceiro anterior não pôde continuar. Já avisamos os outros.', rideId: r.id });
       const fresh = getRide(r.id);
       dispatchRide(fresh);
       sseSend(r.passenger_id, 'ride_update', { id: r.id });
       json(res, 200, { ok: true, redispatched: true });
       return;
     }
-    cancelRide(r, user!, reason);
+    await cancelRide(r, user!, reason);
     json(res, 200, { ok: true, redispatched: false });
   }),
 
@@ -319,30 +370,48 @@ export const driverRoutes: Route[] = [
     json(res, 200, { rides: rows.map(rideViewForDriver) });
   }),
 
-  // Ganhos: apenas corridas CONCLUÍDAS entram nos valores definitivos.
+  /**
+   * Ganhos: só corridas CONCLUÍDAS entram. Os saldos vêm do livro-caixa,
+   * que é a mesma fonte usada pelo financeiro do administrador.
+   */
   route('GET /api/driver/earnings', 'driver', ({ res, user }) => {
     const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
     const weekStart = new Date(dayStart); weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     const monthStart = new Date(dayStart); monthStart.setDate(1);
     const agg = (since: number) => db.prepare(`SELECT
         COUNT(*) rides, COALESCE(SUM(price_cents),0) gross,
-        COALESCE(SUM(commission_cents),0) commission, COALESCE(SUM(driver_cents),0) net
+        COALESCE(SUM(commission_cents),0) commission, COALESCE(SUM(driver_cents),0) net,
+        COALESCE(SUM(CASE WHEN payment_method = 'dinheiro' THEN price_cents ELSE 0 END),0) cash_gross
       FROM rides WHERE driver_id = ? AND status = 'completed' AND completed_at >= ?`)
       .get(user!.id, since) as any;
-    const pending = db.prepare(`SELECT COALESCE(SUM(driver_cents),0) v FROM rides
-      WHERE driver_id = ? AND status = 'completed' AND payment_status = 'pendente'`)
-      .get(user!.id) as any;
-    const received = db.prepare(`SELECT COALESCE(SUM(driver_cents),0) v FROM rides
-      WHERE driver_id = ? AND status = 'completed' AND payment_status = 'recebido'`)
-      .get(user!.id) as any;
+    const bal = driverBalance(user!.id);
+    const payouts = db.prepare(`SELECT id, amount_cents, status, method, reference, created_at, paid_at
+      FROM payouts WHERE driver_id = ? ORDER BY created_at DESC LIMIT 20`).all(user!.id);
     json(res, 200, {
       day: agg(dayStart.getTime()),
       week: agg(weekStart.getTime()),
       month: agg(monthStart.getTime()),
       total: agg(0),
-      pending_cents: pending.v,
-      received_cents: received.v,
+      balance: bal,
+      pending_cents: bal.pending_cents,
+      received_cents: bal.paid_cents,
+      debt_cents: bal.debt_cents,
+      debt_limit_cents: getSettingNum('driver_debt_limit_cents'),
+      payouts,
     });
+  }),
+
+  /** Avaliações recebidas, com médias por critério. */
+  route('GET /api/driver/ratings', 'driver', ({ res, user }) => {
+    const list = db.prepare(`SELECT stars, comment, score_atendimento, score_pontualidade,
+        score_educacao, score_seguranca, created_at
+      FROM ratings WHERE driver_id = ? ORDER BY created_at DESC LIMIT 50`).all(user!.id) as any[];
+    const avg = db.prepare(`SELECT
+        COUNT(*) total, AVG(stars) stars,
+        AVG(score_atendimento) atendimento, AVG(score_pontualidade) pontualidade,
+        AVG(score_educacao) educacao, AVG(score_seguranca) seguranca
+      FROM ratings WHERE driver_id = ?`).get(user!.id) as any;
+    json(res, 200, { ratings: list, averages: avg });
   }),
 ];
 

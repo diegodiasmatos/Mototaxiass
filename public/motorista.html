@@ -6,6 +6,11 @@
   <meta name="theme-color" content="#0d1b2e">
   <title>Assis MotoTáxi — Parceiro Mototaxista</title>
   <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MotoTáxi Parceiro">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/css/app.css">
 </head>
@@ -110,7 +115,11 @@
       <div class="card center" style="margin:0"><div style="font-weight:800;font-size:1.25rem" id="stat-today">R$ 0,00</div><div class="muted small">Ganhos hoje</div></div>
       <div class="card center" style="margin:0"><div style="font-weight:800;font-size:1.25rem" id="stat-rides">0</div><div class="muted small">Corridas feitas</div></div>
     </div>
-    <div class="row mb"><span class="chip soft" id="drv-online-chip">🏍️ … parceiros online</span></div>
+    <div class="row mb" style="flex-wrap:wrap;gap:8px">
+      <span class="chip soft" id="drv-online-chip">🏍️ … parceiros online</span>
+      <span class="gps-chip off">⚠️ GPS desligado</span>
+    </div>
+    <div id="drv-debt-warn"></div>
     <div class="card">
       <h2>Corridas disponíveis</h2>
       <div id="offers-list"><div class="empty"><div class="eico">😴</div>Fique online para receber chamadas.</div></div>
@@ -149,6 +158,9 @@
       </div>
       <div id="dprofile-moto" class="muted small"></div>
     </div>
+    <div class="card"><h3>💳 Como você recebe</h3><div id="mp-connect"><div class="spinner"></div></div></div>
+    <div class="card"><h3>🔔 Notificações</h3><div id="notif-status"></div></div>
+    <div class="card"><h3>⭐ Minhas avaliações</h3><div id="drv-ratings"><div class="spinner"></div></div></div>
     <div class="card"><h3>📂 Documentos enviados</h3><div id="dprofile-docs"></div></div>
     <div class="card">
       <h3>🛟 Suporte</h3>

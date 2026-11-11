@@ -57,6 +57,59 @@ export function verifyPassword(pw: string, stored: string): boolean {
   } catch { return false; }
 }
 
+// ---------- criptografia de segredos guardados no banco ----------
+/**
+ * Credenciais de provedores (tokens do Mercado Pago, por exemplo) não ficam em
+ * texto puro no banco: são cifradas com AES-256-GCM usando uma chave derivada
+ * do segredo da instalação. Quem tiver só o arquivo .db não consegue usá-las.
+ */
+function cryptoKey(): Buffer {
+  return crypto.createHash('sha256').update(`enc:${secret()}`).digest();
+}
+
+export function encryptSecret(plain: string): string {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', cryptoKey(), iv);
+  const enc = Buffer.concat([c.update(plain, 'utf8'), c.final()]);
+  return `v1.${iv.toString('base64url')}.${enc.toString('base64url')}.${c.getAuthTag().toString('base64url')}`;
+}
+
+export function decryptSecret(stored: string | null | undefined): string | null {
+  if (!stored) return null;
+  try {
+    const [v, ivB, dataB, tagB] = stored.split('.');
+    if (v !== 'v1') return null;
+    const d = crypto.createDecipheriv('aes-256-gcm', cryptoKey(), Buffer.from(ivB, 'base64url'));
+    d.setAuthTag(Buffer.from(tagB, 'base64url'));
+    return Buffer.concat([d.update(Buffer.from(dataB, 'base64url')), d.final()]).toString('utf8');
+  } catch { return null; }
+}
+
+/** Mostra só o fim da credencial na interface (ex.: "••••••1a2b"). */
+export function maskSecret(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return `••••••${value.slice(-4)}`;
+}
+
+/** Estado assinado para o OAuth (impede CSRF no retorno do provedor). */
+export function signedState(payload: string, ttlMs = 15 * 60 * 1000): string {
+  const exp = now() + ttlMs;
+  const body = `${payload}.${exp}`;
+  return `${Buffer.from(body).toString('base64url')}.${sign(body)}`;
+}
+export function verifySignedState(state: string): string | null {
+  try {
+    const [bodyB, sig] = state.split('.');
+    const body = Buffer.from(bodyB, 'base64url').toString('utf8');
+    const expect = sign(body);
+    if (sig.length !== expect.length ||
+      !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect))) return null;
+    const i = body.lastIndexOf('.');
+    if (Number(body.slice(i + 1)) < now()) return null;
+    return body.slice(0, i);
+  } catch { return null; }
+}
+
 // ---------- assinatura HMAC (links temporários de documentos) ----------
 export function sign(data: string): string {
   return crypto.createHmac('sha256', secret()).update(data).digest('hex').slice(0, 40);

@@ -10,9 +10,10 @@ import {
 import { initDb, db } from './db.ts';
 import { matchRoute, type Route, type Ctx } from './router.ts';
 import { authRoutes, userFromToken } from './auth.ts';
-import { rideRoutes } from './rides.ts';
+import { rideRoutes, startAutoConfirmSweeper } from './rides.ts';
 import { driverRoutes } from './drivers.ts';
 import { adminRoutes } from './admin.ts';
+import { integrationRoutes } from './integrations.ts';
 import { sseConnect } from './notify.ts';
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -77,7 +78,9 @@ function bootstrapAdmin(): void {
   console.log('└──────────────────────────────────────────────────────┘');
 }
 
-const ALL_ROUTES: Route[] = [...authRoutes, ...rideRoutes, ...driverRoutes, ...adminRoutes];
+const ALL_ROUTES: Route[] = [
+  ...authRoutes, ...rideRoutes, ...driverRoutes, ...adminRoutes, ...integrationRoutes,
+];
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const url = new URL(req.url || '/', 'http://localhost');
@@ -134,6 +137,9 @@ export async function start(opts: StartOptions = {}): Promise<{ server: http.Ser
   loadEnv();
   initDb(opts.dbPath);
   bootstrapAdmin();
+
+  // confirma automaticamente as corridas cujo prazo de 5 s expirou (no servidor)
+  startAutoConfirmSweeper();
 
   // limpeza periódica: sessões e cotações expiradas
   const cleanup = setInterval(() => {

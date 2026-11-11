@@ -1,0 +1,42 @@
+# fly.toml app configuration file generated for assis-mototaxi on 2026-11-10T23:32:28-03:00
+#
+# See https://docs.fly.io/reference/configuration for information about how to use this file.
+#
+
+app = 'assis-mototaxi'
+primary_region = 'gru'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[env]
+  DATA_DIR = '/data'
+  PORT = '8780'
+
+[[mounts]]
+  source = 'dados'
+  destination = '/data'
+
+[http_service]
+  internal_port = 8780
+  force_https = true
+  auto_stop_machines = 'off'
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.http_options]
+    [http_service.http_options.response]
+      [http_service.http_options.response.headers]
+        Referrer-Policy = 'strict-origin-when-cross-origin'
+        X-Content-Type-Options = 'nosniff'
+
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/api/config'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'

@@ -43,13 +43,22 @@ const fmt = {
 };
 
 const STATUS_PT = {
+  pending_payment: 'Aguardando pagamento',
   requested: 'Procurando mototaxista', accepted: 'Mototaxista a caminho',
-  in_progress: 'Em andamento', completed: 'Concluída', cancelled: 'Cancelada',
+  in_progress: 'Em andamento', awaiting_confirmation: 'Aguardando confirmação',
+  completed: 'Concluída', cancelled: 'Cancelada', disputed: 'Em análise',
 };
 const STATUS_PILL = {
-  requested: 'yellow', accepted: 'blue', in_progress: 'blue', completed: 'green', cancelled: 'red',
+  pending_payment: 'yellow', requested: 'yellow', accepted: 'blue', in_progress: 'blue',
+  awaiting_confirmation: 'yellow', completed: 'green', cancelled: 'red', disputed: 'red',
 };
 const PAY_PT = { dinheiro: '💵 Dinheiro', pix: '⚡ Pix', cartao: '💳 Cartão' };
+const PAYMENT_STATUS_PT = {
+  criado: 'criado', aguardando_pagamento: 'aguardando pagamento', autorizado: 'autorizado',
+  pago: 'pago', recusado: 'recusado', estornado: 'estornado', cancelado: 'cancelado',
+  dinheiro_pendente: 'a receber em dinheiro', dinheiro_recebido: 'recebido em dinheiro',
+  expirado: 'expirado',
+};
 
 /* ---------- toasts ---------- */
 function toast(msg, type = '') {
@@ -62,24 +71,88 @@ function toast(msg, type = '') {
   setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; setTimeout(() => t.remove(), 320); }, 3800);
 }
 
+/**
+ * Executa a ação mostrando carregamento no botão e sinalizando sucesso/erro.
+ * Evita duplo clique (fonte comum de pagamento/corrida duplicados).
+ */
+async function withLoading(btn, fn, { okMsg, errToast = true } = {}) {
+  if (!btn || btn.classList.contains('is-loading')) return;
+  btn.classList.add('is-loading');
+  btn.disabled = true;
+  try {
+    const out = await fn();
+    btn.classList.remove('is-loading');
+    btn.classList.add('is-ok');
+    if (okMsg) toast(okMsg, 'ok');
+    setTimeout(() => btn.classList.remove('is-ok'), 1200);
+    btn.disabled = false;
+    return out;
+  } catch (e) {
+    btn.classList.remove('is-loading');
+    btn.classList.add('is-err');
+    setTimeout(() => btn.classList.remove('is-err'), 1600);
+    btn.disabled = false;
+    if (errToast) toast(e.message, 'err');
+    throw e;
+  }
+}
+
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-/* ---------- SSE (tempo real) ---------- */
+/* ---------- SSE (tempo real) com reconexão e replay ---------- */
 let _sse = null;
+let _lastEventAt = 0;
+const _seenNotifications = new Set();
+
+/**
+ * Conecta ao fluxo de eventos. Ao reconectar, busca no servidor o que foi
+ * perdido enquanto esteve offline (replay por `since`), descartando repetidos.
+ * Assim nenhuma notificação importante some por queda de internet.
+ */
 function connectSSE(handlers) {
   if (_sse) _sse.close();
   _sse = new EventSource('/api/events');
-  for (const [event, fn] of Object.entries(handlers)) {
-    _sse.addEventListener(event, e => {
-      let data = {};
-      try { data = JSON.parse(e.data); } catch { }
-      fn(data);
-    });
-  }
-  _sse.onerror = () => { /* EventSource reconecta sozinho */ };
+  _lastEventAt = _lastEventAt || Date.now();
+
+  const wrap = (event, fn) => _sse.addEventListener(event, e => {
+    let data = {};
+    try { data = JSON.parse(e.data); } catch { }
+    _lastEventAt = Date.now();
+    if (event === 'notification') {
+      if (data.id && _seenNotifications.has(data.id)) return;   // dedup
+      if (data.id) {
+        _seenNotifications.add(data.id);
+        api(`/api/notifications/${data.id}/ack`, { method: 'POST' }).catch(() => { });
+      }
+    }
+    fn(data);
+  });
+
+  for (const [event, fn] of Object.entries(handlers)) wrap(event, fn);
+
+  _sse.addEventListener('hello', async () => {
+    // reconectou: recupera o que perdeu
+    if (!handlers.notification) return;
+    try {
+      const { notifications } = await api(`/api/notifications?since=${_lastEventAt - 60000}`);
+      for (const n of notifications.reverse()) {
+        if (_seenNotifications.has(n.id)) continue;
+        _seenNotifications.add(n.id);
+        handlers.notification(n);
+      }
+    } catch { /* tenta na próxima */ }
+  });
+
+  _sse.onerror = () => { /* EventSource reconecta sozinho (retry: 3000) */ };
+
+  // sinaliza perda de conexão em tempo real
+  setInterval(() => {
+    const dead = _sse && _sse.readyState === EventSource.CLOSED;
+    document.body.classList.toggle('realtime-down', !!dead);
+  }, 5000);
   return _sse;
 }
 
@@ -93,8 +166,210 @@ async function askNotifPermission() {
 }
 function browserNotify(title, body) {
   if (canBrowserNotify() && Notification.permission === 'granted' && document.hidden) {
-    try { new Notification(title, { body, icon: '/img/icon.svg' }); } catch { }
+    try { new Notification(title, { body, icon: '/img/icon-192.png' }); } catch { }
   }
+}
+
+/* ---------- Web Push: receber chamadas com o app fechado ---------- */
+function urlB64ToUint8Array(b64) {
+  const pad = '='.repeat((4 - b64.length % 4) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+/**
+ * Ativa as notificações do sistema: pede permissão, inscreve no Web Push e
+ * registra o aparelho no servidor. Retorna um texto explicando o resultado.
+ */
+async function enablePush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return { ok: false, msg: 'Este navegador não aceita notificações. Mantenha o app aberto para receber os avisos na tela.' };
+  }
+  if (!await askNotifPermission()) {
+    return { ok: false, msg: 'Permissão negada. Autorize as notificações nas configurações do navegador.' };
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      const { publicKey } = await api('/api/push/key');
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToUint8Array(publicKey),
+      });
+    }
+    const j = sub.toJSON();
+    await api('/api/push/subscribe', {
+      method: 'POST', body: { endpoint: j.endpoint, keys: j.keys },
+    });
+    return { ok: true, msg: 'Notificações ativadas! Você será avisado mesmo com o app fechado. 🔔' };
+  } catch (e) {
+    return { ok: false, msg: `Não foi possível ativar o push: ${e.message}. Os avisos continuam aparecendo com o app aberto.` };
+  }
+}
+
+/**
+ * Diagnóstico honesto das notificações no aparelho atual.
+ * No iPhone o push só existe depois que o app é instalado na tela de início
+ * (limitação do iOS, não do sistema) — aqui isso é dito com todas as letras.
+ */
+function notificationDiagnosis() {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const standalone = isStandalone();
+  const hasSW = 'serviceWorker' in navigator;
+  const hasPush = 'PushManager' in window;
+  const perm = canBrowserNotify() ? Notification.permission : 'indisponível';
+
+  const items = [];
+  if (ios && !standalone) {
+    items.push({
+      ok: false, critical: true,
+      title: 'Instale o app para receber avisos com a tela desligada',
+      detail: 'No iPhone, o Safari só entrega notificações depois que o app é adicionado à Tela de Início: toque em Compartilhar → "Adicionar à Tela de Início" e abra pelo ícone.',
+    });
+  } else if (!hasPush) {
+    items.push({
+      ok: false, critical: true,
+      title: 'Este navegador não entrega notificações em segundo plano',
+      detail: 'Mantenha o aplicativo aberto para receber as chamadas na tela. No Android, use o Chrome e instale o app.',
+    });
+  } else {
+    items.push({
+      ok: perm === 'granted',
+      title: perm === 'granted' ? 'Notificações autorizadas' : 'Notificações ainda não autorizadas',
+      detail: perm === 'denied'
+        ? 'Você negou antes. Reautorize nas configurações do navegador (site → Notificações → Permitir).'
+        : perm === 'granted' ? 'Você recebe chamadas mesmo com o app fechado.'
+          : 'Toque no botão abaixo para ativar.',
+    });
+  }
+  items.push({
+    ok: standalone,
+    title: standalone ? 'App instalado na tela de início' : 'Rodando pelo navegador',
+    detail: standalone ? 'Modo aplicativo: tela cheia e notificações mais confiáveis.'
+      : 'Instalar melhora a entrega dos avisos e abre em tela cheia.',
+  });
+  items.push({
+    ok: hasSW,
+    title: hasSW ? 'Service worker ativo' : 'Service worker indisponível',
+    detail: hasSW ? 'Responsável por entregar o aviso com o app fechado.'
+      : 'Acesse por HTTPS (ou localhost) para habilitar.',
+  });
+  return { ios, standalone, items, canPush: hasPush && !(ios && !standalone) };
+}
+
+/** Desenha o diagnóstico + botão de ativar/testar dentro de um elemento. */
+function renderNotificationStatus(el) {
+  const d = notificationDiagnosis();
+  el.innerHTML = d.items.map(i => `
+    <div class="list-item">
+      <span style="font-size:1.2rem">${i.ok ? '✅' : (i.critical ? '⛔' : '⚠️')}</span>
+      <div class="li-main"><div class="li-title">${escapeHtml(i.title)}</div>
+        <div class="li-sub">${escapeHtml(i.detail)}</div></div>
+    </div>`).join('') + `
+    <div class="row mt" style="flex-wrap:wrap">
+      ${d.canPush ? '<button class="btn btn-primary btn-sm" data-enable-push>Ativar notificações</button>' : ''}
+      ${d.canPush ? '<button class="btn btn-outline btn-sm" data-test-push>Enviar teste</button>' : ''}
+      ${!d.standalone ? '<button class="btn btn-navy btn-sm" data-install-app>📲 Instalar app</button>' : ''}
+    </div>`;
+
+  const en = $('[data-enable-push]', el);
+  if (en) en.onclick = () => withLoading(en, async () => {
+    const r = await enablePush();
+    toast(r.msg, r.ok ? 'ok' : 'err');
+    renderNotificationStatus(el);
+  });
+  const tp = $('[data-test-push]', el);
+  if (tp) tp.onclick = () => withLoading(tp, async () => {
+    const r = await api('/api/push/test', { method: 'POST' });
+    toast(r.sent
+      ? `Teste enviado para ${r.sent} aparelho(s).`
+      : 'Nenhum aparelho inscrito ainda — toque em "Ativar notificações".',
+      r.sent ? 'ok' : 'err');
+  });
+  const ia = $('[data-install-app]', el);
+  if (ia) ia.onclick = promptInstall;
+}
+
+/** Reaplica a inscrição silenciosamente a cada sessão (o endpoint pode mudar). */
+async function refreshPushSubscription() {
+  try {
+    if (!('serviceWorker' in navigator) || Notification?.permission !== 'granted') return;
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) { await enablePush(); return; }
+    const j = sub.toJSON();
+    await api('/api/push/subscribe', { method: 'POST', body: { endpoint: j.endpoint, keys: j.keys } });
+  } catch { /* silencioso */ }
+}
+
+/* ---------- instalação no celular (PWA) ---------- */
+let _installPrompt = null;
+
+if ('serviceWorker' in navigator) {
+  // registra só em HTTPS ou localhost (exigência do navegador)
+  addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => { /* opcional */ });
+  });
+}
+
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  _installPrompt = e;
+  showInstallButton();
+});
+// iOS e navegadores sem o evento: mostra o botão com instruções manuais
+addEventListener('DOMContentLoaded', () => setTimeout(showInstallButton, 1500));
+window.addEventListener('appinstalled', () => {
+  _installPrompt = null;
+  $('#install-btn')?.remove();
+  toast('App instalado! Procure o ícone na tela inicial. 🏍️', 'ok');
+});
+
+function isStandalone() {
+  return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+}
+
+/** Botão flutuante de instalação; no iPhone mostra as instruções manuais. */
+function showInstallButton() {
+  if (isStandalone() || $('#install-btn')) return;
+  const b = document.createElement('button');
+  b.id = 'install-btn';
+  b.innerHTML = '📲 Instalar app';
+  b.onclick = promptInstall;
+  document.body.appendChild(b);
+}
+
+async function promptInstall() {
+  if (_installPrompt) {
+    _installPrompt.prompt();
+    const { outcome } = await _installPrompt.userChoice;
+    _installPrompt = null;
+    if (outcome === 'accepted') $('#install-btn')?.remove();
+    return;
+  }
+  // iOS (Safari) não oferece prompt automático
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  openModal(`
+    <h3>📲 Instalar o Assis MotoTáxi</h3>
+    ${ios ? `
+      <p class="muted mb">No iPhone, use o Safari e siga:</p>
+      <div class="list-item"><div class="li-main"><div class="li-title">1. Toque em Compartilhar</div>
+        <div class="li-sub">O ícone do quadrado com a seta para cima, na barra de baixo.</div></div></div>
+      <div class="list-item"><div class="li-main"><div class="li-title">2. Toque em "Adicionar à Tela de Início"</div>
+        <div class="li-sub">Role a lista de opções até encontrar.</div></div></div>
+      <div class="list-item"><div class="li-main"><div class="li-title">3. Confirme em "Adicionar"</div>
+        <div class="li-sub">O ícone do mototáxi aparece junto dos seus apps.</div></div></div>`
+      : `
+      <p class="muted mb">No Android (Chrome), siga:</p>
+      <div class="list-item"><div class="li-main"><div class="li-title">1. Toque no menu ⋮</div>
+        <div class="li-sub">Os três pontinhos no canto superior direito do navegador.</div></div></div>
+      <div class="list-item"><div class="li-main"><div class="li-title">2. Toque em "Instalar app"</div>
+        <div class="li-sub">Pode aparecer como "Adicionar à tela inicial".</div></div></div>
+      <div class="list-item"><div class="li-main"><div class="li-title">3. Confirme</div>
+        <div class="li-sub">O app abre em tela cheia, igual a um aplicativo da loja.</div></div></div>`}
+  `);
 }
 
 /* ---------- barra de offline ---------- */

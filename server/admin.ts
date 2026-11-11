@@ -1,9 +1,23 @@
-import { db, getSettingNum, getSetting, setSetting, audit } from './db.ts';
-import { ApiError, id, now, json, readBody, reqStr, reqNum, signedDocUrl } from './util.ts';
+import {
+  db, getSettingNum, getSetting, setSetting, audit,
+  getCredential, setCredential, credentialSource,
+} from './db.ts';
+import {
+  ApiError, id, now, json, readBody, reqStr, reqNum, signedDocUrl, maskSecret,
+} from './util.ts';
 import { route, type Route } from './router.ts';
 import { getFare, allFares, computePriceCents, splitCommission } from './fares.ts';
-import { eligibleDrivers } from './rides.ts';
-import { notify } from './notify.ts';
+import { eligibleDrivers, finalizeRide, getRide, rideEvent, cancelRide } from './rides.ts';
+import { notify, notifyAdmins, sseSend } from './notify.ts';
+import {
+  driverBalance, ledger, getPaymentByRide, refundPayment, syncPayment,
+  isTestMode, providerName, splitAvailable,
+} from './payments.ts';
+
+const CREDENTIAL_KEYS = [
+  'MP_ACCESS_TOKEN', 'MP_PUBLIC_KEY', 'MP_WEBHOOK_SECRET',
+  'MP_CLIENT_ID', 'MP_CLIENT_SECRET', 'PUBLIC_URL',
+] as const;
 
 function dayKey(ts: number): string {
   const d = new Date(ts);
@@ -29,12 +43,25 @@ export const adminRoutes: Route[] = [
       drivers_on_ride: c(`SELECT COUNT(DISTINCT driver_id) v FROM rides
         WHERE status IN ('accepted','in_progress') AND driver_id IS NOT NULL`).v,
       rides_today: c(`SELECT COUNT(*) v FROM rides WHERE requested_at >= ?`, dayStart.getTime()).v,
-      rides_active: c(`SELECT COUNT(*) v FROM rides WHERE status IN ('requested','accepted','in_progress')`).v,
+      rides_today_completed: c(`SELECT COUNT(*) v FROM rides
+        WHERE status='completed' AND completed_at >= ?`, dayStart.getTime()).v,
+      rides_today_cancelled: c(`SELECT COUNT(*) v FROM rides
+        WHERE status='cancelled' AND cancelled_at >= ?`, dayStart.getTime()).v,
+      rides_active: c(`SELECT COUNT(*) v FROM rides
+        WHERE status IN ('requested','accepted','in_progress','awaiting_confirmation')`).v,
+      rides_awaiting_payment: c(`SELECT COUNT(*) v FROM rides WHERE status='pending_payment'`).v,
       rides_completed: c(`SELECT COUNT(*) v FROM rides WHERE status='completed'`).v,
       rides_cancelled: c(`SELECT COUNT(*) v FROM rides WHERE status='cancelled'`).v,
+      rides_disputed: c(`SELECT COUNT(*) v FROM rides WHERE status='disputed'`).v,
+      issues_open: c(`SELECT COUNT(*) v FROM ride_issues WHERE status IN ('aberta','em_analise')`).v,
       gross_cents: c(`SELECT COALESCE(SUM(price_cents),0) v FROM rides WHERE status='completed'`).v,
       commission_cents: c(`SELECT COALESCE(SUM(commission_cents),0) v FROM rides WHERE status='completed'`).v,
       drivers_cents: c(`SELECT COALESCE(SUM(driver_cents),0) v FROM rides WHERE status='completed'`).v,
+      payout_pending_cents: Math.max(0,
+        c(`SELECT COALESCE(SUM(amount_cents),0) v FROM financial_transactions WHERE kind='repasse_devido'`).v
+        - c(`SELECT COALESCE(SUM(amount_cents),0) v FROM financial_transactions WHERE kind='repasse_pago'`).v),
+      test_mode: isTestMode(),
+      provider: providerName(),
     };
 
     // série dos últimos 14 dias
@@ -237,6 +264,310 @@ export const adminRoutes: Route[] = [
     const price = computePriceCents(fare, Math.round(km * 1000));
     const split = splitCommission(price);
     json(res, 200, { price_cents: price, ...split });
+  }),
+
+  // ---------- financeiro ----------
+  route('GET /api/admin/finance', 'admin', ({ res, query }) => {
+    const days = Math.min(Number(query.get('days')) || 30, 365);
+    const since = now() - days * 86400_000;
+    const sum = (kind: string, from = 0) => (db.prepare(
+      `SELECT COALESCE(SUM(amount_cents),0) v FROM financial_transactions
+       WHERE kind = ? AND created_at >= ?`).get(kind, from) as any).v as number;
+
+    const totals = {
+      cobrado: sum('cobranca'), comissao: sum('comissao'),
+      repasse_devido: sum('repasse_devido'), repasse_pago: sum('repasse_pago'),
+      estornos: sum('estorno'), taxas_provedor: sum('taxa_provedor'),
+      divida_motoboys: sum('divida_comissao') - sum('quitacao_divida'),
+    };
+    const periodo = {
+      cobrado: sum('cobranca', since), comissao: sum('comissao', since),
+      repasse_devido: sum('repasse_devido', since), estornos: sum('estorno', since),
+    };
+    const porStatusPagamento = db.prepare(`SELECT status, COUNT(*) qtd,
+        COALESCE(SUM(amount_cents),0) total FROM payments GROUP BY status`).all();
+    const porMetodo = db.prepare(`SELECT method, COUNT(*) qtd,
+        COALESCE(SUM(amount_cents),0) total FROM payments
+        WHERE status IN ('pago','dinheiro_recebido') GROUP BY method`).all();
+
+    // saldo por mototaxista (a repassar / dívida)
+    const drivers = db.prepare(`SELECT d.user_id, u.name FROM drivers d
+      JOIN users u ON u.id = d.user_id WHERE d.status = 'approved'`).all() as any[];
+    const saldos = drivers.map(d => ({
+      driver_id: d.user_id, name: d.name, ...driverBalance(d.user_id),
+    })).filter(s => s.pending_cents !== 0 || s.debt_cents !== 0 || s.earned_cents !== 0);
+
+    const transacoes = db.prepare(`SELECT f.*, u.name driver_name
+      FROM financial_transactions f LEFT JOIN users u ON u.id = f.driver_id
+      ORDER BY f.created_at DESC LIMIT 200`).all();
+
+    json(res, 200, {
+      totals, periodo, porStatusPagamento, porMetodo, saldos, transacoes,
+      test_mode: isTestMode(), provider: providerName(), days,
+    });
+  }),
+
+  route('GET /api/admin/payouts', 'admin', ({ res }) => {
+    const rows = db.prepare(`SELECT p.*, u.name driver_name FROM payouts p
+      JOIN users u ON u.id = p.driver_id ORDER BY p.created_at DESC LIMIT 200`).all();
+    json(res, 200, { payouts: rows });
+  }),
+
+  /** Registra o repasse de um mototaxista (PIX manual nesta fase). */
+  route('POST /api/admin/payouts', 'admin', async ({ req, res, user }) => {
+    const b = await readBody(req);
+    const driverId = reqStr(b.driver_id, 'mototaxista', 60);
+    const bal = driverBalance(driverId);
+    const amount = Math.round(reqNum(b.amount_cents, 'valor'));
+    if (amount <= 0) throw new ApiError(400, 'Valor do repasse deve ser maior que zero.');
+    if (amount > bal.pending_cents) {
+      throw new ApiError(400,
+        `Valor acima do saldo a repassar (${(bal.pending_cents / 100).toFixed(2)}).`);
+    }
+    const pid = id('pyo');
+    const t = now();
+    const paid = b.mark_paid !== false;
+    db.prepare(`INSERT INTO payouts (id, driver_id, amount_cents, status, method, reference, note, created_by, created_at, paid_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run(pid, driverId, amount, paid ? 'pago' : 'pendente',
+        typeof b.method === 'string' ? b.method.slice(0, 30) : 'pix',
+        typeof b.reference === 'string' ? b.reference.slice(0, 120) : null,
+        typeof b.note === 'string' ? b.note.slice(0, 300) : null,
+        user!.id, t, paid ? t : null);
+    if (paid) {
+      ledger('repasse_pago', amount, {
+        driverId, description: `Repasse registrado pelo administrador (${b.method || 'pix'})`,
+      });
+      notify(driverId, 'payout', '💸 Repasse realizado',
+        { body: `R$ ${(amount / 100).toFixed(2)} foram enviados para você.` });
+    }
+    audit(user!.id, 'payout_create', 'driver', driverId, `${amount} centavos`);
+    json(res, 201, { ok: true, id: pid });
+  }),
+
+  /** Quita a dívida de comissão das corridas em dinheiro. */
+  route('POST /api/admin/drivers/:id/settle-debt', 'admin', async ({ req, res, user, params }) => {
+    const b = await readBody(req);
+    const bal = driverBalance(params.id);
+    const amount = Math.round(reqNum(b.amount_cents, 'valor'));
+    if (amount <= 0 || amount > bal.debt_cents) {
+      throw new ApiError(400, `Informe um valor entre 1 e ${(bal.debt_cents / 100).toFixed(2)}.`);
+    }
+    ledger('quitacao_divida', amount, {
+      driverId: params.id,
+      description: typeof b.note === 'string' ? b.note.slice(0, 200) : 'Quitação registrada pelo administrador',
+    });
+    audit(user!.id, 'debt_settle', 'driver', params.id, `${amount} centavos`);
+    notify(params.id, 'debt', 'Comissão quitada',
+      { body: `Registramos R$ ${(amount / 100).toFixed(2)} de quitação. Obrigado!` });
+    json(res, 200, { ok: true, balance: driverBalance(params.id) });
+  }),
+
+  /** Estorno manual de uma corrida (sempre registrado na auditoria). */
+  route('POST /api/admin/rides/:id/refund', 'admin', async ({ req, res, user, params }) => {
+    const r = getRide(params.id);
+    const payment = getPaymentByRide(r.id);
+    if (!payment) throw new ApiError(404, 'Esta corrida não tem cobrança registrada.');
+    const b = await readBody(req);
+    const reason = reqStr(b.reason, 'motivo', 300);
+    await refundPayment(payment, reason);
+    rideEvent(r.id, 'refunded', user!.id, reason);
+    audit(user!.id, 'refund', 'ride', r.id, reason);
+    notify(r.passenger_id, 'refund', 'Estorno realizado',
+      { body: `Sua corrida foi estornada. Motivo: ${reason}`, rideId: r.id });
+    json(res, 200, { ok: true });
+  }),
+
+  /** Sincroniza o status de um pagamento direto no provedor. */
+  route('POST /api/admin/rides/:id/sync-payment', 'admin', async ({ res, params }) => {
+    const payment = getPaymentByRide(params.id);
+    if (!payment) throw new ApiError(404, 'Cobrança não encontrada.');
+    const updated = await syncPayment(payment);
+    json(res, 200, { ok: true, status: updated.status });
+  }),
+
+  // ---------- credenciais do provedor de pagamento ----------
+  /** Nunca devolve o segredo: só os 4 últimos caracteres e a origem. */
+  route('GET /api/admin/payment-config', 'admin', ({ res }) => {
+    const base = getCredential('PUBLIC_URL') || process.env.PUBLIC_URL || '';
+    json(res, 200, {
+      credentials: Object.fromEntries(CREDENTIAL_KEYS.map(k => {
+        const v = getCredential(k);
+        return [k, {
+          // a URL pública não é segredo: aparece inteira para conferência
+          value: k === 'PUBLIC_URL' ? (v || '') : maskSecret(v),
+          filled: !!v,
+          source: credentialSource(k),
+        }];
+      })),
+      test_mode: isTestMode(),
+      provider: providerName(),
+      split_available: splitAvailable(),
+      webhook_url: base ? `${base.replace(/\/$/, '')}/api/webhooks/mercadopago` : null,
+      oauth_redirect_uri: base ? `${base.replace(/\/$/, '')}/api/mp/oauth/callback` : null,
+      charge_timing: getSetting('charge_timing'),
+      connected_drivers: (db.prepare(`SELECT COUNT(*) c FROM drivers
+        WHERE mp_user_id IS NOT NULL`).get() as any).c,
+    });
+  }),
+
+  route('PUT /api/admin/payment-config', 'admin', async ({ req, res, user }) => {
+    const b = await readBody(req);
+    const changed: string[] = [];
+    for (const k of CREDENTIAL_KEYS) {
+      const v = b.credentials?.[k];
+      if (v === undefined || v === null) continue;      // não enviado = não mexe
+      const value = String(v).trim();
+      if (value.startsWith('••••')) continue;           // valor mascarado: ignora
+      if (k === 'PUBLIC_URL' && value && !/^https?:\/\//.test(value)) {
+        throw new ApiError(400, 'A URL pública deve começar com https://');
+      }
+      setCredential(k, value, user!.id);
+      changed.push(value ? `${k} definida` : `${k} removida`);
+    }
+    if (b.charge_timing === 'antes' || b.charge_timing === 'apos_aceite') {
+      setSetting('charge_timing', b.charge_timing);
+      changed.push(`cobrança: ${b.charge_timing}`);
+    }
+    if (changed.length) audit(user!.id, 'payment_config', 'settings', undefined, changed.join('; '));
+    json(res, 200, { ok: true, changed, test_mode: isTestMode(), split_available: splitAvailable() });
+  }),
+
+  /** Conversa de verdade com o Mercado Pago e diz exatamente o que está errado. */
+  route('POST /api/admin/payment-config/test', 'admin', async ({ res }) => {
+    const token = getCredential('MP_ACCESS_TOKEN');
+    const checks: { item: string; ok: boolean; detail: string }[] = [];
+
+    if (!token) {
+      checks.push({ item: 'Access token', ok: false, detail: 'Não configurado — sistema em modo de teste.' });
+    } else {
+      try {
+        const r = await fetch('https://api.mercadopago.com/users/me', {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(12000),
+        });
+        const d: any = await r.json();
+        if (r.ok) {
+          checks.push({
+            item: 'Access token', ok: true,
+            detail: `Conta ${d.nickname || d.id} (${d.site_id || 'MLB'})${token.startsWith('TEST-') ? ' — credencial de TESTE do Mercado Pago' : ''}`,
+          });
+        } else {
+          checks.push({ item: 'Access token', ok: false, detail: d?.message || `HTTP ${r.status}` });
+        }
+      } catch (e: any) {
+        checks.push({ item: 'Access token', ok: false, detail: `Falha de rede: ${e?.message}` });
+      }
+    }
+
+    const pub = getCredential('MP_PUBLIC_KEY');
+    checks.push({
+      item: 'Chave pública (cartão)', ok: !!pub,
+      detail: pub ? 'Configurada — cobrança no cartão liberada.' : 'Sem ela o cartão fica indisponível (Pix funciona).',
+    });
+
+    const secret = getCredential('MP_WEBHOOK_SECRET');
+    checks.push({
+      item: 'Assinatura do webhook', ok: !!secret,
+      detail: secret ? 'Configurada — eventos sem assinatura válida são recusados.'
+        : 'Sem ela os webhooks só são registrados, nunca aplicados.',
+    });
+
+    const base = getCredential('PUBLIC_URL') || process.env.PUBLIC_URL;
+    checks.push({
+      item: 'URL pública', ok: !!base,
+      detail: base ? `Webhook: ${base.replace(/\/$/, '')}/api/webhooks/mercadopago`
+        : 'Necessária para receber webhooks e conectar contas dos parceiros.',
+    });
+
+    checks.push({
+      item: 'Split automático', ok: splitAvailable(),
+      detail: splitAvailable()
+        ? 'Pronto: os parceiros já podem conectar a conta deles.'
+        : 'Faltam MP_CLIENT_ID e MP_CLIENT_SECRET do seu aplicativo no Mercado Pago.',
+    });
+
+    const recent = db.prepare(`SELECT COUNT(*) c FROM webhook_events
+      WHERE received_at > ?`).get(now() - 7 * 86400_000) as any;
+    checks.push({
+      item: 'Webhooks recebidos (7 dias)', ok: recent.c > 0,
+      detail: recent.c > 0 ? `${recent.c} evento(s) recebido(s).`
+        : 'Nenhum evento ainda — cadastre a URL no painel do Mercado Pago.',
+    });
+
+    json(res, 200, { checks, test_mode: isTestMode(), ready: checks[0].ok });
+  }),
+
+  /** Parceiros com conta conectada (visão do split). */
+  route('GET /api/admin/split-drivers', 'admin', ({ res }) => {
+    const rows = db.prepare(`SELECT d.user_id, u.name, d.mp_nickname, d.mp_connected_at,
+        d.mp_user_id IS NOT NULL connected
+      FROM drivers d JOIN users u ON u.id = d.user_id
+      WHERE d.status = 'approved' ORDER BY connected DESC, u.name`).all();
+    json(res, 200, { drivers: rows, split_available: splitAvailable() });
+  }),
+
+  // ---------- ocorrências / disputas ----------
+  route('GET /api/admin/issues', 'admin', ({ res, query }) => {
+    const status = query.get('status');
+    const rows = db.prepare(`SELECT i.*, u.name user_name, r.origin_text, r.dest_text,
+        r.price_cents, r.status ride_status, du.name driver_name
+      FROM ride_issues i
+      JOIN users u ON u.id = i.user_id
+      JOIN rides r ON r.id = i.ride_id
+      LEFT JOIN users du ON du.id = r.driver_id
+      ${status ? 'WHERE i.status = ?' : ''}
+      ORDER BY i.created_at DESC LIMIT 200`).all(...(status ? [status] : []));
+    json(res, 200, { issues: rows });
+  }),
+
+  /**
+   * Resolve a ocorrência. Em disputa o administrador decide o destino do
+   * dinheiro: concluir (libera comissão e repasse) ou estornar ao passageiro.
+   */
+  route('POST /api/admin/issues/:id/resolve', 'admin', async ({ req, res, user, params }) => {
+    const issue = db.prepare('SELECT * FROM ride_issues WHERE id = ?').get(params.id) as any;
+    if (!issue) throw new ApiError(404, 'Ocorrência não encontrada.');
+    if (issue.status === 'resolvida' || issue.status === 'rejeitada') {
+      throw new ApiError(409, 'Esta ocorrência já foi encerrada.');
+    }
+    const b = await readBody(req);
+    const action = reqStr(b.action, 'ação', 30); // concluir | estornar | rejeitar
+    const note = typeof b.note === 'string' ? b.note.slice(0, 500) : '';
+    const r = getRide(issue.ride_id);
+
+    if (action === 'concluir') {
+      if (r.status === 'disputed') {
+        db.prepare(`UPDATE rides SET status = 'awaiting_confirmation', auto_confirm_at = ?
+          WHERE id = ? AND status = 'disputed'`).run(now(), r.id);
+        await finalizeRide(r.id, 'admin');
+      }
+    } else if (action === 'estornar') {
+      const payment = getPaymentByRide(r.id);
+      if (payment) await refundPayment(payment, `Disputa resolvida: ${note}`);
+      if (r.status === 'disputed') {
+        db.prepare(`UPDATE rides SET status = 'cancelled', cancelled_at = ?,
+          cancelled_by = 'admin', cancel_reason = ?, cancel_prev_status = 'disputed'
+          WHERE id = ?`).run(now(), `Disputa: ${note}`, r.id);
+        rideEvent(r.id, 'cancelled_by_admin', user!.id, note, 'disputed', 'cancelled');
+      }
+    } else if (action !== 'rejeitar') {
+      throw new ApiError(400, 'Ação inválida (concluir, estornar ou rejeitar).');
+    }
+
+    db.prepare(`UPDATE ride_issues SET status = ?, resolution = ?, resolved_by = ?, resolved_at = ?
+      WHERE id = ?`)
+      .run(action === 'rejeitar' ? 'rejeitada' : 'resolvida',
+        `${action}: ${note}`, user!.id, now(), params.id);
+    audit(user!.id, `issue_${action}`, 'ride', r.id, note);
+    notify(issue.user_id, 'issue_resolved', 'Sua ocorrência foi analisada',
+      { body: note || 'Confira os detalhes no aplicativo.', rideId: r.id });
+    if (r.driver_id) {
+      notify(r.driver_id, 'issue_resolved', 'Ocorrência encerrada',
+        { body: note || 'A análise foi concluída.', rideId: r.id });
+    }
+    sseSend(r.passenger_id, 'ride_update', { id: r.id });
+    json(res, 200, { ok: true });
   }),
 
   // ---------- auditoria ----------

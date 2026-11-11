@@ -1,10 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
-import { dataDir, now } from './util.ts';
+import { dataDir, now, encryptSecret, decryptSecret } from './util.ts';
 
 export let db: DatabaseSync;
 
-const MIGRATIONS: { version: number; sql: string }[] = [
+const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
   {
     version: 1,
     sql: `
@@ -254,9 +254,311 @@ const MIGRATIONS: { version: number; sql: string }[] = [
     );
     `,
   },
+
+  // ----------------------------------------------------------------
+  // V2 — confirmação da corrida pelo passageiro, pagamento real com
+  // provedor, livro-caixa imutável, repasses, ocorrências, push e GPS.
+  // Rebuild de `rides`/`payments` é necessário porque os CHECK de status
+  // mudaram; os dados existentes são copiados integralmente.
+  // ----------------------------------------------------------------
+  {
+    version: 2,
+    fkOff: true,
+    sql: `
+    -- ---------- rides: novos estados e campos de confirmação ----------
+    CREATE TABLE rides_v2 (
+      id            TEXT PRIMARY KEY,
+      quote_id      TEXT REFERENCES ride_quotes(id),
+      passenger_id  TEXT NOT NULL REFERENCES users(id),
+      driver_id     TEXT REFERENCES drivers(user_id),
+      category      TEXT NOT NULL,
+      status        TEXT NOT NULL DEFAULT 'requested'
+                    CHECK (status IN ('pending_payment','requested','accepted','in_progress',
+                                      'awaiting_confirmation','completed','cancelled','disputed')),
+      origin_text   TEXT NOT NULL,
+      origin_lat    REAL NOT NULL,
+      origin_lng    REAL NOT NULL,
+      dest_text     TEXT NOT NULL,
+      dest_lat      REAL NOT NULL,
+      dest_lng      REAL NOT NULL,
+      distance_m    INTEGER NOT NULL,
+      duration_s    INTEGER NOT NULL,
+      price_cents   INTEGER NOT NULL,
+      commission_pct REAL NOT NULL,
+      commission_cents INTEGER,
+      driver_cents  INTEGER,
+      payment_method TEXT NOT NULL DEFAULT 'dinheiro'
+                    CHECK (payment_method IN ('dinheiro','pix','cartao')),
+      payment_status TEXT NOT NULL DEFAULT 'pendente',
+      payment_id    TEXT,
+      route_geojson TEXT,
+      requested_at  INTEGER NOT NULL,
+      accepted_at   INTEGER,
+      arrived_at    INTEGER,
+      started_at    INTEGER,
+      completion_requested_at INTEGER,
+      auto_confirm_at INTEGER,
+      confirmed_at  INTEGER,
+      confirmed_by  TEXT,
+      completed_at  INTEGER,
+      cancelled_at  INTEGER,
+      cancelled_by  TEXT,
+      cancel_reason TEXT,
+      cancel_prev_status TEXT,
+      pickup_updated_at INTEGER
+    );
+    INSERT INTO rides_v2 (id, quote_id, passenger_id, driver_id, category, status,
+      origin_text, origin_lat, origin_lng, dest_text, dest_lat, dest_lng,
+      distance_m, duration_s, price_cents, commission_pct, commission_cents, driver_cents,
+      payment_method, payment_status, route_geojson, requested_at, accepted_at, arrived_at,
+      started_at, completed_at, cancelled_at, cancelled_by, cancel_reason, cancel_prev_status,
+      confirmed_at, confirmed_by)
+    SELECT id, quote_id, passenger_id, driver_id, category, status,
+      origin_text, origin_lat, origin_lng, dest_text, dest_lat, dest_lng,
+      distance_m, duration_s, price_cents, commission_pct, commission_cents, driver_cents,
+      payment_method, payment_status, route_geojson, requested_at, accepted_at, arrived_at,
+      started_at, completed_at, cancelled_at, cancelled_by, cancel_reason, cancel_prev_status,
+      completed_at, CASE WHEN status = 'completed' THEN 'legado' ELSE NULL END
+    FROM rides;
+    DROP TABLE rides;
+    ALTER TABLE rides_v2 RENAME TO rides;
+    CREATE INDEX idx_rides_passenger ON rides(passenger_id);
+    CREATE INDEX idx_rides_driver ON rides(driver_id);
+    CREATE INDEX idx_rides_status ON rides(status);
+    CREATE INDEX idx_rides_requested_at ON rides(requested_at);
+    CREATE INDEX idx_rides_autoconfirm ON rides(auto_confirm_at)
+      WHERE status = 'awaiting_confirmation';
+
+    -- ---------- payments: integração real com provedor ----------
+    CREATE TABLE payments_v2 (
+      id            TEXT PRIMARY KEY,
+      ride_id       TEXT NOT NULL REFERENCES rides(id),
+      provider      TEXT NOT NULL DEFAULT 'dinheiro',
+      provider_payment_id TEXT,
+      method        TEXT NOT NULL,
+      status        TEXT NOT NULL
+                    CHECK (status IN ('criado','aguardando_pagamento','autorizado','pago',
+                                      'recusado','estornado','cancelado','dinheiro_pendente',
+                                      'dinheiro_recebido','expirado')),
+      amount_cents  INTEGER NOT NULL,
+      commission_cents INTEGER,
+      driver_cents  INTEGER,
+      provider_fee_cents INTEGER,
+      test_mode     INTEGER NOT NULL DEFAULT 0,
+      pix_qr_code   TEXT,
+      pix_qr_base64 TEXT,
+      pix_expires_at INTEGER,
+      ticket_url    TEXT,
+      failure_reason TEXT,
+      idempotency_key TEXT,
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      paid_at       INTEGER,
+      captured_at   INTEGER,
+      refunded_at   INTEGER
+    );
+    INSERT INTO payments_v2 (id, ride_id, provider, method, status, amount_cents,
+      created_at, updated_at, paid_at)
+    SELECT id, ride_id, 'dinheiro', method,
+      CASE status WHEN 'recebido' THEN 'dinheiro_recebido'
+                  WHEN 'cancelado' THEN 'cancelado'
+                  ELSE 'dinheiro_pendente' END,
+      amount_cents, created_at, updated_at,
+      CASE WHEN status = 'recebido' THEN updated_at ELSE NULL END
+    FROM payments;
+    DROP TABLE payments;
+    ALTER TABLE payments_v2 RENAME TO payments;
+    CREATE UNIQUE INDEX idx_payments_ride ON payments(ride_id);
+    CREATE UNIQUE INDEX idx_payments_provider_id ON payments(provider_payment_id)
+      WHERE provider_payment_id IS NOT NULL;
+    CREATE INDEX idx_payments_status ON payments(status);
+
+    -- vincula a corrida ao seu pagamento
+    UPDATE rides SET payment_id = (SELECT p.id FROM payments p WHERE p.ride_id = rides.id);
+
+    -- ---------- livro-caixa imutável ----------
+    CREATE TABLE financial_transactions (
+      id          TEXT PRIMARY KEY,
+      ride_id     TEXT REFERENCES rides(id),
+      payment_id  TEXT REFERENCES payments(id),
+      driver_id   TEXT REFERENCES drivers(user_id),
+      kind        TEXT NOT NULL
+                  CHECK (kind IN ('cobranca','comissao','repasse_devido','repasse_pago',
+                                  'estorno','taxa_provedor','divida_comissao','quitacao_divida')),
+      amount_cents INTEGER NOT NULL,
+      description TEXT,
+      test_mode   INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX idx_fintx_ride ON financial_transactions(ride_id);
+    CREATE INDEX idx_fintx_driver ON financial_transactions(driver_id, kind);
+    CREATE INDEX idx_fintx_created ON financial_transactions(created_at);
+
+    -- lança o histórico financeiro das corridas já concluídas
+    INSERT INTO financial_transactions (id, ride_id, payment_id, driver_id, kind, amount_cents, description, created_at)
+    SELECT 'ftx_c_' || r.id, r.id, r.payment_id, r.driver_id, 'cobranca', r.price_cents,
+           'Migrado da V1', COALESCE(r.completed_at, r.requested_at)
+    FROM rides r WHERE r.status = 'completed';
+    INSERT INTO financial_transactions (id, ride_id, payment_id, driver_id, kind, amount_cents, description, created_at)
+    SELECT 'ftx_k_' || r.id, r.id, r.payment_id, r.driver_id, 'comissao', r.commission_cents,
+           'Migrado da V1', COALESCE(r.completed_at, r.requested_at)
+    FROM rides r WHERE r.status = 'completed' AND r.commission_cents IS NOT NULL;
+    INSERT INTO financial_transactions (id, ride_id, payment_id, driver_id, kind, amount_cents, description, created_at)
+    SELECT 'ftx_r_' || r.id, r.id, r.payment_id, r.driver_id, 'repasse_devido', r.driver_cents,
+           'Migrado da V1', COALESCE(r.completed_at, r.requested_at)
+    FROM rides r WHERE r.status = 'completed' AND r.driver_cents IS NOT NULL;
+
+    -- ---------- repasses aos mototaxistas ----------
+    CREATE TABLE payouts (
+      id          TEXT PRIMARY KEY,
+      driver_id   TEXT NOT NULL REFERENCES drivers(user_id),
+      amount_cents INTEGER NOT NULL,
+      status      TEXT NOT NULL CHECK (status IN ('pendente','pago','falhou')),
+      method      TEXT,
+      reference   TEXT,
+      note        TEXT,
+      created_by  TEXT,
+      created_at  INTEGER NOT NULL,
+      paid_at     INTEGER
+    );
+    CREATE INDEX idx_payouts_driver ON payouts(driver_id, status);
+
+    -- ---------- webhooks: idempotência e auditoria ----------
+    CREATE TABLE webhook_events (
+      id           TEXT PRIMARY KEY,
+      provider     TEXT NOT NULL,
+      external_id  TEXT NOT NULL,
+      topic        TEXT,
+      payload      TEXT,
+      signature_ok INTEGER NOT NULL DEFAULT 0,
+      processed_at INTEGER,
+      result       TEXT,
+      received_at  INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX idx_webhook_unique ON webhook_events(provider, external_id, topic);
+
+    -- ---------- ocorrências / disputas ----------
+    CREATE TABLE ride_issues (
+      id          TEXT PRIMARY KEY,
+      ride_id     TEXT NOT NULL REFERENCES rides(id),
+      user_id     TEXT NOT NULL REFERENCES users(id),
+      role        TEXT NOT NULL,
+      kind        TEXT NOT NULL,
+      description TEXT,
+      status      TEXT NOT NULL DEFAULT 'aberta'
+                  CHECK (status IN ('aberta','em_analise','resolvida','rejeitada')),
+      resolution  TEXT,
+      resolved_by TEXT,
+      created_at  INTEGER NOT NULL,
+      resolved_at INTEGER
+    );
+    CREATE INDEX idx_issues_status ON ride_issues(status);
+    CREATE INDEX idx_issues_ride ON ride_issues(ride_id);
+
+    -- ---------- notificações push (Web Push / VAPID) ----------
+    CREATE TABLE push_subscriptions (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      endpoint   TEXT NOT NULL UNIQUE,
+      p256dh     TEXT NOT NULL,
+      auth       TEXT NOT NULL,
+      user_agent TEXT,
+      failures   INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      last_ok_at INTEGER
+    );
+    CREATE INDEX idx_push_user ON push_subscriptions(user_id);
+
+    -- ---------- avaliações detalhadas ----------
+    ALTER TABLE ratings ADD COLUMN score_atendimento INTEGER;
+    ALTER TABLE ratings ADD COLUMN score_pontualidade INTEGER;
+    ALTER TABLE ratings ADD COLUMN score_educacao INTEGER;
+    ALTER TABLE ratings ADD COLUMN score_seguranca INTEGER;
+
+    -- ---------- notificações: entrega e replay ----------
+    ALTER TABLE notifications ADD COLUMN delivered_at INTEGER;
+    ALTER TABLE notifications ADD COLUMN pushed_at INTEGER;
+
+    -- ---------- GPS: qualidade e presença ----------
+    ALTER TABLE drivers ADD COLUMN last_accuracy_m REAL;
+    ALTER TABLE drivers ADD COLUMN last_seen_at INTEGER;
+    ALTER TABLE ride_locations ADD COLUMN accuracy_m REAL;
+    `,
+  },
+
+  // ----------------------------------------------------------------
+  // V2.1 — credenciais do provedor guardadas (cifradas) no banco e
+  // split automático: o mototaxista conecta a própria conta Mercado Pago
+  // e recebe direto, com a comissão retida automaticamente.
+  // ----------------------------------------------------------------
+  {
+    version: 3,
+    fkOff: true,
+    sql: `
+    -- o livro-caixa ganha o lançamento do split automático
+    CREATE TABLE financial_transactions_v3 (
+      id          TEXT PRIMARY KEY,
+      ride_id     TEXT REFERENCES rides(id),
+      payment_id  TEXT REFERENCES payments(id),
+      driver_id   TEXT REFERENCES drivers(user_id),
+      kind        TEXT NOT NULL
+                  CHECK (kind IN ('cobranca','comissao','repasse_devido','repasse_pago',
+                                  'repasse_automatico','estorno','taxa_provedor',
+                                  'divida_comissao','quitacao_divida')),
+      amount_cents INTEGER NOT NULL,
+      description TEXT,
+      test_mode   INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL
+    );
+    INSERT INTO financial_transactions_v3
+      SELECT id, ride_id, payment_id, driver_id, kind, amount_cents, description, test_mode, created_at
+      FROM financial_transactions;
+    DROP TABLE financial_transactions;
+    ALTER TABLE financial_transactions_v3 RENAME TO financial_transactions;
+    CREATE INDEX idx_fintx_ride ON financial_transactions(ride_id);
+    CREATE INDEX idx_fintx_driver ON financial_transactions(driver_id, kind);
+    CREATE INDEX idx_fintx_created ON financial_transactions(created_at);
+
+    -- segredos do provedor (cifrados com AES-256-GCM)
+    CREATE TABLE provider_credentials (
+      key        TEXT PRIMARY KEY,
+      value_enc  TEXT NOT NULL,
+      updated_by TEXT,
+      updated_at INTEGER NOT NULL
+    );
+
+    -- conta do mototaxista conectada via OAuth (split automático)
+    ALTER TABLE drivers ADD COLUMN mp_user_id TEXT;
+    ALTER TABLE drivers ADD COLUMN mp_access_token_enc TEXT;
+    ALTER TABLE drivers ADD COLUMN mp_refresh_token_enc TEXT;
+    ALTER TABLE drivers ADD COLUMN mp_expires_at INTEGER;
+    ALTER TABLE drivers ADD COLUMN mp_connected_at INTEGER;
+    ALTER TABLE drivers ADD COLUMN mp_nickname TEXT;
+
+    -- qual conta recebeu a cobrança (nulo = conta da plataforma)
+    ALTER TABLE payments ADD COLUMN seller_driver_id TEXT;
+    ALTER TABLE payments ADD COLUMN application_fee_cents INTEGER;
+    `,
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {
+  // --- V2 ---
+  confirm_window_s: '5',
+  payment_provider: 'auto',        // auto = mercadopago se houver credencial, senão teste
+  pix_enabled: '1',
+  card_enabled: '1',
+  cash_enabled: '1',
+  pix_expires_min: '15',
+  driver_debt_limit_cents: '5000', // dívida de comissão (corridas em dinheiro) que bloqueia novas corridas
+  pickup_move_alert_m: '80',       // distância que dispara "você mudou de local?"
+  gps_max_accuracy_m: '150',       // acima disso a posição é considerada imprecisa
+  // Quando cobrar: 'antes' = cobra antes de chamar o parceiro (dinheiro garantido,
+  // repasse manual) | 'apos_aceite' = cobra depois do aceite, permitindo o split
+  // automático direto na conta do mototaxista.
+  charge_timing: 'antes',
+  payment_deadline_min: '10',      // prazo para pagar depois do aceite (modo split)
+
   city_name: 'Assis Chateaubriand - PR',
   center_lat: '-24.4156',
   center_lng: '-53.5216',
@@ -284,6 +586,9 @@ export function initDb(dbPath?: string): DatabaseSync {
   );
   for (const m of MIGRATIONS) {
     if (applied.has(m.version)) continue;
+    // Rebuild de tabela: as chaves estrangeiras precisam ficar desligadas
+    // (fora da transação) para que o DROP não apague as linhas filhas.
+    if (m.fkOff) db.exec('PRAGMA foreign_keys = OFF;');
     db.exec('BEGIN');
     try {
       db.exec(m.sql);
@@ -292,7 +597,15 @@ export function initDb(dbPath?: string): DatabaseSync {
       db.exec('COMMIT');
     } catch (e) {
       db.exec('ROLLBACK');
+      if (m.fkOff) db.exec('PRAGMA foreign_keys = ON;');
       throw e;
+    }
+    if (m.fkOff) {
+      db.exec('PRAGMA foreign_keys = ON;');
+      const broken = db.prepare('PRAGMA foreign_key_check').all() as any[];
+      if (broken.length) {
+        throw new Error(`Migração ${m.version} deixou ${broken.length} referência(s) inválida(s).`);
+      }
     }
   }
   seed();
@@ -321,6 +634,38 @@ export function getSettingNum(key: string): number {
 export function setSetting(key: string, value: string): void {
   db.prepare(`INSERT INTO app_settings (key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, value);
+}
+
+/**
+ * Credenciais do provedor: lidas primeiro do banco (configuradas pelo
+ * administrador na central), depois das variáveis de ambiente.
+ */
+export function getCredential(key: string): string | null {
+  const row = db.prepare('SELECT value_enc FROM provider_credentials WHERE key = ?').get(key) as any;
+  if (row) {
+    const v = decryptSecret(row.value_enc);
+    if (v) return v;
+  }
+  return process.env[key] || null;
+}
+
+export function setCredential(key: string, value: string, adminId: string): void {
+  if (!value) {
+    db.prepare('DELETE FROM provider_credentials WHERE key = ?').run(key);
+    return;
+  }
+  db.prepare(`INSERT INTO provider_credentials (key, value_enc, updated_by, updated_at)
+    VALUES (?,?,?,?)
+    ON CONFLICT(key) DO UPDATE SET value_enc = excluded.value_enc,
+      updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+    .run(key, encryptSecret(value), adminId, now());
+}
+
+/** De onde veio cada credencial — mostrado na central para evitar confusão. */
+export function credentialSource(key: string): 'banco' | 'ambiente' | 'ausente' {
+  const row = db.prepare('SELECT 1 FROM provider_credentials WHERE key = ?').get(key);
+  if (row) return 'banco';
+  return process.env[key] ? 'ambiente' : 'ausente';
 }
 
 export function audit(adminId: string, action: string, targetType?: string,
