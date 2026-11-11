@@ -1,0 +1,25 @@
+
+name: Fly Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy Assis Mototáxi
+    runs-on: ubuntu-latest
+    concurrency: deploy-group
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Fly.io
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Publicar aplicativo
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
