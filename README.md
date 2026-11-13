@@ -172,7 +172,7 @@ server/          backend (TypeScript puro)
   notify.ts      SSE + notificações persistentes
 public/          frontend (mobile-first, 3 apps)
 tests/           testes ponta a ponta (node --test)
-data/            banco, segredo de sessão e uploads privados (criado em runtime)
+data/            banco, segredo de sessão e uploads privados (criado em runtime; fora do git)
 ```
 
 ## Regras de negócio implementadas

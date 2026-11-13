@@ -1,0 +1,9 @@
+# Dados de runtime: banco SQLite, segredo de sessão, chaves VAPID e documentos
+# dos mototaxistas. Nunca versionar (o servidor recria a pasta sozinho).
+data/
+
+# Configuração local com segredos
+.env
+
+node_modules/
+*.log
