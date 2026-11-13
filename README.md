@@ -43,53 +43,61 @@ em produção coloque o app atrás de HTTPS (ver "Publicação").
 | Backend | Node 24 + TypeScript nativo (sem build) | simples, estável, sem toolchain |
 | Banco | SQLite (`node:sqlite`) com migrações versionadas | persistente, zero instalação, WAL |
 | Tempo real | Server-Sent Events (SSE) | ofertas de corrida, GPS e notificações ao vivo |
-| Mapas | **Google Maps** quando há chave; Leaflet + OpenStreetMap como reserva | precisão de endereços no Brasil; a reserva mantém o sistema funcionando sem custo |
-| Rotas/ETA | **Google Routes API (TWO_WHEELER)** → OSRM → estimativa | rota de motocicleta de verdade, com a procedência marcada |
-| Endereços | **Base local** (todas as ruas da cidade importadas do OSM) → Google Places (New) → Nominatim | autocomplete instantâneo de ruas, números, bairros e estabelecimentos |
+| Mapas | **Mapbox GL JS** quando há token; Leaflet + OpenStreetMap como reserva | mapa vetorial rápido e nítido no celular; a reserva mantém o sistema funcionando sem custo |
+| Rotas/ETA | **Mapbox Directions API** → OSRM → estimativa | rota real por ruas, com a procedência marcada |
+| Endereços | **Base local** (todas as ruas da cidade importadas do OSM) → Mapbox Geocoding → Nominatim | autocomplete instantâneo de ruas, números, bairros e estabelecimentos |
 | Senhas | scrypt + salt (node:crypto) | hash forte, sem texto puro |
 | Sessões | cookie HttpOnly + tabela `sessions` | revogável no servidor (bloqueio derruba sessão) |
 
-## Google Maps Platform
+## Mapas com Mapbox
 
-### APIs utilizadas
+### O que é usado
 
-| API | Onde | Para quê |
+| Recurso do Mapbox | Onde | Para quê |
 |---|---|---|
-| **Routes API** | servidor | rota real em modo `TWO_WHEELER` (motocicleta); distância e tempo que alimentam a tarifa |
-| **Places API (New)** | servidor | autocomplete de ruas, números, bairros e estabelecimentos + detalhes do lugar escolhido |
-| **Geocoding API** | servidor | geocodificação reversa (coordenada → endereço) |
-| **Maps JavaScript API** | navegador | mapa visual do passageiro, do mototaxista e dos pontos |
-
-### Duas chaves, com responsabilidades diferentes
-
-- **Chave de servidor** — usada só pelo backend (Routes, Places, Geocoding).
-  **Nunca** sai do servidor; fica cifrada no banco. Restrinja por **IP** no
-  Google Cloud e limite às três APIs.
-- **Chave do navegador** — vai no `/api/config` para carregar o mapa visual (é
-  pública por natureza). Restrinja por **referenciador HTTP** (seu domínio) e
-  limite à Maps JavaScript API.
-
-Há um teste automatizado garantindo que a chave de servidor **não aparece** em
-nenhuma resposta ao frontend.
+| **Mapbox GL JS** | navegador | mapa visual do passageiro e do mototaxista (pinos, rota, GPS ao vivo) |
+| **Directions API** | servidor | rota real por ruas; distância e tempo que alimentam a tarifa |
+| **Geocoding API (v6)** | servidor | busca de endereços e coordenada → endereço (GPS, toque no mapa) |
 
 ### Configurar (central → 🗺️ Mapas)
 
-1. No [Google Cloud](https://console.cloud.google.com/google/maps-apis/credentials),
-   crie o projeto e **ative o faturamento** (exige cartão; há US$ 200/mês de
-   crédito gratuito, que cobre um piloto com folga).
-2. Ative **Maps JavaScript API**, **Places API (New)**, **Geocoding API** e **Routes API**.
-3. Crie as duas chaves com as restrições acima.
-4. Cole as duas na central → 🗺️ Mapas → **Salvar**.
-5. **Testar agora**: o sistema chama as três APIs de verdade, usando Assis
-   Chateaubriand como referência, e diz item por item o que funcionou.
+1. Crie a conta em [account.mapbox.com](https://account.mapbox.com/).
+2. Em **Tokens**, copie o **Default public token** (começa com `pk.`) ou crie
+   um novo.
+3. Cole em central → 🗺️ Mapas → **Token público** → **Salvar**. Ele fica
+   cifrado no banco. (Alternativa para deploy automatizado: variável
+   `MAPBOX_PUBLIC_TOKEN` — ver `.env.example`.)
+4. **Testar agora**: o sistema confere o token e faz uma chamada real de rota,
+   de busca e de endereço por GPS no centro da cidade atendida, dizendo item
+   por item o que funcionou. Faça isso antes de divulgar o aplicativo.
 
-Sem chave, tudo continua funcionando em **OpenStreetMap/OSRM** — mapa real e
-gratuito, sem modo de motocicleta. A central mostra qual provedor está ativo
-em cada camada.
+Sem token, tudo continua funcionando em **OpenStreetMap/OSRM** — mapa real e
+gratuito. A central mostra qual provedor está ativo em cada camada, e a opção
+**"Forçar OpenStreetMap"** desliga o Mapbox sem apagar o token.
 
-### Base local de endereços (sem chave e sem custo)
+### Um token basta; dois é mais seguro
 
-A busca de endereços **não depende** do Google nem do Nominatim online: a
+- **Token público (`pk.`)** — vai no `/api/config` para o navegador desenhar o
+  mapa; é público por natureza. Recomendado: em **URL restrictions** do token,
+  informe o endereço do seu site, para ninguém usá-lo em outro lugar.
+- **Token de servidor (opcional)** — só é necessário se o token público tiver
+  restrição de URL: as chamadas de rota e de busca partem do backend, sem
+  referenciador, e seriam recusadas (403). Crie um segundo token **sem**
+  restrição de URL e cole em "Token de servidor". Ele **nunca** sai do backend.
+
+O campo do token público **recusa tokens secretos** (`sk.`), e há testes
+automatizados garantindo que o token de servidor não aparece em nenhuma
+resposta ao frontend.
+
+### Estilo do mapa
+
+Na mesma tela dá para escolher entre **Ruas** (padrão), **Navegação** (ruas em
+destaque) e **Satélite com ruas** — útil em bairros onde as ruas ainda não
+estão bem mapeadas e o passageiro marca o ponto pela imagem.
+
+### Base local de endereços (sem token e sem custo)
+
+A busca de endereços **não depende** do Mapbox nem do Nominatim online: a
 central → 🗺️ Mapas tem o botão **"Baixar base de endereços"**, que importa do
 OpenStreetMap (Overpass) **todas as ruas, bairros e estabelecimentos** do
 município para a tabela `local_addresses`. A partir daí o autocomplete é
@@ -116,46 +124,46 @@ todo comércio de cidade pequena — o administrador cadastra "Mercado Lorena",
 de referência ou colando coordenadas). Aparece na busca na hora e sobrevive
 às reimportações da base.
 
-Ordem da busca: **base local → Google Places (se houver chave) → Nominatim**.
+Ordem da busca: **base local → Mapbox Geocoding (se houver token) → Nominatim**.
 Qualquer resultado da base responde na hora, sem chamada externa — é o que
-mantém a busca em milissegundos.
+mantém a busca em milissegundos. A busca no Mapbox é limitada à caixa da área
+de cobertura, então a rua de mesmo nome do município vizinho não aparece.
 
-### Rotas de motocicleta (e quando não dá)
+### Rotas (e quando não dá)
 
-O sistema pede `TWO_WHEELER` à Routes API. Se o Google recusar esse modo para o
-trajeto, ele usa `DRIVE` e **marca isso**: a tela de preço mostra
-`rota de motocicleta` / `rota de carro` / `distância estimada`, e avisa quando
-houve a troca. Nunca apresentamos rota de carro como se fosse de moto. A
-procedência fica gravada em cada cotação e corrida (`route_provider`,
-`route_mode`) e aparece na central em "Rotas calculadas por procedência".
+O Mapbox **não tem perfil de motocicleta**: a rota usa o perfil `driving`, que
+segue as mesmas ruas e mãos de direção. A tela de preço mostra a procedência —
+`rota por ruas` ou `distância estimada` — e ela fica gravada em cada cotação e
+corrida (`route_provider`, `route_mode`), aparecendo na central em "Rotas
+calculadas por procedência".
 
 ### Custos e como eles são contidos
 
-Todas as chamadas pagas passam por **cache persistente** (`geo_cache`), com
-validade configurável na central (padrão: rotas 72 h, endereços/geocodificação
-168 h). Além disso:
+O Mapbox tem franquia gratuita mensal para carregamentos de mapa, rotas e
+buscas (confira os limites atuais na página de preços da sua conta). O sistema
+gasta o mínimo dela:
 
+- a **base local** responde a maior parte das buscas sem chamar o Mapbox;
 - o autocomplete só dispara **450 ms depois** que o usuário para de digitar;
-- a **coordenada só é buscada quando o usuário escolhe** um endereço (Place
-  Details), não a cada tecla;
-- um **session token** agrupa digitação + escolha numa única cobrança do Google;
-- rotas idênticas (mesma origem/destino arredondados) reaproveitam o resultado;
-- a central mostra quantas chamadas o cache já evitou.
+- rotas idênticas (mesma origem/destino arredondados) saem do **cache
+  persistente** (`geo_cache`), com validade configurável na central (padrão
+  72 h); a central mostra quantas chamadas o cache já evitou;
+- o mapa da tela de preço é **reaproveitado** entre cotações (cada mapa criado
+  conta como um carregamento).
 
-**Recursos que geram cobrança:** Routes, Places Autocomplete, Place Details,
-Geocoding e carregamento do mapa (Maps JavaScript). Configure **tetos diários
-por API** e um **alerta de orçamento** no Google Cloud — o passo a passo está na
-própria tela de Mapas.
+Os resultados de **busca e de endereço por GPS não são guardados em cache**: os
+termos do Mapbox proíbem armazenar respostas do modo temporário (o gratuito)
+da Geocoding API.
 
 ### Falhas tratadas
 
 | Situação | O que acontece |
 |---|---|
-| Chave inválida ou domínio não autorizado | o Google chama `gm_authFailure`; o app avisa e **recria os mapas no OpenStreetMap** sem quebrar |
-| Google lento ou fora do ar | tempo limite de 9 s no carregamento e 7–8 s por chamada; cai para OSRM/Nominatim |
-| Modo motocicleta indisponível | usa rota de carro e informa na tela |
+| Token inválido, revogado ou domínio fora da restrição de URL | o app avisa e **recria os mapas no OpenStreetMap** sem quebrar |
+| Mapbox lento ou fora do ar | tempo limite de 9 s no carregamento e 6–8 s por chamada; cai para OSRM/Nominatim |
+| Aparelho sem WebGL | o mapa é desenhado pelo Leaflet/OpenStreetMap |
 | Nada responde | distância estimada, sempre marcada como estimativa |
-| Service worker | **não intercepta** requisições do Google (ele gerencia o próprio cache) |
+| Service worker | **não intercepta** requisições do Mapbox (ele gerencia o próprio cache) |
 
 ### Estrutura
 
@@ -169,6 +177,7 @@ server/          backend (TypeScript puro)
   admin.ts       dashboard, aprovações, tarifas, auditoria, suporte
   fares.ts       cálculo de tarifa e comissão (centavos inteiros)
   geo.ts         rotas, geocodificação, área de cobertura
+  mapbox.ts      Mapbox: rotas (Directions), endereços (Geocoding), diagnóstico do token
   notify.ts      SSE + notificações persistentes
 public/          frontend (mobile-first, 3 apps)
 tests/           testes ponta a ponta (node --test)
@@ -220,8 +229,8 @@ data/            banco, segredo de sessão e uploads privados (criado em runtime
 
 ## Testes da V2 (executados de verdade)
 
-`npm test` roda **38 testes** (23 novos da V2). Resultado da última execução:
-**38/38 aprovados**. Cobrem, entre outros:
+`npm test` roda **59 testes**. Resultado da última execução:
+**59/59 aprovados**. Cobrem, entre outros:
 
 - **Credenciais**: salvas cifradas (o `.db` não revela o segredo), devolvidas
   mascaradas, valor mascarado reenviado não corrompe o que está salvo, URL
@@ -250,12 +259,16 @@ data/            banco, segredo de sessão e uploads privados (criado em runtime
 - **Notificações**: replay por `since`, confirmação de entrega, chave VAPID.
 - **Permissões**: parceiro não confirma pela passageira, não mexe em tarifas nem
   no financeiro; passageiro não controla a corrida do parceiro.
-- **Google Maps**: decodificação do polyline conferida contra o exemplo oficial
-  do Google; chave de servidor **não vaza** em nenhuma resposta ao frontend e
-  fica cifrada no banco; "forçar OpenStreetMap" ignora a chave; validade de
-  cache validada; limpeza de cache; diagnóstico sem chave; `/api/geo/place`
-  exige `place_id` e autenticação; procedência da rota gravada na cotação e na
-  corrida, com o preço batendo com a distância da rota (não a linha reta).
+- **Mapas (Mapbox)**: com a API do Mapbox simulada no formato real — rota
+  define distância e preço e é reaproveitada do cache; busca limitada à área
+  atendida, com o que fica fora marcado; endereço do GPS escolhe o item mais
+  específico; Mapbox fora do ar ou sem rota cai para a estimativa. Token de
+  servidor **não vaza** em nenhuma resposta ao frontend e fica cifrado no
+  banco; token secreto (`sk.`) é recusado como token público; "forçar
+  OpenStreetMap" ignora o token; só estilos da lista são aceitos; validade e
+  limpeza do cache; diagnóstico com e sem token; procedência da rota gravada
+  na cotação e na corrida, com o preço batendo com a distância da rota (não a
+  linha reta).
 
 ### Verificação manual no navegador (V2)
 
@@ -304,8 +317,8 @@ aprovação pela central e dashboard.
 
 | Item | Situação |
 |---|---|
-| Google Maps Platform | **integrado** (Routes/Places/Geocoding/Maps JS). Falta você criar as chaves no Google Cloud com faturamento ativo e colá-las na central → 🗺️ Mapas |
-| OpenStreetMap/OSRM/Nominatim | reserva automática, pública e gratuita; usada enquanto não houver chave do Google |
+| Mapbox | **integrado** (Mapbox GL JS, Directions e Geocoding). Falta você criar a conta em account.mapbox.com, colar o token público na central → 🗺️ Mapas e rodar o "Testar agora" |
+| OpenStreetMap/OSRM/Nominatim | reserva automática, pública e gratuita; usada enquanto não houver token do Mapbox |
 | Login com Google | opcional; exige `GOOGLE_CLIENT_ID` (gratuito) — instruções no `.env.example` |
 | Pix e cartão | **integrado** (Mercado Pago). Falta só você colar as credenciais na central → 💳 Pagamentos; sem elas, modo de teste identificado |
 | Split automático | **implementado** (OAuth + `application_fee`). Depende do Client ID/Secret e de cobrar depois do aceite |

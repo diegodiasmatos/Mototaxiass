@@ -382,97 +382,183 @@ window.addEventListener('offline', () => {
 window.addEventListener('online', () => { $('#offline-bar')?.remove(); toast('Conexão restabelecida', 'ok'); });
 
 /* ============================================================
-   MAPA — adaptador único para Google Maps e Leaflet/OpenStreetMap.
+   MAPA — adaptador único para Mapbox GL JS e Leaflet/OpenStreetMap.
    O resto do aplicativo usa sempre a mesma API (makeMap, emojiMarker,
    drawRoute, accuracyCircle), sem saber qual provedor está ativo.
-   Google entra quando há chave de navegador configurada; sem ela, o
+   O Mapbox entra quando há token público configurado; sem ele, o
    OpenStreetMap continua funcionando (mapa real, não simulado).
    ============================================================ */
 
+// Versão fixa de propósito: uma versão nova só entra depois de testada aqui.
+const MAPBOX_GL_VERSION = '3.33.0';
+const MAPBOX_DEFAULT_STYLE = 'mapbox://styles/mapbox/streets-v12';
+
 let _mapsProvider = 'osm';
-let _googleReady = null;
+let _mapboxReady = null;
+let _mapboxStyle = MAPBOX_DEFAULT_STYLE;
+let _mapboxSeq = 0;
 
 function mapsProvider() { return _mapsProvider; }
 function hasLeaflet() { return typeof L !== 'undefined'; }
 
-/** Chamado pelo próprio Google quando a chave é inválida ou o domínio não é autorizado. */
-window.gm_authFailure = () => {
+/**
+ * O Mapbox recusou o token (inválido, revogado ou domínio fora da restrição
+ * de URL): volta para o OpenStreetMap e manda as telas refazerem os mapas.
+ */
+function mapboxFailed(message) {
+  if (_mapsProvider !== 'mapbox') return;
   _mapsProvider = 'osm';
-  toast('Chave do Google Maps recusada (verifique a restrição de domínio). Usando OpenStreetMap.', 'err');
-  // recria os mapas já abertos no provedor de reserva
-  document.dispatchEvent(new CustomEvent('maps-provider-changed', { detail: 'osm' }));
-};
+  toast(message, 'err');
+  // recria os mapas já abertos no provedor de reserva — fora do evento de
+  // erro do próprio mapa, que não pode ser destruído enquanto o dispara
+  setTimeout(() => document.dispatchEvent(
+    new CustomEvent('maps-provider-changed', { detail: 'osm' })), 0);
+}
 
-/** Carrega a Maps JavaScript API uma única vez. */
-function loadGoogleMaps(key) {
-  if (_googleReady) return _googleReady;
-  _googleReady = new Promise((resolve, reject) => {
-    if (window.google?.maps) { resolve(window.google.maps); return; }
+/** Carrega o Mapbox GL JS (script + CSS) uma única vez. */
+function loadMapboxGL() {
+  if (_mapboxReady) return _mapboxReady;
+  _mapboxReady = new Promise((resolve, reject) => {
+    if (window.mapboxgl) { resolve(window.mapboxgl); return; }
+    const base = `https://api.mapbox.com/mapbox-gl-js/v${MAPBOX_GL_VERSION}`;
+    const css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = `${base}/mapbox-gl.css`;
+    document.head.appendChild(css);
     const s = document.createElement('script');
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}`
-      + '&v=weekly&language=pt-BR&region=BR&libraries=geometry&loading=async';
+    s.src = `${base}/mapbox-gl.js`;
     s.async = true;
-    s.onload = () => (window.google?.maps
-      ? resolve(window.google.maps)
-      : reject(new Error('Google Maps carregou sem a biblioteca esperada.')));
-    s.onerror = () => reject(new Error('Falha ao carregar o Google Maps.'));
+    s.onload = () => (window.mapboxgl
+      ? resolve(window.mapboxgl)
+      : reject(new Error('Mapbox GL carregou sem a biblioteca esperada.')));
+    s.onerror = () => reject(new Error('Falha ao carregar o Mapbox GL.'));
     // rede lenta não pode travar a abertura do aplicativo
-    setTimeout(() => reject(new Error('Google Maps demorou demais para responder.')), 9000);
+    setTimeout(() => reject(new Error('Mapbox GL demorou demais para responder.')), 9000);
     document.head.appendChild(s);
   });
-  return _googleReady;
+  return _mapboxReady;
 }
 
 /**
  * Prepara o provedor de mapas a partir de /api/config.
- * Se a chave do Google falhar (domínio não autorizado, cota, sem rede),
- * cai para o OpenStreetMap e avisa — nunca fica sem mapa silenciosamente.
+ * Se o Mapbox falhar (sem rede, biblioteca bloqueada), cai para o
+ * OpenStreetMap e avisa — nunca fica sem mapa silenciosamente.
  */
 async function initMaps(config) {
-  const key = config?.maps?.browser_key;
-  if (!key) { _mapsProvider = 'osm'; return 'osm'; }
+  const token = config?.maps?.mapbox_token;
+  if (!token) { _mapsProvider = 'osm'; return 'osm'; }
   try {
-    await loadGoogleMaps(key);
-    _mapsProvider = 'google';
+    const mb = await loadMapboxGL();
+    mb.accessToken = token;
+    _mapboxStyle = config.maps.style || MAPBOX_DEFAULT_STYLE;
+    _mapsProvider = 'mapbox';
   } catch {
     _mapsProvider = 'osm';
-    toast('Google Maps indisponível — usando OpenStreetMap.', 'err');
+    toast('Mapbox indisponível — usando OpenStreetMap.', 'err');
   }
   return _mapsProvider;
 }
 
-/* ---------- adaptador Google com a mesma interface do Leaflet ---------- */
-function googleMapAdapter(el, center, zoom) {
-  const gm = window.google.maps;
-  const map = new gm.Map(el, {
-    center: { lat: center.lat, lng: center.lng },
-    zoom,
-    disableDefaultUI: true,
-    gestureHandling: 'greedy',
-    clickableIcons: false,
-    mapId: undefined,
-  });
-  const clickHandlers = new Map();
+/* ---------- adaptador Mapbox com a mesma interface do Leaflet ---------- */
 
+// O Mapbox usa blocos de 512 px: o zoom dele fica 1 abaixo do zoom do Leaflet.
+const mbZoom = z => Math.max(0, z - 1);
+
+function mapboxAdapter(el, center, zoom) {
+  const mb = window.mapboxgl;
+  const map = new mb.Map({
+    container: el,
+    style: _mapboxStyle,
+    center: [center.lng, center.lat],
+    zoom: mbZoom(zoom),
+    language: 'pt-BR',
+    attributionControl: false,
+    // mapa sempre com o norte para cima: girar/inclinar sem querer confunde
+    dragRotate: false,
+    pitchWithRotate: false,
+    touchPitch: false,
+  });
+  map.touchZoomRotate.disableRotation();
+  map.addControl(new mb.AttributionControl({ compact: true }), 'bottom-left');
+
+  // rotas e círculos só podem entrar depois que o estilo carrega
+  let ready = false, queue = [];
+  map.once('load', () => { ready = true; queue.forEach(fn => fn()); queue = []; });
+  map.on('error', e => {
+    const status = e?.error?.status;
+    if (status === 401 || status === 403) {
+      mapboxFailed('Token do Mapbox recusado (confira o token e a restrição de URL). Usando OpenStreetMap.');
+    }
+  });
+
+  const clickHandlers = new Map();
   return {
-    _google: map,
-    _provider: 'google',
-    setView([lat, lng], z) { map.setCenter({ lat, lng }); if (z) map.setZoom(z); },
-    fitBounds(bounds, opts = {}) {
-      const pad = (opts.padding && opts.padding[0]) || 30;
-      map.fitBounds(bounds, pad);
+    _mapbox: map,
+    _provider: 'mapbox',
+    _whenReady(fn) { if (ready) fn(); else queue.push(fn); },
+    setView([lat, lng], z) {
+      map.jumpTo({ center: [lng, lat], ...(z ? { zoom: mbZoom(z) } : {}) });
     },
-    invalidateSize() { gm.event.trigger(map, 'resize'); },
+    fitBounds(bounds, opts = {}) {
+      if (!bounds || bounds.isEmpty()) return;
+      const pad = (opts.padding && opts.padding[0]) || 30;
+      map.fitBounds(bounds, { padding: pad, maxZoom: 16, duration: 0 });
+    },
+    invalidateSize() { map.resize(); },
     on(evt, fn) {
       if (evt !== 'click') return;
-      const l = map.addListener('click', e => fn({ latlng: { lat: e.latLng.lat(), lng: e.latLng.lng() } }));
-      clickHandlers.set(fn, l);
+      const h = e => fn({ latlng: { lat: e.lngLat.lat, lng: e.lngLat.lng } });
+      clickHandlers.set(fn, h);
+      map.on('click', h);
     },
     off(evt, fn) {
-      const l = clickHandlers.get(fn);
-      if (l) { l.remove(); clickHandlers.delete(fn); }
+      const h = clickHandlers.get(fn);
+      if (h) { map.off('click', h); clickHandlers.delete(fn); }
     },
-    remove() { el.innerHTML = ''; },
+    remove() { queue = []; map.remove(); },
+  };
+}
+
+/** Polígono aproximando um círculo de `radius` metros (o Mapbox não tem círculo em metros). */
+function circleFeature(lat, lng, radius, steps = 48) {
+  const dLat = radius / 111320;
+  const dLng = dLat / Math.max(0.01, Math.cos(lat * Math.PI / 180));
+  const ring = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = (i / steps) * 2 * Math.PI;
+    ring.push([lng + dLng * Math.cos(a), lat + dLat * Math.sin(a)]);
+  }
+  return { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [ring] } };
+}
+
+/**
+ * Camada GeoJSON do Mapbox (fonte + camadas) com remoção segura: funciona
+ * mesmo se pedida antes de o estilo carregar ou depois de o mapa ser destruído.
+ */
+function mapboxGeoLayer(map, data, layers) {
+  const m = map._mapbox;
+  const id = `amt-${++_mapboxSeq}`;
+  let removed = false, added = false;
+  map._whenReady(() => {
+    if (removed) return;
+    m.addSource(id, { type: 'geojson', data });
+    // acima das ruas e abaixo dos nomes, para o traçado não cobrir o texto do mapa
+    const before = m.getStyle().layers
+      .find(l => l.type === 'symbol' && l.layout?.['text-field'])?.id;
+    layers.forEach((layer, i) => m.addLayer({ ...layer, id: `${id}-${i}`, source: id }, before));
+    added = true;
+  });
+  return {
+    setData(next) { data = next; if (added && !removed) m.getSource(id)?.setData(next); },
+    remove() {
+      if (removed) return;
+      removed = true;
+      if (!added) return;
+      try {
+        layers.forEach((_, i) => { if (m.getLayer(`${id}-${i}`)) m.removeLayer(`${id}-${i}`); });
+        if (m.getSource(id)) m.removeSource(id);
+      } catch { /* mapa já destruído: não há o que remover */ }
+    },
   };
 }
 
@@ -480,9 +566,15 @@ function makeMap(elId, center, zoom = 14) {
   const el = document.getElementById(elId);
   if (!el) return null;
 
-  if (_mapsProvider === 'google' && window.google?.maps) {
-    try { return googleMapAdapter(el, center, zoom); }
-    catch { /* cai para o Leaflet abaixo */ }
+  if (_mapsProvider === 'mapbox' && window.mapboxgl) {
+    try { return mapboxAdapter(el, center, zoom); }
+    catch {
+      // aparelho sem WebGL: o Mapbox não desenha — este mapa e os próximos
+      // seguem no Leaflet abaixo
+      _mapsProvider = 'osm';
+      el.replaceChildren();
+      el.classList.remove('mapboxgl-map');
+    }
   }
   if (!hasLeaflet()) {
     el.innerHTML = '<div class="map-fallback">🗺️ O mapa não pôde ser carregado (sem internet?).<br>Os endereços e preços continuam funcionando normalmente.</div>';
@@ -499,21 +591,18 @@ function makeMap(elId, center, zoom = 14) {
 
 function emojiMarker(map, lat, lng, emoji, title = '') {
   if (!map) return null;
-  if (map._provider === 'google') {
-    const gm = window.google.maps;
-    const marker = new gm.Marker({
-      position: { lat, lng }, map: map._google, title,
-      // emoji desenhado como rótulo: mesmo visual dos marcadores do Leaflet
-      label: { text: emoji, fontSize: '22px' },
-      icon: {
-        path: gm.SymbolPath.CIRCLE, scale: 0,
-        fillOpacity: 0, strokeOpacity: 0,
-      },
-    });
+  if (map._provider === 'mapbox') {
+    // mesmo visual dos marcadores do Leaflet: o emoji num elemento HTML
+    const el = document.createElement('div');
+    el.className = 'marker-moto';
+    el.textContent = emoji;
+    if (title) el.title = title;
+    const marker = new window.mapboxgl.Marker({ element: el, anchor: 'center' })
+      .setLngLat([lng, lat]).addTo(map._mapbox);
     return {
-      setLatLng([la, ln]) { marker.setPosition({ lat: la, lng: ln }); },
-      remove() { marker.setMap(null); },
-      _google: marker,
+      setLatLng([la, ln]) { marker.setLngLat([ln, la]); return this; },
+      remove() { marker.remove(); },
+      _mapbox: marker,
     };
   }
   return L.marker([lat, lng], {
@@ -525,19 +614,20 @@ function emojiMarker(map, lat, lng, emoji, title = '') {
 /** geometry: [[lng,lat],...] (GeoJSON) */
 function drawRoute(map, geometry, color = '#0d1b2e') {
   if (!map) return null;
-  if (map._provider === 'google') {
-    const gm = window.google.maps;
-    const path = geometry.map(([lng, lat]) => ({ lat, lng }));
-    const line = new gm.Polyline({
-      path, map: map._google,
-      strokeColor: color, strokeWeight: 5, strokeOpacity: .75,
-    });
-    const bounds = new gm.LatLngBounds();
-    path.forEach(p => bounds.extend(p));
+  if (map._provider === 'mapbox') {
+    const layout = { 'line-join': 'round', 'line-cap': 'round' };
+    const layer = mapboxGeoLayer(map,
+      { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: geometry } },
+      [
+        // contorno claro: a rota continua visível sobre ruas escuras e satélite
+        { type: 'line', layout, paint: { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': .7 } },
+        { type: 'line', layout, paint: { 'line-color': color, 'line-width': 5, 'line-opacity': .85 } },
+      ]);
+    const bounds = new window.mapboxgl.LngLatBounds();
+    geometry.forEach(c => bounds.extend(c));
     return {
       getBounds() { return bounds; },
-      remove() { line.setMap(null); },
-      _google: line,
+      remove() { layer.remove(); },
     };
   }
   const latlngs = geometry.map(([lng, lat]) => [lat, lng]);
@@ -547,15 +637,15 @@ function drawRoute(map, geometry, color = '#0d1b2e') {
 /** Círculo de precisão do GPS. */
 function accuracyCircle(map, lat, lng, radius) {
   if (!map) return null;
-  if (map._provider === 'google') {
-    const c = new window.google.maps.Circle({
-      map: map._google, center: { lat, lng }, radius,
-      strokeColor: '#2563eb', strokeWeight: 1, fillColor: '#2563eb', fillOpacity: .08,
-    });
+  if (map._provider === 'mapbox') {
+    const layer = mapboxGeoLayer(map, circleFeature(lat, lng, radius), [
+      { type: 'fill', paint: { 'fill-color': '#2563eb', 'fill-opacity': .08 } },
+      { type: 'line', paint: { 'line-color': '#2563eb', 'line-width': 1 } },
+    ]);
     return {
-      setLatLng([la, ln]) { c.setCenter({ lat: la, lng: ln }); return this; },
-      setRadius(r) { c.setRadius(r); return this; },
-      remove() { c.setMap(null); },
+      setLatLng([la, ln]) { lat = la; lng = ln; layer.setData(circleFeature(lat, lng, radius)); return this; },
+      setRadius(r) { radius = r; layer.setData(circleFeature(lat, lng, radius)); return this; },
+      remove() { layer.remove(); },
     };
   }
   return L.circle([lat, lng], {

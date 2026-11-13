@@ -555,6 +555,8 @@ function renderDriveMap() {
     const map = S.maps.drive;
     if (!map) return;
     S.driveLayers.forEach(l => l.remove()); S.driveLayers = [];
+    S.meMarker = null; S.paxMarker = null;   // foram removidos junto com as camadas
+    map.invalidateSize();        // a tela acabou de aparecer: mede antes de enquadrar
     S.driveLayers.push(emojiMarker(map, r.origin.lat, r.origin.lng, '📍'));
     S.driveLayers.push(emojiMarker(map, r.dest.lat, r.dest.lng, '🏁'));
     if (r.route_geojson) {
@@ -563,12 +565,22 @@ function renderDriveMap() {
       map.fitBounds(line.getBounds(), { padding: [30, 30] });
     }
     navigator.geolocation?.getCurrentPosition(p => {
+      if (S.maps.drive !== map) return;      // o mapa foi refeito enquanto o GPS respondia
+      S.meMarker?.remove();
       S.meMarker = emojiMarker(map, p.coords.latitude, p.coords.longitude, '🏍️');
       S.driveLayers.push(S.meMarker);
     }, () => { });
-    map.invalidateSize();
   }, 80);
 }
+
+// Se o Mapbox for recusado em tempo de execução, refaz o mapa no OpenStreetMap
+document.addEventListener('maps-provider-changed', () => {
+  try { S.maps.drive?.remove(); } catch { /* já destruído */ }
+  const el = document.getElementById('map-drive');
+  if (el) el.innerHTML = '';
+  S.maps.drive = null; S.driveLayers = []; S.meMarker = null; S.paxMarker = null;
+  if (S.activeRide) renderDriveMap();
+});
 
 /* ---------- chat ---------- */
 async function loadDChat() {

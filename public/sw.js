@@ -5,7 +5,7 @@
    - Imagens e mapas: cache primeiro (economiza dados do celular do usuário). */
 'use strict';
 
-const VERSION = 'amt-v1';
+const VERSION = 'amt-v2';
 const SHELL = `${VERSION}-shell`;
 const MEDIA = `${VERSION}-media`;
 
@@ -101,9 +101,11 @@ self.addEventListener('fetch', event => {
   }
 
   // imagens próprias e tiles de mapa: cache primeiro
-  // Nunca interceptar o Google Maps: ele gerencia o próprio cache e
-  // precisa das requisições originais para a cobrança/uso funcionarem.
-  if (/(^|\.)googleapis\.com$|(^|\.)gstatic\.com$|(^|\.)google\.com$/.test(url.hostname)) return;
+  // Nunca interceptar o Mapbox (biblioteca, estilo, blocos do mapa): ele
+  // gerencia o próprio cache e os termos de uso não permitem guardar os
+  // blocos por fora. O mesmo vale para os scripts do Google (login).
+  if (/(^|\.)mapbox\.com$|(^|\.)googleapis\.com$|(^|\.)gstatic\.com$|(^|\.)google\.com$/
+    .test(url.hostname)) return;
 
   const isMedia = /\.(png|jpg|jpeg|svg|webp|ico)$/i.test(url.pathname)
     || url.hostname.endsWith('tile.openstreetmap.org');

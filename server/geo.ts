@@ -1,8 +1,6 @@
 import { haversineM, ApiError } from './util.ts';
 import { getSetting, getSettingNum } from './db.ts';
-import {
-  googleEnabled, googleRoute, googleAutocomplete, googlePlaceDetails, googleReverse,
-} from './google-maps.ts';
+import { mapboxEnabled, mapboxRoute, mapboxSearch, mapboxReverse } from './mapbox.ts';
 import { searchBase, nearestBase } from './address-base.ts';
 
 const UA = 'AssisMotoTaxi/1.0 (plataforma de mototaxi; contato: admin local)';
@@ -14,12 +12,10 @@ export interface RouteResult {
   geometry: number[][];
   /** true quando calculado por estimativa (sem serviço de rotas) */
   estimated: boolean;
-  /** quem calculou: google | osrm | estimativa */
-  provider: 'google' | 'osrm' | 'estimativa';
-  /** modo de deslocamento realmente usado */
-  mode: 'two_wheeler' | 'drive' | 'estimativa';
-  /** true quando o modo de motocicleta não estava disponível e caiu para carro */
-  mode_fallback?: boolean;
+  /** quem calculou: mapbox | osrm | estimativa */
+  provider: 'mapbox' | 'osrm' | 'estimativa';
+  /** modo de deslocamento realmente usado (nenhum dos serviços tem perfil de moto) */
+  mode: 'drive' | 'estimativa';
 }
 
 export interface GeoPoint { lat: number; lng: number; text?: string }
@@ -29,26 +25,25 @@ function offline(): boolean { return process.env.GEO_OFFLINE === '1'; }
 /**
  * Rota real por vias.
  *
- * 1º Google Routes API em modo TWO_WHEELER (motocicleta de verdade);
- * 2º OSRM (perfil driving) quando não há chave do Google;
+ * 1º Mapbox Directions API (perfil driving), quando há token configurado;
+ * 2º OSRM (perfil driving) quando não há token ou o Mapbox falha;
  * 3º estimativa haversine × 1.3, sempre marcada como estimativa.
  *
  * O resultado diz quem calculou e em que modo — a interface mostra isso em
  * vez de apresentar rota de carro como se fosse de moto.
  */
 export async function route(from: GeoPoint, to: GeoPoint): Promise<RouteResult> {
-  if (!offline() && googleEnabled()) {
+  if (!offline() && mapboxEnabled()) {
     try {
-      const g = await googleRoute(from, to);
-      if (g) {
+      const m = await mapboxRoute(from, to);
+      if (m) {
         return {
-          distance_m: g.distance_m,
-          duration_s: g.duration_s,
-          geometry: g.geometry,
+          distance_m: m.distance_m,
+          duration_s: m.duration_s,
+          geometry: m.geometry,
           estimated: false,
-          provider: 'google',
-          mode: g.mode === 'TWO_WHEELER' ? 'two_wheeler' : 'drive',
-          mode_fallback: g.fellBackToDrive,
+          provider: 'mapbox',
+          mode: 'drive',
         };
       }
     } catch { /* cai para OSRM */ }
@@ -108,20 +103,13 @@ const LOCAL_PLACES: { name: string; lat: number; lng: number; tags?: string }[] 
 
 export interface GeoSearchResult {
   text: string;
-  /** coordenada; nula nas sugestões do Google até o usuário escolher uma */
   lat: number;
   lng: number;
   /** metros até o centro da cidade — usado para ordenar e avisar o usuário */
   distance_m: number;
   in_coverage: boolean;
-  source: 'local' | 'osm' | 'google';
+  source: 'local' | 'osm' | 'mapbox';
   approx?: boolean;
-  /** identificador do Google; resolvido em /api/geo/place */
-  place_id?: string;
-  /** linha secundária (bairro, cidade) nas sugestões do Google */
-  secondary?: string;
-  /** true quando a coordenada ainda precisa ser resolvida */
-  needs_details?: boolean;
   /** presentes quando a busca foi "rua + número" na base local */
   street?: string;
   number?: string;
@@ -134,7 +122,8 @@ function normalize(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 }
 
-function decorate(text: string, lat: number, lng: number, source: 'local' | 'osm'): GeoSearchResult {
+function decorate(text: string, lat: number, lng: number,
+  source: GeoSearchResult['source']): GeoSearchResult {
   const cLat = getSettingNum('center_lat'), cLng = getSettingNum('center_lng');
   const radius = getSettingNum('coverage_radius_km') * 1000;
   const distance_m = Math.round(haversineM(lat, lng, cLat, cLng));
@@ -148,11 +137,12 @@ function decorate(text: string, lat: number, lng: number, source: 'local' | 'osm
  * municípios vizinhos (Cafelândia, Tupãssi, Palotina…) sem qualquer ordenação —
  * o passageiro escolhia "Rodoviária" e recebia a de outra cidade. Agora:
  *  1. pontos de referência locais entram sempre;
- *  2. a consulta ao Nominatim é feita com o nome da cidade anexado;
- *  3. os resultados são ordenados pela distância ao centro e os de fora da
- *     área de cobertura vão para o fim, marcados como fora de área.
+ *  2. o Mapbox (quando há token) busca só dentro da caixa da área atendida;
+ *  3. a consulta ao Nominatim é feita com o nome da cidade anexado;
+ *  4. os resultados de fora da área de cobertura vão para o fim, marcados
+ *     como fora de área.
  */
-export async function searchAddress(q: string, sessionToken?: string): Promise<GeoSearchResult[]> {
+export async function searchAddress(q: string): Promise<GeoSearchResult[]> {
   const cLat = getSettingNum('center_lat'), cLng = getSettingNum('center_lng');
   const cityFull = getSetting('city_name');              // "Assis Chateaubriand - PR"
   const cityName = cityFull.split('-')[0].trim();        // "Assis Chateaubriand"
@@ -195,21 +185,25 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
   // deixava a busca lenta — e o Nominatim ainda podia chutar outra cidade.
   if (baseHits >= 1) return results.slice(0, 8);
 
-  // 2) Google Places (New): ruas, números, estabelecimentos e bairros.
-  // A coordenada só é buscada quando o usuário escolhe (economiza chamada).
-  if (!offline() && googleEnabled()) {
+  // 2) Mapbox Geocoding: ruas, números e bairros, já com a coordenada e
+  //    limitado à caixa da área atendida.
+  if (!offline() && mapboxEnabled()) {
     try {
-      const preds = await googleAutocomplete(q, sessionToken);
-      if (preds?.length) {
-        for (const p of preds) {
-          results.push({
-            text: p.text, secondary: p.secondary,
-            lat: NaN, lng: NaN, distance_m: 0, in_coverage: true,
-            source: 'google', place_id: p.place_id, needs_details: true,
-          });
+      const found = await mapboxSearch(q);
+      if (found?.length) {
+        for (const p of found) {
+          // mesmo ponto que um local já listado: não repete
+          if (results.some(x => haversineM(x.lat, x.lng, p.lat, p.lng) < 40)) continue;
+          const item = decorate(p.text, p.lat, p.lng, 'mapbox');
+          // bairro/localidade: o pino cai no centro da área, não num endereço
+          if (!p.exact) item.approx = true;
+          results.push(item);
         }
-        // com Google respondendo, basta ele + os pontos locais
-        return results.slice(0, 8);
+        // com o Mapbox respondendo, basta ele + os pontos locais; mantém a
+        // ordem de relevância e manda o que ficou fora da área para o fim
+        // (a caixa de busca é um quadrado; a cobertura, um círculo)
+        return [...results.filter(x => x.in_coverage), ...results.filter(x => !x.in_coverage)]
+          .slice(0, 8);
       }
     } catch { /* cai para o OSM abaixo */ }
   }
@@ -269,30 +263,16 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
 }
 
 /**
- * Resolve a sugestão do Google em coordenada + endereço, já validando a
- * área de cobertura. Chamado só quando o usuário escolhe um item da lista.
- */
-export async function resolvePlace(placeId: string, sessionToken?: string):
-  Promise<GeoSearchResult> {
-  const place = await googlePlaceDetails(placeId, sessionToken);
-  if (!place) throw new ApiError(404, 'Não conseguimos localizar esse endereço. Tente outro.');
-  const item = decorate(place.address || place.text, place.lat, place.lng, 'google');
-  item.place_id = place.place_id;
-  item.secondary = place.address;
-  return item;
-}
-
-/**
  * Reverse geocoding. Quando o serviço não responde, devolve as coordenadas de
  * forma explícita — nunca inventa um endereço que o usuário possa confundir
  * com o real (`exact: false` sinaliza isso à interface).
  */
 export async function reverseGeocode(lat: number, lng: number):
   Promise<{ text: string; exact: boolean }> {
-  if (!offline() && googleEnabled()) {
+  if (!offline() && mapboxEnabled()) {
     try {
-      const g = await googleReverse(lat, lng);
-      if (g) return g;
+      const m = await mapboxReverse(lat, lng);
+      if (m) return m;
     } catch { /* cai para o Nominatim */ }
   }
   if (!offline()) {

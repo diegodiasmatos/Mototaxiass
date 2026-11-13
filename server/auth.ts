@@ -149,16 +149,16 @@ export const authRoutes: Route[] = [
 
   /**
    * Configuração pública consumida pelo frontend.
-   * A chave do Maps que vai aqui é a do NAVEGADOR (restrita por domínio no
-   * Google Cloud). A chave de servidor nunca sai do backend.
+   * O token do Mapbox que vai aqui é o PÚBLICO (pk., restrito por URL na
+   * conta Mapbox). O token de servidor nunca sai do backend.
    */
   route('GET /api/config', null, async ({ res }) => {
-    const { browserKey, googleEnabled } = await import('./google-maps.ts');
-    // "Forçar OpenStreetMap" vale para TUDO: com o provedor em 'osm', a chave
-    // do navegador nem é enviada — senão o app tentaria carregar um Google
-    // quebrado (sem faturamento/API desativada) em vez de usar o OSM que funciona.
+    const { publicToken, mapboxEnabled, mapStyle } = await import('./mapbox.ts');
+    // "Forçar OpenStreetMap" vale para TUDO: com o provedor em 'osm', o token
+    // nem é enviado — senão o app tentaria carregar um Mapbox com problema
+    // (token revogado, cota estourada) em vez de usar o OSM que funciona.
     const forceOsm = getSetting('maps_provider') === 'osm';
-    const bk = forceOsm ? null : browserKey();
+    const tk = forceOsm ? null : publicToken();
     json(res, 200, {
       city_name: getSetting('city_name'),
       center: { lat: Number(getSetting('center_lat')), lng: Number(getSetting('center_lng')) },
@@ -167,9 +167,10 @@ export const authRoutes: Route[] = [
       google_client_id: process.env.GOOGLE_CLIENT_ID || null,
       review_sla_hours: Number(getSetting('review_sla_hours')),
       maps: {
-        browser_key: bk,                // pública por natureza; restrinja por domínio
-        provider: bk ? 'google' : 'osm',
-        server_routing: googleEnabled() ? 'google' : 'osrm',
+        mapbox_token: tk,               // público por natureza; restrinja por URL
+        provider: tk ? 'mapbox' : 'osm',
+        style: mapStyle(),
+        server_routing: mapboxEnabled() ? 'mapbox' : 'osrm',
       },
     });
   }),

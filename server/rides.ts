@@ -5,7 +5,7 @@ import {
 import { route, type Route, type SessionUser } from './router.ts';
 import { getFare, allFares, computePriceCents, splitCommission } from './fares.ts';
 import {
-  route as computeRoute, searchAddress, reverseGeocode, assertInCoverage, resolvePlace,
+  route as computeRoute, searchAddress, reverseGeocode, assertInCoverage,
 } from './geo.ts';
 import { notify, notifyAdmins, sseSend, sseSendMany } from './notify.ts';
 import {
@@ -452,17 +452,7 @@ export const rideRoutes: Route[] = [
     if (!rateLimit(`geo:${ip}`, 90, 60_000)) throw new ApiError(429, 'Aguarde um instante.');
     const q = (query.get('q') || '').trim();
     if (q.length < 2) { json(res, 200, { results: [] }); return; }
-    // o token de sessão agrupa digitação + escolha numa só cobrança do Google
-    const session = (query.get('session') || '').slice(0, 64) || undefined;
-    json(res, 200, { results: await searchAddress(q, session) });
-  }),
-
-  /** Converte a sugestão escolhida em coordenada (Place Details). */
-  route('GET /api/geo/place', 'any', async ({ res, query, ip }) => {
-    if (!rateLimit(`place:${ip}`, 60, 60_000)) throw new ApiError(429, 'Aguarde um instante.');
-    const placeId = reqStr(query.get('place_id'), 'lugar', 300);
-    const session = (query.get('session') || '').slice(0, 64) || undefined;
-    json(res, 200, { place: await resolvePlace(placeId, session) });
+    json(res, 200, { results: await searchAddress(q) });
   }),
 
   /**
@@ -538,7 +528,7 @@ export const rideRoutes: Route[] = [
       quotes,
       route: {
         geometry: rt.geometry, estimated: rt.estimated,
-        provider: rt.provider, mode: rt.mode, mode_fallback: !!rt.mode_fallback,
+        provider: rt.provider, mode: rt.mode,
       },
       online_drivers: eligibleDrivers(origin.lat, origin.lng).length,
       payment_methods: availableMethods(),

@@ -9,7 +9,7 @@ const S = {
   payment: null, payMethods: [], testMode: false,
   activeRide: null,
   maps: { home: null, quote: null, ride: null },
-  rideLayers: [], driverMarker: null, meMarker: null, accCircle: null,
+  rideLayers: [], quoteLayers: [], driverMarker: null, meMarker: null, accCircle: null,
   statsTimer: null, payTimer: null, confirmTimer: null,
   gps: { lat: null, lng: null, accuracy: null, at: 0, watchId: null, state: 'off' },
   moveAlertShown: false, pickingOnMap: null,
@@ -293,15 +293,19 @@ function initHomeMap() {
   addMapTools('map-home', S.maps.home, true);
 }
 
-// Se o Google for recusado em tempo de execução, refaz os mapas no OpenStreetMap
+// Se o Mapbox for recusado em tempo de execução, refaz os mapas no OpenStreetMap
 document.addEventListener('maps-provider-changed', () => {
   for (const k of ['home', 'quote', 'ride']) {
+    try { S.maps[k]?.remove(); } catch { /* já destruído */ }
     const el = document.getElementById(`map-${k}`);
     if (el) el.innerHTML = '';
     S.maps[k] = null;
   }
-  homeMarkers = []; S.rideLayers = []; S.driverMarker = null;
+  homeMarkers = []; S.rideLayers = []; S.quoteLayers = []; S.driverMarker = null;
+  delete homePins.origin; delete homePins.dest;
   initHomeMap();
+  if (S.origin) placeHomePin(S.origin, 'origin');
+  if (S.dest) placeHomePin(S.dest, 'dest');
   if (S.activeRide) renderRideMap();
   if (S.gps.lat != null) drawMeOnMaps(S.gps.lat, S.gps.lng, S.gps.accuracy || 30);
 });
@@ -466,22 +470,12 @@ function placeHomePin(p, kind) {
 }
 
 /**
- * Autocomplete de endereços. Diferente da V1, digitar sem escolher da lista
- * invalida a seleção anterior — assim o texto nunca fica diferente do ponto
- * realmente usado no cálculo.
- */
-/**
- * Autocomplete de endereços.
- *
- * Com o Google Places, a coordenada só é buscada quando o usuário ESCOLHE
- * um item (Place Details) — digitar não gera chamada cara, e o `session`
- * agrupa a digitação + a escolha numa única cobrança.
- * Digitar depois de escolher invalida a seleção: o texto nunca fica
- * diferente do ponto realmente usado no cálculo.
+ * Autocomplete de endereços. Toda sugestão já vem com a coordenada (base
+ * local, Mapbox ou OpenStreetMap). Digitar depois de escolher invalida a
+ * seleção: o texto nunca fica diferente do ponto realmente usado no cálculo.
  */
 function setupAutocomplete(input, list, onPick, onEdit) {
-  let timer = null, lastQuery = '', session = null;
-  const newSession = () => (session = (crypto.randomUUID?.() || String(Math.random()).slice(2)));
+  let timer = null, lastQuery = '';
 
   input.addEventListener('input', () => {
     onEdit?.();
@@ -490,14 +484,12 @@ function setupAutocomplete(input, list, onPick, onEdit) {
     if (q.length < 2) { list.hidden = true; return; }
     if (q === lastQuery) return;
     lastQuery = q;
-    if (!session) newSession();
     list.innerHTML = '<button type="button" disabled>Buscando…</button>';
     list.hidden = false;
     // espera o usuário parar de digitar: menos chamadas, menos custo
     timer = setTimeout(async () => {
       try {
-        const { results } = await api(
-          `/api/geo/search?q=${encodeURIComponent(q)}&session=${encodeURIComponent(session)}`);
+        const { results } = await api(`/api/geo/search?q=${encodeURIComponent(q)}`);
         if (!results.length) {
           list.innerHTML = `<button type="button" disabled>
             Nada encontrado. Tente a rua + bairro, ou use 📌 para marcar no mapa.</button>`;
@@ -507,23 +499,12 @@ function setupAutocomplete(input, list, onPick, onEdit) {
           const num = r.number_how === 'exato' ? ' · nº confirmado ✅'
             : r.number_how === 'interpolado' ? ' · nº estimado'
               : r.number_how === 'centro' ? ' · ajuste o ponto no mapa' : '';
-          const detalhe = r.needs_details
-            ? (r.secondary ? `<span class="muted small">${escapeHtml(r.secondary)}</span>` : '')
-            : `<span class="muted small">· ${fmt.dist(r.distance_m)} do centro${num}${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>`;
+          const detalhe = `<span class="muted small">· ${fmt.dist(r.distance_m)} do centro${num}${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>`;
           return `<button type="button" data-i="${i}">${escapeHtml(r.text)}<br>${detalhe}</button>`;
         }).join('');
 
-        $$('button[data-i]', list).forEach(b => b.onclick = async () => {
-          let r = results[Number(b.dataset.i)];
-          // sugestão do Google: resolve a coordenada agora
-          if (r.needs_details && r.place_id) {
-            b.textContent = 'Localizando…';
-            try {
-              const { place } = await api(
-                `/api/geo/place?place_id=${encodeURIComponent(r.place_id)}&session=${encodeURIComponent(session)}`);
-              r = place;
-            } catch (e) { toast(e.message, 'err'); list.hidden = true; return; }
-          }
+        $$('button[data-i]', list).forEach(b => b.onclick = () => {
+          const r = results[Number(b.dataset.i)];
           if (!r.in_coverage) {
             toast(`"${r.text}" está fora da área de atendimento (${fmt.dist(r.distance_m)} do centro).`, 'err');
             list.hidden = true;
@@ -531,7 +512,6 @@ function setupAutocomplete(input, list, onPick, onEdit) {
           }
           input.value = r.text;
           list.hidden = true;
-          session = null;                     // sessão encerrada na escolha
           onPick({
             lat: r.lat, lng: r.lng, text: r.text,
             approx: !!r.approx, street: r.street, number: r.number,
@@ -583,19 +563,15 @@ function renderQuotes(r) {
   const q0 = S.quotes[0];
   // procedência da rota: o passageiro vê se é rota de moto, de carro ou estimativa
   const PROC = {
-    two_wheeler: '<span class="pill green">rota de motocicleta</span>',
-    drive: '<span class="pill blue">rota de carro</span>',
+    drive: '<span class="pill blue">rota por ruas</span>',
     estimativa: '<span class="pill yellow">distância estimada</span>',
   };
   const procedencia = PROC[r.route.mode] || '';
-  const aviso = r.route.mode_fallback
-    ? '<br><span class="muted small">⚠️ Rota de motocicleta indisponível neste trajeto; usamos a rota de carro.</span>'
-    : '';
 
   $('#quote-summary').innerHTML =
     `📍 ${escapeHtml(S.origin.text)}<br>🏁 ${escapeHtml(S.dest.text)}<br>` +
     `Distância: <b>${fmt.dist(q0.distance_m)}</b> · Tempo estimado: <b>${fmt.dur(q0.duration_s)}</b>` +
-    ` · ${procedencia}${aviso}` +
+    ` · ${procedencia}` +
     `<br>🏍️ ${r.online_drivers} mototaxista(s) próximos disponíveis`;
 
   const DESC = {
@@ -644,14 +620,20 @@ function renderQuotes(r) {
   updateRequestButton();
 
   setTimeout(() => {
-    if (S.maps.quote) { S.maps.quote.remove(); S.maps.quote = null; }
-    S.maps.quote = makeMap('map-quote', S.origin, 14);
-    if (S.maps.quote) {
-      emojiMarker(S.maps.quote, S.origin.lat, S.origin.lng, '📍');
-      emojiMarker(S.maps.quote, S.dest.lat, S.dest.lng, '🏁');
-      const line = drawRoute(S.maps.quote, r.route.geometry);
-      S.maps.quote.fitBounds(line.getBounds(), { padding: [30, 30] });
-    }
+    // o mapa é reaproveitado entre cotações: no Mapbox, cada mapa criado
+    // conta como um carregamento na franquia mensal
+    if (!S.maps.quote) S.maps.quote = makeMap('map-quote', S.origin, 14);
+    const map = S.maps.quote;
+    if (!map) return;
+    S.quoteLayers.forEach(l => l.remove());
+    const line = drawRoute(map, r.route.geometry);
+    S.quoteLayers = [
+      emojiMarker(map, S.origin.lat, S.origin.lng, '📍'),
+      emojiMarker(map, S.dest.lat, S.dest.lng, '🏁'),
+      line,
+    ];
+    map.invalidateSize();        // a tela acabou de aparecer: mede antes de enquadrar
+    map.fitBounds(line.getBounds(), { padding: [30, 30] });
   }, 60);
 }
 
@@ -929,6 +911,7 @@ function renderRideMap() {
     const map = S.maps.ride;
     if (!map) return;
     S.rideLayers.forEach(l => l.remove()); S.rideLayers = [];
+    map.invalidateSize();        // a tela acabou de aparecer: mede antes de enquadrar
     S.rideLayers.push(emojiMarker(map, r.origin.lat, r.origin.lng, '📍'));
     S.rideLayers.push(emojiMarker(map, r.dest.lat, r.dest.lng, '🏁'));
     if (r.route_geojson) {
@@ -941,7 +924,6 @@ function renderRideMap() {
       S.rideLayers.push(S.driverMarker);
     } else S.driverMarker = null;
     if (S.gps.lat != null) drawMeOnMaps(S.gps.lat, S.gps.lng, S.gps.accuracy || 30);
-    map.invalidateSize();
   }, 80);
 }
 

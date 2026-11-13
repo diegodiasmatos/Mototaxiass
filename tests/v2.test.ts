@@ -680,23 +680,126 @@ test('cobrança após o aceite: corrida inicia só com pagamento confirmado', as
   }
 });
 
-// ================= Google Maps =================
+// ================= Mapas (Mapbox) =================
 
-test('polyline do Google é decodificado corretamente', async () => {
-  const { decodePolyline } = await import('../server/google-maps.ts');
-  // exemplo da documentação do Google: (38.5,-120.2) (40.7,-120.95) (43.252,-126.453)
-  const pts = decodePolyline('_p~iF~ps|U_ulLnnqC_mqNvxq`@');
-  assert.equal(pts.length, 3);
-  const round = (n: number) => Math.round(n * 1e4) / 1e4;
-  assert.deepEqual(pts.map(([lng, lat]) => [round(lat), round(lng)]), [
-    [38.5, -120.2], [40.7, -120.95], [43.252, -126.453],
-  ]);
-  assert.deepEqual(decodePolyline(''), []);
-});
+const MBX_PUBLIC = 'pk.TOKEN-PUBLICO-NAVEGADOR';
+const MBX_SECRET = 'sk.TOKEN-SECRETO-SERVIDOR';
 
-test('sem chave do Google o sistema usa OSM/estimativa e diz qual foi', async () => {
+/** Limpa tokens, provedor e cache de rotas ao fim de cada teste de mapas. */
+async function resetMaps(): Promise<void> {
+  await adm.req('PUT', '/api/admin/maps-config', {
+    credentials: { MAPBOX_PUBLIC_TOKEN: '', MAPBOX_SERVER_TOKEN: '' }, provider: 'auto',
+  });
+  await adm.req('POST', '/api/admin/maps-config/clear-cache');
+}
+
+type FakeReply = { status?: number; body: unknown };
+
+/**
+ * Troca o `fetch` por uma API do Mapbox simulada e liga a rede de geo
+ * (GEO_OFFLINE=0) durante `fn`. Qualquer outro serviço externo (OSRM,
+ * Nominatim) responde 503: nenhum teste toca a internet de verdade.
+ * Devolve as URLs do Mapbox que foram chamadas.
+ */
+async function withFakeMapbox(handler: (url: URL) => FakeReply,
+  fn: (calls: URL[]) => Promise<void>): Promise<void> {
+  const realFetch = globalThis.fetch;
+  const calls: URL[] = [];
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = new URL(typeof input === 'string' ? input : input.url ?? String(input));
+    if (url.hostname === '127.0.0.1') return realFetch(input, init);
+    if (url.hostname !== 'api.mapbox.com') return new Response('fora do ar', { status: 503 });
+    calls.push(url);
+    const r = handler(url);
+    return new Response(JSON.stringify(r.body), {
+      status: r.status ?? 200, headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+  process.env.GEO_OFFLINE = '0';
+  try {
+    await fn(calls);
+  } finally {
+    process.env.GEO_OFFLINE = '1';
+    globalThis.fetch = realFetch;
+  }
+}
+
+/** Respostas no formato real das APIs do Mapbox (Directions v5 e Geocoding v6). */
+function fakeMapboxOk(url: URL): FakeReply {
+  if (url.pathname.startsWith('/directions/v5/mapbox/driving/')) {
+    return {
+      body: {
+        code: 'Ok',
+        routes: [{
+          distance: 4321.4, duration: 612.7,
+          geometry: {
+            type: 'LineString',
+            coordinates: [[ORIGIN.lng, ORIGIN.lat], [-53.53, -24.43], [DEST.lng, DEST.lat]],
+          },
+        }],
+      },
+    };
+  }
+  if (url.pathname === '/search/geocode/v6/forward') {
+    return {
+      body: {
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature', geometry: { type: 'Point', coordinates: [-53.5301, -24.4212] },
+            properties: {
+              feature_type: 'address', name: 'Rua das Hortênsias 77',
+              coordinates: { longitude: -53.5301, latitude: -24.4212, accuracy: 'rooftop' },
+              context: {
+                neighborhood: { name: 'Jardim Tropical' },
+                place: { name: 'Assis Chateaubriand' },
+              },
+            },
+          },
+          {
+            // dentro da caixa de busca, mas fora do raio de cobertura (canto do quadrado)
+            type: 'Feature', geometry: { type: 'Point', coordinates: [-53.6300, -24.5100] },
+            properties: {
+              feature_type: 'street', name: 'Rua das Hortênsias',
+              coordinates: { longitude: -53.6300, latitude: -24.5100 },
+              context: { place: { name: 'Assis Chateaubriand' } },
+            },
+          },
+        ],
+      },
+    };
+  }
+  if (url.pathname === '/search/geocode/v6/reverse') {
+    return {
+      body: {
+        type: 'FeatureCollection',
+        features: [
+          // a ordem vem do mais amplo para o mais específico de propósito:
+          // o sistema tem de escolher o endereço, não a cidade
+          {
+            type: 'Feature', geometry: { type: 'Point', coordinates: [-53.52, -24.41] },
+            properties: { feature_type: 'place', name: 'Assis Chateaubriand', context: {} },
+          },
+          {
+            type: 'Feature', geometry: { type: 'Point', coordinates: [-53.5216, -24.4156] },
+            properties: {
+              feature_type: 'address', name: 'Avenida Tupãssi 1200',
+              context: { neighborhood: { name: 'Centro' }, place: { name: 'Assis Chateaubriand' } },
+            },
+          },
+        ],
+      },
+    };
+  }
+  if (url.pathname === '/tokens/v2') {
+    return { body: { code: 'TokenValid', token: { usage: 'pk', user: 'conta-teste' } } };
+  }
+  return { status: 404, body: { message: 'Not Found' } };
+}
+
+test('sem token do Mapbox o sistema usa OSM/estimativa e diz qual foi', async () => {
   const cfg = await pax.req('GET', '/api/config');
-  assert.equal(cfg.data.maps.browser_key, null);
+  assert.equal(cfg.data.maps.mapbox_token, null);
   assert.equal(cfg.data.maps.provider, 'osm');
   assert.equal(cfg.data.maps.server_routing, 'osrm');
 
@@ -705,7 +808,6 @@ test('sem chave do Google o sistema usa OSM/estimativa e diz qual foi', async ()
   assert.equal(q.data.route.provider, 'estimativa');
   assert.equal(q.data.route.mode, 'estimativa');
   assert.equal(q.data.route.estimated, true);
-  assert.equal(q.data.route.mode_fallback, false);
 });
 
 test('procedência da rota é gravada na cotação e na corrida', async () => {
@@ -723,56 +825,271 @@ test('procedência da rota é gravada na cotação e na corrida', async () => {
   await pax.req('POST', `/api/rides/${rid}/cancel`, { reason: 'fim do teste' });
 });
 
-test('chave de servidor do Google nunca vaza para o frontend', async () => {
+test('token de servidor do Mapbox nunca vaza para o frontend', async () => {
   await adm.req('PUT', '/api/admin/maps-config', {
-    credentials: {
-      GOOGLE_MAPS_SERVER_KEY: 'CHAVE-SERVIDOR-SECRETA',
-      GOOGLE_MAPS_BROWSER_KEY: 'CHAVE-NAVEGADOR-PUBLICA',
-    },
+    credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC, MAPBOX_SERVER_TOKEN: MBX_SECRET },
   });
   try {
-    // /api/config só entrega a chave do NAVEGADOR
+    // /api/config só entrega o token PÚBLICO
     const cfg = await pax.req('GET', '/api/config');
-    assert.equal(cfg.data.maps.browser_key, 'CHAVE-NAVEGADOR-PUBLICA');
-    assert.equal(JSON.stringify(cfg.data).includes('CHAVE-SERVIDOR-SECRETA'), false);
-    assert.equal(cfg.data.maps.provider, 'google');
+    assert.equal(cfg.data.maps.mapbox_token, MBX_PUBLIC);
+    assert.equal(JSON.stringify(cfg.data).includes(MBX_SECRET), false);
+    assert.equal(cfg.data.maps.provider, 'mapbox');
+    assert.equal(cfg.data.maps.server_routing, 'mapbox');
+    assert.equal(cfg.data.maps.style, 'mapbox://styles/mapbox/streets-v12');
 
-    // na central a chave de servidor volta mascarada
+    // na central o token de servidor volta mascarado
     const mc = await adm.req('GET', '/api/admin/maps-config');
-    assert.equal(mc.data.credentials.GOOGLE_MAPS_SERVER_KEY.value, '••••••RETA');
-    assert.equal(mc.data.active_routing, 'google');
+    assert.equal(mc.data.credentials.MAPBOX_SERVER_TOKEN.value, '••••••IDOR');
+    assert.equal(JSON.stringify(mc.data).includes(MBX_SECRET), false);
+    assert.equal(mc.data.active_routing, 'mapbox');
+    assert.equal(mc.data.active_visual, 'mapbox');
 
-    // no banco está cifrada
+    // no banco está cifrado
     const row = db.prepare(
-      `SELECT value_enc FROM provider_credentials WHERE key = 'GOOGLE_MAPS_SERVER_KEY'`).get() as any;
-    assert.ok(!row.value_enc.includes('CHAVE-SERVIDOR-SECRETA'));
+      `SELECT value_enc FROM provider_credentials WHERE key = 'MAPBOX_SERVER_TOKEN'`).get() as any;
+    assert.ok(!row.value_enc.includes(MBX_SECRET));
 
     // passageiro e motoboy não acessam a configuração de mapas
     assert.equal((await pax.req('GET', '/api/admin/maps-config')).status, 403);
     assert.equal((await drv.req('PUT', '/api/admin/maps-config', { credentials: {} })).status, 403);
   } finally {
-    await adm.req('PUT', '/api/admin/maps-config', {
-      credentials: { GOOGLE_MAPS_SERVER_KEY: '', GOOGLE_MAPS_BROWSER_KEY: '' },
-    });
+    await resetMaps();
   }
 });
 
-test('forçar OpenStreetMap ignora a chave do Google', async () => {
-  await adm.req('PUT', '/api/admin/maps-config', {
-    credentials: { GOOGLE_MAPS_SERVER_KEY: 'CHAVE-QUALQUER' }, provider: 'osm',
-  });
+test('token secreto (sk.) nunca é aceito como token público', async () => {
+  try {
+    // pela central: recusado, com explicação, e nada é gravado
+    const sk = await adm.req('PUT', '/api/admin/maps-config',
+      { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_SECRET }, provider: 'osm' });
+    assert.equal(sk.status, 400);
+    assert.match(sk.data.error, /SECRETO/);
+    const lixo = await adm.req('PUT', '/api/admin/maps-config',
+      { credentials: { MAPBOX_PUBLIC_TOKEN: 'colei-errado' } });
+    assert.equal(lixo.status, 400);
+    const mc = await adm.req('GET', '/api/admin/maps-config');
+    assert.equal(mc.data.credentials.MAPBOX_PUBLIC_TOKEN.filled, false);
+    assert.equal(mc.data.provider, 'auto');          // a requisição inválida não mudou nada
+
+    // pelo .env: um sk. em MAPBOX_PUBLIC_TOKEN é ignorado, não vai ao navegador
+    process.env.MAPBOX_PUBLIC_TOKEN = MBX_SECRET;
+    const cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.mapbox_token, null);
+    assert.equal(cfg.data.maps.provider, 'osm');
+    assert.equal(JSON.stringify(cfg.data).includes(MBX_SECRET), false);
+  } finally {
+    delete process.env.MAPBOX_PUBLIC_TOKEN;
+    await resetMaps();
+  }
+});
+
+test('só o token público basta: o backend usa o mesmo para rotas e busca', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
   try {
     const mc = await adm.req('GET', '/api/admin/maps-config');
-    assert.equal(mc.data.has_server_key, true);
-    assert.equal(mc.data.active_routing, 'osrm');   // provedor forçado
-  } finally {
-    await adm.req('PUT', '/api/admin/maps-config', {
-      credentials: { GOOGLE_MAPS_SERVER_KEY: '' }, provider: 'auto',
+    assert.equal(mc.data.has_server_token, true);
+    assert.equal(mc.data.active_routing, 'mapbox');
+
+    await withFakeMapbox(fakeMapboxOk, async calls => {
+      const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q.status, 200);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].searchParams.get('access_token'), MBX_PUBLIC);
     });
+  } finally {
+    await resetMaps();
   }
 });
 
-test('cache de geo: validade é validada e a limpeza funciona', async () => {
+test('Mapbox: rota real define distância, preço e procedência — e usa o cache', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', {
+    credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC, MAPBOX_SERVER_TOKEN: MBX_SECRET },
+  });
+  try {
+    await withFakeMapbox(fakeMapboxOk, async calls => {
+      const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q.status, 200, JSON.stringify(q.data));
+      assert.equal(q.data.route.provider, 'mapbox');
+      assert.equal(q.data.route.mode, 'drive');
+      assert.equal(q.data.route.estimated, false);
+      assert.equal(q.data.route.geometry.length, 3);
+      const eco = q.data.quotes.find((x: any) => x.category === 'economica');
+      assert.equal(eco.distance_m, 4321);
+      assert.equal(eco.duration_s, 613);
+      // preço sobre a distância da rota do Mapbox: 5,50 + 2,321 km × 2,00
+      assert.equal(eco.price_cents, 550 + Math.round((4321 - 2000) * 200 / 1000));
+
+      // a chamada foi feita com o token de SERVIDOR, origem/destino em lng,lat
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].searchParams.get('access_token'), MBX_SECRET);
+      assert.equal(calls[0].searchParams.get('geometries'), 'geojson');
+      assert.ok(calls[0].pathname.endsWith(
+        `/${ORIGIN.lng},${ORIGIN.lat};${DEST.lng},${DEST.lat}`), calls[0].pathname);
+
+      // mesma rota de novo: sai do cache, sem nova chamada ao Mapbox
+      const q2 = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q2.data.route.provider, 'mapbox');
+      assert.equal(calls.length, 1);
+    });
+  } finally {
+    await resetMaps();
+  }
+});
+
+test('Mapbox: busca de endereços fica na área atendida e não guarda resultado', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
+  try {
+    await withFakeMapbox(fakeMapboxOk, async calls => {
+      const r = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua das hortensias 77'));
+      assert.equal(r.status, 200);
+      assert.equal(calls.length, 1);
+      const u = calls[0];
+      assert.equal(u.pathname, '/search/geocode/v6/forward');
+      assert.equal(u.searchParams.get('country'), 'br');
+      assert.equal(u.searchParams.get('language'), 'pt');
+      assert.equal(u.searchParams.get('proximity'), '-53.5216,-24.4156');
+      // a caixa cobre o raio de 12 km em volta do centro, e nada além
+      const [w, s, e, n] = u.searchParams.get('bbox')!.split(',').map(Number);
+      assert.ok(w < -53.63 && w > -53.65 && e > -53.41 && e < -53.39, `bbox lng ${w}..${e}`);
+      assert.ok(s < -24.52 && s > -24.53 && n > -24.31 && n < -24.30, `bbox lat ${s}..${n}`);
+
+      const [first, second] = r.data.results;
+      assert.equal(first.text, 'Rua das Hortênsias 77, Jardim Tropical, Assis Chateaubriand');
+      assert.equal(first.source, 'mapbox');
+      assert.equal(first.lat, -24.4212);
+      assert.equal(first.lng, -53.5301);
+      assert.equal(first.in_coverage, true);
+      // o canto da caixa fica fora do círculo de cobertura: vai para o fim, marcado
+      assert.equal(second.in_coverage, false);
+
+      // geocodificação não é guardada (termos do Mapbox): repetir chama de novo
+      await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua das hortensias 77'));
+      assert.equal(calls.length, 2);
+      assert.equal((db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c, 0);
+    });
+  } finally {
+    await resetMaps();
+  }
+});
+
+test('Mapbox: a base local responde primeiro e poupa a chamada externa', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
+  db.prepare(`INSERT INTO local_addresses (kind, name, norm, lat, lng, updated_at)
+    VALUES ('rua', 'Rua do Teste Mapbox', 'rua do teste mapbox', -24.4160, -53.5220, ?)`).run(Date.now());
+  try {
+    await withFakeMapbox(fakeMapboxOk, async calls => {
+      const r = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua do teste mapbox'));
+      assert.ok(r.data.results.length >= 1);
+      assert.equal(r.data.results[0].source, 'local');
+      assert.equal(calls.length, 0);
+    });
+  } finally {
+    db.prepare(`DELETE FROM local_addresses WHERE norm = 'rua do teste mapbox'`).run();
+    await resetMaps();
+  }
+});
+
+test('Mapbox: endereço do GPS escolhe o item mais específico', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
+  try {
+    await withFakeMapbox(fakeMapboxOk, async calls => {
+      const r = await pax.req('GET', `/api/geo/reverse?lat=${ORIGIN.lat}&lng=${ORIGIN.lng}`);
+      assert.equal(r.status, 200);
+      assert.equal(r.data.text, 'Avenida Tupãssi 1200, Centro, Assis Chateaubriand');
+      assert.equal(r.data.exact, true);
+      assert.equal(r.data.in_coverage, true);
+      assert.equal(calls[0].pathname, '/search/geocode/v6/reverse');
+      assert.equal(calls[0].searchParams.get('longitude'), String(ORIGIN.lng));
+      assert.equal(calls[0].searchParams.get('latitude'), String(ORIGIN.lat));
+    });
+  } finally {
+    await resetMaps();
+  }
+});
+
+test('Mapbox fora do ar ou sem rota: o sistema continua e marca a estimativa', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
+  try {
+    // token revogado: 401 em tudo
+    await withFakeMapbox(() => ({ status: 401, body: { message: 'Not Authorized - Invalid Token' } }),
+      async () => {
+        const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+        assert.equal(q.status, 200);
+        assert.equal(q.data.route.provider, 'estimativa');
+        assert.equal(q.data.route.estimated, true);
+
+        const s = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua inexistente xyz'));
+        assert.equal(s.status, 200);
+        assert.deepEqual(s.data.results, []);
+
+        const rev = await pax.req('GET', `/api/geo/reverse?lat=${ORIGIN.lat}&lng=${ORIGIN.lng}`);
+        assert.equal(rev.status, 200);
+        assert.equal(rev.data.exact, false);       // nunca um endereço inventado
+      });
+
+    // API no ar, mas sem rota entre os pontos
+    await withFakeMapbox(() => ({ body: { code: 'NoRoute', routes: [] } }), async () => {
+      const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q.data.route.provider, 'estimativa');
+    });
+    // falha não vai para o cache
+    assert.equal((db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c, 0);
+  } finally {
+    await resetMaps();
+  }
+});
+
+test('forçar OpenStreetMap ignora o token do Mapbox no backend e no navegador', async () => {
+  // token salvo + provedor forçado em OSM: o token NÃO pode ir ao frontend,
+  // senão o app tenta carregar um Mapbox com problema em vez do OSM que funciona
+  await adm.req('PUT', '/api/admin/maps-config',
+    { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC }, provider: 'osm' });
+  try {
+    const mc = await adm.req('GET', '/api/admin/maps-config');
+    assert.equal(mc.data.has_server_token, true);
+    assert.equal(mc.data.active_routing, 'osrm');   // provedor forçado
+    assert.equal(mc.data.active_visual, 'osm');
+    let cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.mapbox_token, null);
+    assert.equal(cfg.data.maps.provider, 'osm');
+
+    await withFakeMapbox(fakeMapboxOk, async calls => {
+      const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q.data.route.provider, 'estimativa');
+      assert.equal(calls.length, 0);                // nenhuma chamada ao Mapbox
+    });
+
+    // em "auto", o token volta a ser enviado
+    await adm.req('PUT', '/api/admin/maps-config', { provider: 'auto' });
+    cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.mapbox_token, MBX_PUBLIC);
+    assert.equal(cfg.data.maps.provider, 'mapbox');
+
+    // remover o token pela API (botão "Remover" da central) limpa de verdade
+    await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: '' } });
+    cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.mapbox_token, null);
+  } finally {
+    await resetMaps();
+  }
+});
+
+test('estilo do mapa: só os da lista são aceitos', async () => {
+  try {
+    assert.equal((await adm.req('PUT', '/api/admin/maps-config',
+      { style: 'https://site-malicioso.example/estilo.json' })).status, 400);
+    const ok = await adm.req('PUT', '/api/admin/maps-config',
+      { style: 'mapbox://styles/mapbox/satellite-streets-v12' });
+    assert.equal(ok.status, 200);
+    const cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.style, 'mapbox://styles/mapbox/satellite-streets-v12');
+  } finally {
+    await adm.req('PUT', '/api/admin/maps-config', { style: 'mapbox://styles/mapbox/streets-v12' });
+  }
+});
+
+test('cache de rotas: validade é validada e a limpeza funciona', async () => {
   assert.equal((await adm.req('PUT', '/api/admin/maps-config',
     { cache_hours: { route: 99999 } })).status, 400);
   assert.equal((await adm.req('PUT', '/api/admin/maps-config',
@@ -780,48 +1097,52 @@ test('cache de geo: validade é validada e a limpeza funciona', async () => {
 
   const ok = await adm.req('PUT', '/api/admin/maps-config', { cache_hours: { route: 48 } });
   assert.equal(ok.status, 200);
+  assert.equal((await adm.req('GET', '/api/admin/maps-config')).data.cache_hours.route, 48);
 
   db.prepare(`INSERT INTO geo_cache (key, kind, payload, created_at, expires_at)
-    VALUES ('x','route','{}',?,?)`).run(Date.now(), Date.now() + 60000);
+    VALUES ('x','rota_mapbox','{}',?,?)`).run(Date.now(), Date.now() + 60000);
   const limpa = await adm.req('POST', '/api/admin/maps-config/clear-cache');
   assert.equal(limpa.status, 200);
   assert.ok(limpa.data.removed >= 1);
   assert.equal((db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c, 0);
 });
 
-test('forçar OpenStreetMap desliga o Google também no navegador', async () => {
-  // chave salva + provedor forçado em OSM: a chave NÃO pode ir ao frontend,
-  // senão o app tenta carregar um Google quebrado em vez do OSM que funciona
-  await adm.req('PUT', '/api/admin/maps-config',
-    { credentials: { GOOGLE_MAPS_BROWSER_KEY: 'chave-de-teste' }, provider: 'osm' });
-  let cfg = await pax.req('GET', '/api/config');
-  assert.equal(cfg.data.maps.browser_key, null);
-  assert.equal(cfg.data.maps.provider, 'osm');
-
-  // em "auto", a chave volta a ser enviada
-  await adm.req('PUT', '/api/admin/maps-config', { provider: 'auto' });
-  cfg = await pax.req('GET', '/api/config');
-  assert.equal(cfg.data.maps.browser_key, 'chave-de-teste');
-  assert.equal(cfg.data.maps.provider, 'google');
-
-  // remover a chave pela API (botão "Remover" da central) limpa de verdade
-  await adm.req('PUT', '/api/admin/maps-config',
-    { credentials: { GOOGLE_MAPS_BROWSER_KEY: '' } });
-  cfg = await pax.req('GET', '/api/config');
-  assert.equal(cfg.data.maps.browser_key, null);
-});
-
-test('diagnóstico de mapas avisa quando não há chave', async () => {
+test('diagnóstico de mapas avisa quando não há token', async () => {
   const r = await adm.req('POST', '/api/admin/maps-config/test');
   assert.equal(r.status, 200);
-  assert.equal(r.data.checks[0].item, 'Chave de servidor');
+  assert.equal(r.data.checks[0].item, 'Token do Mapbox');
   assert.equal(r.data.checks[0].ok, false);
   assert.match(r.data.checks[0].detail, /OpenStreetMap/i);
 });
 
-test('busca de lugar exige place_id e respeita permissão', async () => {
-  assert.equal((await pax.req('GET', '/api/geo/place')).status, 400);
-  assert.equal((await actor().req('GET', '/api/geo/place?place_id=abc')).status, 401);
+test('diagnóstico de mapas: tudo certo, e token público restrito por URL é explicado', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
+  try {
+    await withFakeMapbox(fakeMapboxOk, async () => {
+      const r = await adm.req('POST', '/api/admin/maps-config/test');
+      const byItem = Object.fromEntries(r.data.checks.map((c: any) => [c.item, c]));
+      assert.equal(byItem['Token público (mapa nos aplicativos)'].ok, true);
+      assert.match(byItem['Token público (mapa nos aplicativos)'].detail, /conta-teste/);
+      assert.equal(byItem['Rotas (Directions API)'].ok, true);
+      assert.match(byItem['Rotas (Directions API)'].detail, /4\.3 km/);
+      assert.equal(byItem['Busca de endereços (Geocoding API)'].ok, true);
+      assert.equal(byItem['Endereço do GPS (geocodificação reversa)'].ok, true);
+      // o token nunca aparece no relatório
+      assert.equal(JSON.stringify(r.data).includes(MBX_PUBLIC), false);
+    });
+
+    // token público com restrição de URL: o servidor leva 403 nas APIs
+    await withFakeMapbox(url => url.pathname === '/tokens/v2'
+      ? fakeMapboxOk(url) : { status: 403, body: { message: 'Forbidden' } }, async () => {
+      const r = await adm.req('POST', '/api/admin/maps-config/test');
+      const rota = r.data.checks.find((c: any) => c.item === 'Rotas (Directions API)');
+      assert.equal(rota.ok, false);
+      assert.match(rota.detail, /Token de servidor/);
+      assert.equal(JSON.stringify(r.data).includes(MBX_PUBLIC), false);
+    });
+  } finally {
+    await resetMaps();
+  }
 });
 
 // ================= permissões =================
