@@ -154,6 +154,11 @@ export const authRoutes: Route[] = [
    */
   route('GET /api/config', null, async ({ res }) => {
     const { browserKey, googleEnabled } = await import('./google-maps.ts');
+    // "Forçar OpenStreetMap" vale para TUDO: com o provedor em 'osm', a chave
+    // do navegador nem é enviada — senão o app tentaria carregar um Google
+    // quebrado (sem faturamento/API desativada) em vez de usar o OSM que funciona.
+    const forceOsm = getSetting('maps_provider') === 'osm';
+    const bk = forceOsm ? null : browserKey();
     json(res, 200, {
       city_name: getSetting('city_name'),
       center: { lat: Number(getSetting('center_lat')), lng: Number(getSetting('center_lng')) },
@@ -162,8 +167,8 @@ export const authRoutes: Route[] = [
       google_client_id: process.env.GOOGLE_CLIENT_ID || null,
       review_sla_hours: Number(getSetting('review_sla_hours')),
       maps: {
-        browser_key: browserKey(),      // pública por natureza; restrinja por domínio
-        provider: browserKey() ? 'google' : 'osm',
+        browser_key: bk,                // pública por natureza; restrinja por domínio
+        provider: bk ? 'google' : 'osm',
         server_routing: googleEnabled() ? 'google' : 'osrm',
       },
     });

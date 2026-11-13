@@ -667,8 +667,11 @@ async function secMaps() {
     const origem = v.source === 'banco' ? '<span class="pill green">salva aqui</span>'
       : v.source === 'ambiente' ? '<span class="pill blue">vem do .env</span>'
         : '<span class="pill gray">não configurada</span>';
+    const remover = v.source === 'banco'
+      ? ` <button class="btn btn-outline btn-sm" data-mk-clear="${k}" type="button"
+            style="padding:2px 8px;font-size:.75rem">Remover</button>` : '';
     return `<div class="field">
-      <label>${label} ${origem}</label>
+      <label>${label} ${origem}${remover}</label>
       <input class="input" data-mk="${k}" type="password" autocomplete="off"
         placeholder="${v.filled ? escapeHtml(v.value) : 'cole aqui'}">
       <p class="muted small" style="margin-top:4px">${help}</p>
@@ -796,6 +799,17 @@ async function secMaps() {
     });
     secMaps();
   }, { okMsg: 'Configuração de mapas salva.' }).catch(() => { });
+
+  $$('[data-mk-clear]').forEach(btn => {
+    btn.onclick = async () => {
+      const k = btn.dataset.mkClear;
+      const nome = k.includes('BROWSER') ? 'chave do navegador' : 'chave de servidor';
+      if (!await confirmModal('Remover chave', `Remover a ${nome} salva? O sistema volta a usar o OpenStreetMap.`)) return;
+      await api('/api/admin/maps-config', { method: 'PUT', body: { credentials: { [k]: '' } } });
+      toast('Chave removida.', 'ok');
+      secMaps();
+    };
+  });
 
   $('#mp-import-base').onclick = () => withLoading($('#mp-import-base'), async () => {
     $('#mp-base-result').innerHTML =

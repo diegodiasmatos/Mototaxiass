@@ -709,6 +709,28 @@ test('cache de geo: validade é validada e a limpeza funciona', async () => {
   assert.equal((db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c, 0);
 });
 
+test('forçar OpenStreetMap desliga o Google também no navegador', async () => {
+  // chave salva + provedor forçado em OSM: a chave NÃO pode ir ao frontend,
+  // senão o app tenta carregar um Google quebrado em vez do OSM que funciona
+  await adm.req('PUT', '/api/admin/maps-config',
+    { credentials: { GOOGLE_MAPS_BROWSER_KEY: 'chave-de-teste' }, provider: 'osm' });
+  let cfg = await pax.req('GET', '/api/config');
+  assert.equal(cfg.data.maps.browser_key, null);
+  assert.equal(cfg.data.maps.provider, 'osm');
+
+  // em "auto", a chave volta a ser enviada
+  await adm.req('PUT', '/api/admin/maps-config', { provider: 'auto' });
+  cfg = await pax.req('GET', '/api/config');
+  assert.equal(cfg.data.maps.browser_key, 'chave-de-teste');
+  assert.equal(cfg.data.maps.provider, 'google');
+
+  // remover a chave pela API (botão "Remover" da central) limpa de verdade
+  await adm.req('PUT', '/api/admin/maps-config',
+    { credentials: { GOOGLE_MAPS_BROWSER_KEY: '' } });
+  cfg = await pax.req('GET', '/api/config');
+  assert.equal(cfg.data.maps.browser_key, null);
+});
+
 test('diagnóstico de mapas avisa quando não há chave', async () => {
   const r = await adm.req('POST', '/api/admin/maps-config/test');
   assert.equal(r.status, 200);

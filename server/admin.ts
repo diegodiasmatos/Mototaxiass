@@ -523,7 +523,7 @@ export const adminRoutes: Route[] = [
       })),
       provider: getSetting('maps_provider'),
       active_routing: googleEnabled() ? 'google' : 'osrm',
-      active_visual: browserKey() ? 'google' : 'osm',
+      active_visual: (getSetting('maps_provider') !== 'osm' && browserKey()) ? 'google' : 'osm',
       has_server_key: !!serverKey(),
       address_base: baseStats(),
       cache: cacheStats(),
