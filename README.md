@@ -45,7 +45,7 @@ em produção coloque o app atrás de HTTPS (ver "Publicação").
 | Tempo real | Server-Sent Events (SSE) | ofertas de corrida, GPS e notificações ao vivo |
 | Mapas | **Google Maps** quando há chave; Leaflet + OpenStreetMap como reserva | precisão de endereços no Brasil; a reserva mantém o sistema funcionando sem custo |
 | Rotas/ETA | **Google Routes API (TWO_WHEELER)** → OSRM → estimativa | rota de motocicleta de verdade, com a procedência marcada |
-| Endereços | **Google Places (New) + Geocoding** → Nominatim | autocomplete de ruas, números, bairros e estabelecimentos |
+| Endereços | **Base local** (todas as ruas da cidade importadas do OSM) → Google Places (New) → Nominatim | autocomplete instantâneo de ruas, números, bairros e estabelecimentos |
 | Senhas | scrypt + salt (node:crypto) | hash forte, sem texto puro |
 | Sessões | cookie HttpOnly + tabela `sessions` | revogável no servidor (bloqueio derruba sessão) |
 
@@ -84,8 +84,26 @@ nenhuma resposta ao frontend.
    Chateaubriand como referência, e diz item por item o que funcionou.
 
 Sem chave, tudo continua funcionando em **OpenStreetMap/OSRM** — mapa real e
-gratuito, com endereços menos completos e sem modo de motocicleta. A central
-mostra qual provedor está ativo em cada camada.
+gratuito, sem modo de motocicleta. A central mostra qual provedor está ativo
+em cada camada.
+
+### Base local de endereços (sem chave e sem custo)
+
+A busca de endereços **não depende** do Google nem do Nominatim online: a
+central → 🗺️ Mapas tem o botão **"Baixar base de endereços"**, que importa do
+OpenStreetMap (Overpass) **todas as ruas, bairros e estabelecimentos** do
+município para a tabela `local_addresses`. A partir daí o autocomplete é
+local: instantâneo, completo e funciona até sem internet externa.
+
+- Entende número de casa ("rua curitiba 123") — o resultado fica marcado como
+  aproximado (centro da rua), nunca uma posição inventada;
+- entende abreviações ("av brasil" → "Avenida Brasil") e ignora acentos;
+- o reverse geocoding usa a rua mais próxima da base quando os serviços
+  externos falham, sempre sinalizado como "Perto de … (±N m)";
+- recomendado refazer a importação a cada ~6 meses para pegar ruas novas.
+
+Ordem da busca: **base local → Google Places (se houver chave) → Nominatim**.
+Com 3+ resultados da base, nenhuma chamada externa é feita.
 
 ### Rotas de motocicleta (e quando não dá)
 

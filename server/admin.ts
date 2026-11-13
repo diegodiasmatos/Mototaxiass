@@ -512,6 +512,7 @@ export const adminRoutes: Route[] = [
   // ---------- Google Maps ----------
   route('GET /api/admin/maps-config', 'admin', async ({ res }) => {
     const { googleEnabled, cacheStats, browserKey, serverKey } = await import('./google-maps.ts');
+    const { baseStats } = await import('./address-base.ts');
     const usage = db.prepare(`SELECT route_provider provider, route_mode mode, COUNT(*) qtd
       FROM rides WHERE route_provider IS NOT NULL
       GROUP BY route_provider, route_mode`).all();
@@ -524,6 +525,7 @@ export const adminRoutes: Route[] = [
       active_routing: googleEnabled() ? 'google' : 'osrm',
       active_visual: browserKey() ? 'google' : 'osm',
       has_server_key: !!serverKey(),
+      address_base: baseStats(),
       cache: cacheStats(),
       usage,
       cache_hours: {
@@ -568,6 +570,18 @@ export const adminRoutes: Route[] = [
   route('POST /api/admin/maps-config/test', 'admin', async ({ res }) => {
     const { testGoogleKeys } = await import('./google-maps.ts');
     json(res, 200, { checks: await testGoogleKeys() });
+  }),
+
+  /**
+   * Baixa do OpenStreetMap todas as ruas, bairros e locais da cidade e
+   * regrava a base local de endereços (busca instantânea sem Google).
+   */
+  route('POST /api/admin/maps-config/import-base', 'admin', async ({ res, user }) => {
+    const { importAddressBase } = await import('./address-base.ts');
+    const r = await importAddressBase();
+    audit(user!.id, 'address_base_import', 'settings', undefined,
+      `${r.ruas} rua(s), ${r.bairros} bairro(s), ${r.locais} local(is)`);
+    json(res, 200, { ok: true, ...r });
   }),
 
   route('POST /api/admin/maps-config/clear-cache', 'admin', async ({ res, user }) => {

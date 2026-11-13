@@ -693,8 +693,27 @@ async function secMaps() {
         <div class="fl">Mapa visual (aplicativos)</div></div>
     </div>
     ${m.active_routing !== 'google' ? `<div class="testbar">
-      🗺️ Sem chave do Google: o sistema usa OpenStreetMap/OSRM — mapa real e gratuito,
-      porém com endereços menos completos e sem modo de motocicleta.</div>` : ''}
+      🗺️ Sem chave do Google: o sistema usa OpenStreetMap/OSRM — mapa real e gratuito.
+      Baixe a base local de endereços abaixo para a busca ficar completa e instantânea.</div>` : ''}
+
+    <div class="card">
+      <h3>📍 Base local de endereços <span class="pill ${m.address_base.total ? 'green' : 'gray'}">
+        ${m.address_base.total ? m.address_base.total + ' endereços' : 'não baixada'}</span></h3>
+      <p class="muted small mb">Baixa <b>todas as ruas, bairros e estabelecimentos</b> da cidade
+        do OpenStreetMap e guarda no banco. A busca de endereços passa a ser instantânea e
+        completa, <b>sem chave de API e sem custo</b>. Refaça de vez em quando (ex.: a cada
+        6 meses) para pegar ruas novas.</p>
+      ${m.address_base.total ? `<div class="fin-grid mb">
+        <div class="fin-card in"><div class="fv">${m.address_base.ruas}</div><div class="fl">Ruas</div></div>
+        <div class="fin-card in"><div class="fv">${m.address_base.bairros}</div><div class="fl">Bairros</div></div>
+        <div class="fin-card in"><div class="fv">${m.address_base.locais}</div><div class="fl">Locais</div></div>
+      </div>
+      <p class="muted small mb">Última atualização: ${m.address_base.updated_at
+      ? new Date(m.address_base.updated_at).toLocaleString('pt-BR') : '—'}</p>` : ''}
+      <button class="btn btn-primary" id="mp-import-base">
+        ${m.address_base.total ? 'Atualizar base de endereços' : 'Baixar base de endereços agora'}</button>
+      <div id="mp-base-result" class="mt"></div>
+    </div>
 
     <div class="card">
       <h3>Passo 1 · Criar as chaves no Google Cloud</h3>
@@ -777,6 +796,19 @@ async function secMaps() {
     });
     secMaps();
   }, { okMsg: 'Configuração de mapas salva.' }).catch(() => { });
+
+  $('#mp-import-base').onclick = () => withLoading($('#mp-import-base'), async () => {
+    $('#mp-base-result').innerHTML =
+      '<p class="muted small">Baixando do OpenStreetMap… pode levar até 2 minutos.</p>';
+    try {
+      const r = await api('/api/admin/maps-config/import-base', { method: 'POST' });
+      toast(`Base baixada: ${r.ruas} ruas, ${r.bairros} bairros, ${r.locais} locais.`, 'ok');
+      secMaps();
+    } catch (e) {
+      $('#mp-base-result').innerHTML = '';
+      throw e;
+    }
+  }).catch(() => { });
 
   $('#mp-test').onclick = () => withLoading($('#mp-test'), async () => {
     const r = await api('/api/admin/maps-config/test', { method: 'POST' });

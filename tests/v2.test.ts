@@ -338,6 +338,46 @@ test('reverse geocode informa quando o endereço não é exato', async () => {
   assert.equal(fora.data.in_coverage, false);
 });
 
+test('base local de endereços: busca instantânea com número e abreviação', async () => {
+  const t = Date.now();
+  const ins = db.prepare(`INSERT INTO local_addresses
+    (kind, name, norm, detail, lat, lng, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  ins.run('rua', 'Rua Curitiba', 'rua curitiba', null, -24.4170, -53.5230, t);
+  ins.run('rua', 'Avenida Brasil', 'avenida brasil', null, -24.4140, -53.5200, t);
+  ins.run('bairro', 'Jardim Universitário', 'jardim universitario', null, -24.4100, -53.5100, t);
+  ins.run('local', 'Mercado Central', 'mercado central', 'Avenida Brasil, 100', -24.4155, -53.5210, t);
+
+  // rua simples, direto da base (sem serviço externo — estamos offline)
+  const r1 = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua curitiba'));
+  assert.equal(r1.status, 200);
+  assert.ok(r1.data.results.length > 0);
+  assert.ok(r1.data.results[0].text.startsWith('Rua Curitiba'));
+  assert.equal(r1.data.results[0].source, 'local');
+  assert.equal(r1.data.results[0].in_coverage, true);
+
+  // abreviação "av" + número de casa: acha a avenida e marca como aproximado
+  const r2 = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('av brasil 123'));
+  const hit = r2.data.results.find((x: any) => x.text.startsWith('Avenida Brasil, 123'));
+  assert.ok(hit, 'deveria achar "Avenida Brasil, 123"');
+  assert.equal(hit.approx, true);          // coordenada = centro da rua, nunca inventada
+
+  // estabelecimento com endereço no detalhe
+  const r3 = await pax.req('GET', '/api/geo/search?q=mercado');
+  assert.ok(r3.data.results.some((x: any) => x.text.includes('Mercado Central')));
+
+  // estatísticas aparecem para o administrador
+  const cfg = await adm.req('GET', '/api/admin/maps-config');
+  assert.ok(cfg.data.address_base.total >= 4);
+  assert.ok(cfg.data.address_base.ruas >= 2);
+});
+
+test('reverse geocode offline usa a rua mais próxima da base, marcada como aproximada', async () => {
+  const r = await pax.req('GET', '/api/geo/reverse?lat=-24.4170&lng=-53.5230');
+  assert.equal(r.status, 200);
+  assert.equal(r.data.exact, false);                 // nunca finge precisão
+  assert.ok(String(r.data.text).includes('Perto de Rua Curitiba'));
+});
+
 // ================= financeiro do administrador =================
 
 test('financeiro consolida caixa, saldos e repasses com dados reais', async () => {

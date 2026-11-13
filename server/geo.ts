@@ -3,6 +3,7 @@ import { getSetting, getSettingNum } from './db.ts';
 import {
   googleEnabled, googleRoute, googleAutocomplete, googlePlaceDetails, googleReverse,
 } from './google-maps.ts';
+import { searchBase, nearestBase } from './address-base.ts';
 
 const UA = 'AssisMotoTaxi/1.0 (plataforma de mototaxi; contato: admin local)';
 
@@ -152,13 +153,34 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
   const qn = normalize(q);
   const results: GeoSearchResult[] = [];
 
-  // 1) pontos de referência locais
+  // 1) base local de endereços (todas as ruas/bairros/locais da cidade,
+  //    importados do OpenStreetMap). Instantânea e completa; quando tem
+  //    resultado suficiente, nem precisamos de serviço externo.
+  for (const hit of searchBase(q)) {
+    const label = hit.kind === 'rua' ? hit.name
+      : hit.kind === 'bairro' ? `${hit.name} (bairro)` : hit.name;
+    const line = [
+      label + (hit.number ? `, ${hit.number}` : ''),
+      hit.detail,
+      cityName,
+    ].filter(Boolean).join(', ');
+    const item = decorate(line, hit.lat, hit.lng, 'local');
+    if (hit.number) item.approx = true;   // coordenada = centro da rua
+    results.push(item);
+  }
+  const baseHits = results.length;
+
+  // 1b) pontos de referência embutidos (úteis enquanto a base não foi baixada)
   for (const p of LOCAL_PLACES) {
     const hay = normalize(`${p.name} ${p.tags || ''}`);
     if (qn.length >= 2 && (hay.includes(qn) || qn.split(/\s+/).every(w => w.length < 3 || hay.includes(w)))) {
+      if (results.some(x => normalize(x.text).startsWith(normalize(p.name)))) continue;
       results.push(decorate(`${p.name}, ${cityName}`, p.lat, p.lng, 'local'));
     }
   }
+
+  // Base completa e com boas respostas: devolve já, sem chamada externa.
+  if (baseHits >= 3) return results.slice(0, 8);
 
   // 2) Google Places (New): ruas, números, estabelecimentos e bairros.
   // A coordenada só é buscada quando o usuário escolhe (economiza chamada).
@@ -221,11 +243,14 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
     }
   }
 
-  // 4) ordena: dentro da área primeiro, depois pela distância ao centro
-  results.sort((a, b) =>
+  // 4) ordena só o que veio de fora (OSM): dentro da área primeiro, depois
+  //    pela distância ao centro. Os resultados da base local mantêm a ordem
+  //    de relevância da busca.
+  const localPart = results.filter(x => x.source !== 'osm');
+  const osmPart = results.filter(x => x.source === 'osm').sort((a, b) =>
     (a.in_coverage === b.in_coverage ? 0 : a.in_coverage ? -1 : 1) || a.distance_m - b.distance_m);
 
-  return results.slice(0, 8);
+  return [...localPart, ...osmPart].slice(0, 8);
 }
 
 /**
@@ -278,6 +303,12 @@ export async function reverseGeocode(lat: number, lng: number):
         }
       }
     } catch { /* fallback */ }
+  }
+  // Serviços externos indisponíveis: rua mais próxima da base local,
+  // claramente marcada como aproximada — nunca um endereço inventado.
+  const near = nearestBase(lat, lng);
+  if (near) {
+    return { text: `Perto de ${near.name} (±${near.dist_m} m)`, exact: false };
   }
   return { text: `Ponto no mapa (${lat.toFixed(5)}, ${lng.toFixed(5)})`, exact: false };
 }

@@ -566,6 +566,29 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     ALTER TABLE rides ADD COLUMN route_mode TEXT;
     `,
   },
+
+  // ----------------------------------------------------------------
+  // V2.3 — Base local de endereços: todas as ruas/bairros/locais da
+  // cidade importados do OpenStreetMap (Overpass) para busca instantânea
+  // e completa, sem depender do Nominatim online nem de chave do Google.
+  // ----------------------------------------------------------------
+  {
+    version: 5,
+    sql: `
+    CREATE TABLE local_addresses (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind       TEXT NOT NULL CHECK (kind IN ('rua','bairro','local')),
+      name       TEXT NOT NULL,
+      norm       TEXT NOT NULL,
+      detail     TEXT,
+      lat        REAL NOT NULL,
+      lng        REAL NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE (kind, norm)
+    );
+    CREATE INDEX idx_local_addr_norm ON local_addresses(norm);
+    `,
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {
