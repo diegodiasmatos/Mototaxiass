@@ -98,12 +98,23 @@ local: instantâneo, completo e funciona até sem internet externa.
 - Entende número de casa ("rua curitiba 123") — o resultado fica marcado como
   aproximado (centro da rua), nunca uma posição inventada;
 - entende abreviações ("av brasil" → "Avenida Brasil") e ignora acentos;
+- **tolera erro de digitação** ("av tupanssi" acha a "Avenida Tupassi");
+- **busca por categoria**: "hospital" lista hospitais e UBSs, "posto" acha
+  postos de gasolina, "mercado" acha supermercados — mesmo sem a palavra no
+  nome (palavras-chave derivadas das categorias do OSM);
 - o reverse geocoding usa a rua mais próxima da base quando os serviços
   externos falham, sempre sinalizado como "Perto de … (±N m)";
 - recomendado refazer a importação a cada ~6 meses para pegar ruas novas.
 
+**Estabelecimentos cadastrados à mão** (central → 🗺️ Mapas): o OSM não conhece
+todo comércio de cidade pequena — o administrador cadastra "Mercado Lorena",
+"Advocacia Fulano" etc. com nome, palavras-chave e localização (por endereço
+de referência ou colando coordenadas). Aparece na busca na hora e sobrevive
+às reimportações da base.
+
 Ordem da busca: **base local → Google Places (se houver chave) → Nominatim**.
-Com 3+ resultados da base, nenhuma chamada externa é feita.
+Qualquer resultado da base responde na hora, sem chamada externa — é o que
+mantém a busca em milissegundos.
 
 ### Rotas de motocicleta (e quando não dá)
 

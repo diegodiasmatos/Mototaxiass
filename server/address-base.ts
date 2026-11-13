@@ -46,6 +46,85 @@ export interface BaseHit {
   number?: string;
 }
 
+/**
+ * Categorias do OSM → palavras-chave em português pesquisáveis.
+ * É o que faz "hospital" listar todos os hospitais e "posto" achar tanto
+ * posto de gasolina quanto posto de saúde, mesmo sem a palavra no nome.
+ */
+const CATEGORY_TAGS: [key: string, values: RegExp, pt: string][] = [
+  ['amenity', /^(hospital|clinic|doctors)$/, 'hospital saude clinica pronto atendimento'],
+  ['healthcare', /./, 'saude posto de saude ubs unidade'],
+  ['amenity', /^pharmacy$/, 'farmacia remedio drogaria'],
+  ['amenity', /^fuel$/, 'posto gasolina combustivel etanol'],
+  ['shop', /^(supermarket|convenience|greengrocer|butcher)$/, 'mercado supermercado mercadinho mercearia'],
+  ['amenity', /^(school|kindergarten)$/, 'escola colegio creche'],
+  ['amenity', /^(college|university)$/, 'faculdade universidade ensino superior'],
+  ['amenity', /^place_of_worship$/, 'igreja templo paroquia'],
+  ['amenity', /^(bank|atm)$/, 'banco caixa agencia'],
+  ['amenity', /^(restaurant|fast_food|cafe|bar|pub)$/, 'restaurante lanche lanchonete pizzaria comida'],
+  ['amenity', /^(bus_station)$/, 'rodoviaria onibus terminal'],
+  ['amenity', /^police$/, 'policia delegacia'],
+  ['amenity', /^townhall$/, 'prefeitura paco municipal'],
+  ['amenity', /^(dentist)$/, 'dentista odontologia'],
+  ['amenity', /^veterinary$/, 'veterinario pet animal'],
+  ['shop', /^(bakery)$/, 'padaria panificadora pao'],
+  ['shop', /^(car_repair|tyres)$/, 'mecanica oficina borracharia carro'],
+  ['shop', /^(hairdresser|beauty)$/, 'salao cabeleireiro barbearia beleza'],
+  ['shop', /^(clothes|shoes)$/, 'loja roupa calcado'],
+  ['shop', /^(hardware|doityourself)$/, 'material de construcao ferragem'],
+  ['leisure', /^(stadium|sports_centre|pitch)$/, 'quadra estadio ginasio esporte campo'],
+  ['leisure', /^(park|playground)$/, 'praca parque lazer'],
+  ['tourism', /^(hotel|motel|guest_house)$/, 'hotel pousada hospedagem'],
+  ['office', /^(lawyer)$/, 'advogado advocacia escritorio'],
+  ['office', /^(accountant)$/, 'contador contabilidade escritorio'],
+  ['office', /./, 'escritorio'],
+  ['craft', /./, 'oficina servico'],
+  ['emergency', /./, 'emergencia socorro'],
+];
+
+/** Monta as palavras-chave de um elemento do OSM (categorias + apelidos). */
+function buildTags(tags: Record<string, string>): string | null {
+  const parts: string[] = [];
+  for (const [key, values, pt] of CATEGORY_TAGS) {
+    if (tags[key] && values.test(tags[key])) parts.push(pt);
+  }
+  for (const alias of [tags.brand, tags.operator, tags.old_name, tags.alt_name, tags.short_name]) {
+    if (alias) parts.push(normalize(alias));
+  }
+  const joined = [...new Set(parts.join(' ').split(/\s+/))].join(' ').trim();
+  return joined || null;
+}
+
+/** Distância de edição limitada (para tolerar erros de digitação). */
+function editDistance(a: string, b: string, max: number): number {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (cur[j] < rowMin) rowMin = cur[j];
+    }
+    if (rowMin > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/** "tupanssi" ≈ "tupassi": colapsa letras repetidas antes de comparar. */
+function squash(s: string): string { return s.replace(/(.)\1+/g, '$1'); }
+
+function fuzzyHasToken(words: string[], token: string): boolean {
+  const t = squash(token);
+  const max = t.length >= 6 ? 2 : t.length >= 4 ? 1 : 0;
+  return words.some(w => {
+    const sw = squash(w);
+    if (sw.includes(t) && t.length >= 4) return true;
+    return editDistance(sw, t, max) <= max;
+  });
+}
+
 export function baseCount(): number {
   try {
     return (db.prepare('SELECT COUNT(*) c FROM local_addresses').get() as any).c;
@@ -92,10 +171,24 @@ export function searchBase(q: string, limit = 8): BaseHit[] {
   const required = tokens.filter(t => !TYPE_WORDS.has(t));
   const effective = required.length ? required : tokens;
 
-  const where = effective.map(() => "norm LIKE '%' || ? || '%'").join(' AND ');
-  const rows = db.prepare(
-    `SELECT kind, name, norm, detail, lat, lng FROM local_addresses
-     WHERE ${where} LIMIT 60`).all(...effective) as any[];
+  // cada token precisa aparecer no nome OU nas palavras-chave de categoria
+  // (é o que faz "hospital" listar hospitais e "mecanica" achar oficinas)
+  const where = effective.map(() =>
+    "(norm LIKE '%' || ? || '%' OR IFNULL(tags,'') LIKE '%' || ? || '%')").join(' AND ');
+  let rows = db.prepare(
+    `SELECT kind, name, norm, tags, detail, lat, lng FROM local_addresses
+     WHERE ${where} LIMIT 60`).all(...effective.flatMap(t => [t, t])) as any[];
+
+  // nada na busca exata? tenta tolerando erro de digitação
+  // ("av tupanssi" → "Avenida Tupassi")
+  if (!rows.length) {
+    const all = db.prepare(
+      'SELECT kind, name, norm, tags, detail, lat, lng FROM local_addresses').all() as any[];
+    rows = all.filter(r => {
+      const words = `${r.norm} ${r.tags || ''}`.split(/\s+/).filter(Boolean);
+      return effective.every(t => fuzzyHasToken(words, t));
+    }).slice(0, 30);
+  }
 
   const first = effective[0];
   const typeTokens = tokens.filter(t => TYPE_WORDS.has(t));
@@ -103,6 +196,7 @@ export function searchBase(q: string, limit = 8): BaseHit[] {
     let score = 0;
     if (r.norm === qn.trim()) score += 100;                 // nome exato
     if (r.norm.startsWith(first)) score += 30;              // começa pelo termo
+    if (effective.every(t => r.norm.includes(t))) score += 15; // termo no nome > só na categoria
     for (const t of typeTokens) if (r.norm.includes(t)) score += 10;
     if (houseNumber && r.kind === 'rua') score += 20;       // número pede rua
     if (r.kind === 'local') score += 5;                     // POI é mais específico
@@ -137,6 +231,30 @@ export function nearestBase(lat: number, lng: number, maxM = 300):
   return best;
 }
 
+/** Estabelecimentos cadastrados pelo administrador (sobrevivem à reimportação). */
+export function manualPlaces(): any[] {
+  return db.prepare(`SELECT id, name, detail, tags, lat, lng, updated_at
+    FROM local_addresses WHERE source = 'manual' ORDER BY name`).all();
+}
+
+export function addManualPlace(name: string, tags: string | null, detail: string | null,
+  lat: number, lng: number): number {
+  const r = db.prepare(`INSERT INTO local_addresses
+    (kind, name, norm, detail, tags, lat, lng, updated_at, source)
+    VALUES ('local', ?, ?, ?, ?, ?, ?, ?, 'manual')
+    ON CONFLICT(kind, norm) DO UPDATE SET
+      detail = excluded.detail, tags = excluded.tags, lat = excluded.lat,
+      lng = excluded.lng, updated_at = excluded.updated_at, source = 'manual'`)
+    .run(name.trim(), normalize(name), detail, tags ? normalize(tags) : null,
+      lat, lng, Date.now());
+  return Number(r.lastInsertRowid);
+}
+
+export function removeManualPlace(id: number): boolean {
+  const r = db.prepare(`DELETE FROM local_addresses WHERE id = ? AND source = 'manual'`).run(id);
+  return r.changes > 0;
+}
+
 interface OverpassElement {
   type: string;
   lat?: number; lon?: number;
@@ -167,6 +285,10 @@ area["name"="${cityName}"]["boundary"="administrative"]->.a;
   nwr(area.a)["name"]["tourism"];
   nwr(area.a)["name"]["healthcare"];
   nwr(area.a)["name"]["public_transport"];
+  nwr(area.a)["name"]["office"];
+  nwr(area.a)["name"]["craft"];
+  nwr(area.a)["name"]["emergency"];
+  way(area.a)["name"]["building"~"^(commercial|retail|supermarket|hospital|school|university|college|church|civic|public|industrial)$"];
 );
 out center tags;`;
 
@@ -199,7 +321,7 @@ out center tags;`;
   // agrupa segmentos de rua pelo nome; deduplica POIs e bairros
   const streets = new Map<string, { name: string; sumLat: number; sumLng: number; n: number }>();
   const suburbs = new Map<string, { name: string; lat: number; lng: number }>();
-  const pois = new Map<string, { name: string; detail: string | null; lat: number; lng: number }>();
+  const pois = new Map<string, { name: string; detail: string | null; tags: string | null; lat: number; lng: number }>();
 
   for (const el of elements) {
     const tags = el.tags || {};
@@ -220,7 +342,7 @@ out center tags;`;
       if (!pois.has(key)) {
         const detail = [tags['addr:street'], tags['addr:housenumber']]
           .filter(Boolean).join(', ') || null;
-        pois.set(key, { name, detail, lat: lat!, lng: lng! });
+        pois.set(key, { name, detail, tags: buildTags(tags), lat: lat!, lng: lng! });
       }
     }
   }
@@ -232,14 +354,16 @@ out center tags;`;
   const t = Date.now();
   db.exec('BEGIN');
   try {
-    db.prepare('DELETE FROM local_addresses').run();
+    // só o que veio do OSM é regravado; cadastros manuais ficam intactos
+    db.prepare(`DELETE FROM local_addresses WHERE source = 'osm'`).run();
     const ins = db.prepare(`INSERT OR IGNORE INTO local_addresses
-      (kind, name, norm, detail, lat, lng, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      (kind, name, norm, detail, tags, lat, lng, updated_at, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'osm')`);
     for (const [key, s] of streets) {
-      ins.run('rua', s.name, key, null, s.sumLat / s.n, s.sumLng / s.n, t);
+      ins.run('rua', s.name, key, null, null, s.sumLat / s.n, s.sumLng / s.n, t);
     }
-    for (const [key, b] of suburbs) ins.run('bairro', b.name, key, null, b.lat, b.lng, t);
-    for (const [key, p] of pois) ins.run('local', p.name, key, p.detail, p.lat, p.lng, t);
+    for (const [key, b] of suburbs) ins.run('bairro', b.name, key, null, null, b.lat, b.lng, t);
+    for (const [key, p] of pois) ins.run('local', p.name, key, p.detail, p.tags, p.lat, p.lng, t);
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');

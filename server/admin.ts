@@ -572,6 +572,43 @@ export const adminRoutes: Route[] = [
     json(res, 200, { checks: await testGoogleKeys() });
   }),
 
+  // ---------- estabelecimentos cadastrados à mão ----------
+  route('GET /api/admin/places', 'admin', async ({ res }) => {
+    const { manualPlaces } = await import('./address-base.ts');
+    json(res, 200, { places: manualPlaces() });
+  }),
+
+  /**
+   * Cadastra um estabelecimento que o OSM não tem ("Mercado Lorena",
+   * "Advocacia Fulano"...). Entra na base local e aparece na busca na hora.
+   */
+  route('POST /api/admin/places', 'admin', async ({ req, res, user }) => {
+    const { addManualPlace } = await import('./address-base.ts');
+    const b = await readBody(req);
+    const name = reqStr(b.name, 'nome', 120);
+    const tags = b.tags ? String(b.tags).slice(0, 200) : null;
+    const detail = b.detail ? String(b.detail).slice(0, 200) : null;
+    const lat = reqNum(b.lat, 'lat'), lng = reqNum(b.lng, 'lng');
+    const cLat = getSettingNum('center_lat'), cLng = getSettingNum('center_lng');
+    const radius = getSettingNum('coverage_radius_km') * 1000;
+    const { haversineM } = await import('./util.ts');
+    if (haversineM(lat, lng, cLat, cLng) > radius) {
+      throw new ApiError(422, 'O ponto está fora da área de cobertura.');
+    }
+    const id = addManualPlace(name, tags, detail, lat, lng);
+    audit(user!.id, 'place_add', 'settings', undefined, name);
+    json(res, 200, { ok: true, id });
+  }),
+
+  route('DELETE /api/admin/places/:id', 'admin', async ({ res, user, params }) => {
+    const { removeManualPlace } = await import('./address-base.ts');
+    if (!removeManualPlace(Number(params.id))) {
+      throw new ApiError(404, 'Local não encontrado (só cadastros manuais podem ser removidos).');
+    }
+    audit(user!.id, 'place_remove', 'settings', params.id);
+    json(res, 200, { ok: true });
+  }),
+
   /**
    * Baixa do OpenStreetMap todas as ruas, bairros e locais da cidade e
    * regrava a base local de endereços (busca instantânea sem Google).

@@ -589,6 +589,21 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     CREATE INDEX idx_local_addr_norm ON local_addresses(norm);
     `,
   },
+
+  // ----------------------------------------------------------------
+  // V2.3.1 — busca por categoria e locais cadastrados à mão:
+  //  - tags: palavras-chave em português ("hospital saude", "mercado
+  //    supermercado") derivadas das categorias do OSM, pesquisáveis;
+  //  - source: 'osm' (reimportável) ou 'manual' (cadastrado pelo admin,
+  //    sobrevive à reimportação).
+  // ----------------------------------------------------------------
+  {
+    version: 6,
+    sql: `
+    ALTER TABLE local_addresses ADD COLUMN tags TEXT;
+    ALTER TABLE local_addresses ADD COLUMN source TEXT NOT NULL DEFAULT 'osm';
+    `,
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {

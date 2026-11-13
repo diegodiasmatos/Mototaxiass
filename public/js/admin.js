@@ -662,6 +662,7 @@ async function secPayments() {
 /* ============ mapas (Google Maps Platform) ============ */
 async function secMaps() {
   const m = await api('/api/admin/maps-config');
+  const { places } = await api('/api/admin/places');
   const cred = (k, label, help) => {
     const v = m.credentials[k];
     const origem = v.source === 'banco' ? '<span class="pill green">salva aqui</span>'
@@ -716,6 +717,31 @@ async function secMaps() {
       <button class="btn btn-primary" id="mp-import-base">
         ${m.address_base.total ? 'Atualizar base de endereços' : 'Baixar base de endereços agora'}</button>
       <div id="mp-base-result" class="mt"></div>
+    </div>
+
+    <div class="card">
+      <h3>🏪 Estabelecimentos cadastrados à mão
+        <span class="pill ${places.length ? 'green' : 'gray'}">${places.length}</span></h3>
+      <p class="muted small mb">O OpenStreetMap não conhece todo comércio da cidade. Cadastre aqui
+        o que faltar — <b>Mercado Lorena, Advocacia Fulano, Mecânica do João…</b> — e o local
+        aparece na busca dos passageiros na mesma hora. Sobrevive às atualizações da base.</p>
+      ${places.length ? places.map(p => `
+        <div class="list-item">
+          <span style="font-size:1.1rem">📌</span>
+          <div class="li-main"><div class="li-title">${escapeHtml(p.name)}</div>
+            <div class="li-sub">${escapeHtml(p.tags || '')}${p.detail ? ' · ' + escapeHtml(p.detail) : ''}</div></div>
+          <button class="btn btn-outline btn-sm" data-pl-del="${p.id}">Remover</button>
+        </div>`).join('') : ''}
+      <h3 class="mt">Adicionar local</h3>
+      <div class="field"><label>Nome do estabelecimento</label>
+        <input class="input" id="pl-name" placeholder="ex.: Mercado Lorena"></div>
+      <div class="field"><label>Palavras-chave (como as pessoas procuram)</label>
+        <input class="input" id="pl-tags" placeholder="ex.: mercado supermercado mercadinho"></div>
+      <div class="field"><label>Onde fica (endereço, ou cole coordenadas "lat, lng")</label>
+        <input class="input" id="pl-ref" placeholder="ex.: Avenida Tupassi 450 — ou -24.4156, -53.5216"></div>
+      <button class="btn btn-navy btn-sm" id="pl-locate">1 · Localizar no mapa</button>
+      <div id="pl-options" class="mt"></div>
+      <button class="btn btn-primary mt" id="pl-save" disabled>2 · Salvar local</button>
     </div>
 
     <div class="card">
@@ -799,6 +825,62 @@ async function secMaps() {
     });
     secMaps();
   }, { okMsg: 'Configuração de mapas salva.' }).catch(() => { });
+
+  // -------- estabelecimentos manuais --------
+  let plCoord = null;
+  $('#pl-locate').onclick = () => withLoading($('#pl-locate'), async () => {
+    const ref = $('#pl-ref').value.trim();
+    if (!ref) { toast('Informe o endereço ou as coordenadas.', 'err'); return; }
+    const coordMatch = ref.match(/^(-?\d{1,2}[.,]\d+)\s*[,;]\s*(-?\d{1,3}[.,]\d+)$/);
+    const box = $('#pl-options');
+    if (coordMatch) {
+      plCoord = { lat: Number(coordMatch[1].replace(',', '.')), lng: Number(coordMatch[2].replace(',', '.')) };
+      box.innerHTML = `<div class="testbar">📍 Coordenada definida: ${plCoord.lat.toFixed(5)}, ${plCoord.lng.toFixed(5)}</div>`;
+      $('#pl-save').disabled = false;
+      return;
+    }
+    const r = await api('/api/geo/search?q=' + encodeURIComponent(ref));
+    if (!r.results.length) {
+      box.innerHTML = '<div class="testbar">Nada encontrado — tente outro endereço ou cole as coordenadas (no Google Maps: toque e segure no ponto → os números aparecem em cima).</div>';
+      $('#pl-save').disabled = true; plCoord = null;
+      return;
+    }
+    box.innerHTML = '<p class="muted small">Escolha o ponto de referência:</p>' +
+      r.results.slice(0, 5).map((x, i) => `
+      <label class="list-item" style="cursor:pointer">
+        <input type="radio" name="pl-opt" value="${i}">
+        <div class="li-main"><div class="li-title">${escapeHtml(x.text)}</div>
+          <div class="li-sub">${(x.distance_m / 1000).toFixed(1)} km do centro</div></div>
+      </label>`).join('');
+    box.querySelectorAll('input[name="pl-opt"]').forEach(inp => {
+      inp.onchange = () => {
+        const x = r.results[Number(inp.value)];
+        plCoord = { lat: x.lat, lng: x.lng };
+        $('#pl-save').disabled = false;
+      };
+    });
+  }).catch(() => { });
+
+  $('#pl-save').onclick = () => withLoading($('#pl-save'), async () => {
+    const name = $('#pl-name').value.trim();
+    if (!name) { toast('Informe o nome do estabelecimento.', 'err'); return; }
+    if (!plCoord) { toast('Localize o ponto primeiro.', 'err'); return; }
+    await api('/api/admin/places', {
+      method: 'POST',
+      body: { name, tags: $('#pl-tags').value.trim() || null, detail: $('#pl-ref').value.trim() || null,
+        lat: plCoord.lat, lng: plCoord.lng },
+    });
+    secMaps();
+  }, { okMsg: 'Local cadastrado! Já aparece na busca dos passageiros.' }).catch(() => { });
+
+  $$('[data-pl-del]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!await confirmModal('Remover local', 'Remover este estabelecimento da busca?')) return;
+      await api('/api/admin/places/' + btn.dataset.plDel, { method: 'DELETE' });
+      toast('Local removido.', 'ok');
+      secMaps();
+    };
+  });
 
   $$('[data-mk-clear]').forEach(btn => {
     btn.onclick = async () => {

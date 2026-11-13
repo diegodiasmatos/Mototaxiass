@@ -179,8 +179,9 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
     }
   }
 
-  // Base completa e com boas respostas: devolve já, sem chamada externa.
-  if (baseHits >= 3) return results.slice(0, 8);
+  // A base achou algo: devolve NA HORA. Esperar serviço externo aqui é o que
+  // deixava a busca lenta — e o Nominatim ainda podia chutar outra cidade.
+  if (baseHits >= 1) return results.slice(0, 8);
 
   // 2) Google Places (New): ruas, números, estabelecimentos e bairros.
   // A coordenada só é buscada quando o usuário escolhe (economiza chamada).
@@ -217,7 +218,9 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
       try {
         const r = await fetch(url, {
           headers: { 'User-Agent': UA, 'Accept-Language': 'pt-BR' },
-          signal: AbortSignal.timeout(6000),
+          // curto de propósito: é só reserva — melhor "nada encontrado" rápido
+          // do que o passageiro olhando um spinner por 12 segundos
+          signal: AbortSignal.timeout(3500),
         });
         if (!r.ok) continue;
         const data = await r.json() as any[];

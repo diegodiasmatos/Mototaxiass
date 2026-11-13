@@ -371,6 +371,51 @@ test('base local de endereços: busca instantânea com número e abreviação', 
   assert.ok(cfg.data.address_base.ruas >= 2);
 });
 
+test('base: erro de digitação não derruba a busca (tupanssi → Tupassi)', async () => {
+  const t = Date.now();
+  db.prepare(`INSERT INTO local_addresses (kind, name, norm, detail, lat, lng, updated_at)
+    VALUES ('rua', 'Avenida Tupassi', 'avenida tupassi', NULL, -24.4160, -53.5190, ?)`).run(t);
+  const r = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('av tupanssi 450'));
+  assert.ok(r.data.results.length > 0, 'fuzzy deveria achar a Avenida Tupassi');
+  assert.ok(r.data.results[0].text.startsWith('Avenida Tupassi, 450'));
+  assert.equal(r.data.results[0].approx, true);
+});
+
+test('base: busca por categoria acha estabelecimento sem a palavra no nome', async () => {
+  const t = Date.now();
+  db.prepare(`INSERT INTO local_addresses (kind, name, norm, detail, tags, lat, lng, updated_at)
+    VALUES ('local', 'Lorena Alimentos', 'lorena alimentos', NULL,
+      'mercado supermercado mercadinho', -24.4150, -53.5220, ?)`).run(t);
+  const r = await pax.req('GET', '/api/geo/search?q=mercado');
+  assert.ok(r.data.results.some((x: any) => x.text.includes('Lorena Alimentos')),
+    '"mercado" deveria listar o Lorena Alimentos pelas palavras-chave');
+});
+
+test('estabelecimento manual: cadastrar, aparecer na busca e remover', async () => {
+  // fora da área de cobertura é recusado
+  assert.equal((await adm.req('POST', '/api/admin/places',
+    { name: 'Longe Demais', lat: -25.5, lng: -54.5 })).status, 422);
+
+  const add = await adm.req('POST', '/api/admin/places', {
+    name: 'Mecânica do João', tags: 'mecanica oficina borracharia',
+    detail: 'Avenida Brasil, 900', lat: -24.4145, lng: -53.5205,
+  });
+  assert.equal(add.status, 200);
+
+  const r = await pax.req('GET', '/api/geo/search?q=mecanica');
+  assert.ok(r.data.results.some((x: any) => x.text.includes('Mecânica do João')));
+
+  // sobrevive como 'manual' e só manual pode ser removido
+  const list = await adm.req('GET', '/api/admin/places');
+  assert.equal(list.data.places.length, 1);
+  const del = await adm.req('DELETE', `/api/admin/places/${add.data.id}`);
+  assert.equal(del.status, 200);
+  assert.equal((await adm.req('GET', '/api/admin/places')).data.places.length, 0);
+  // passageiro não cadastra local
+  assert.equal((await pax.req('POST', '/api/admin/places',
+    { name: 'X', lat: -24.41, lng: -53.52 })).status, 403);
+});
+
 test('reverse geocode offline usa a rua mais próxima da base, marcada como aproximada', async () => {
   const r = await pax.req('GET', '/api/geo/reverse?lat=-24.4170&lng=-53.5230');
   assert.equal(r.status, 200);
