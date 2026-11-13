@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0d1b2e">
-  <title>Assis MotoTáxi — Central Administrativa</title>
+  <meta name="theme-color" content="#101014">
+  <title>VAIRO — Central Administrativa</title>
   <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
@@ -15,7 +15,7 @@
 <header class="topbar">
   <div class="brand" id="brand"></div>
   <div class="spacer"></div>
-  <button class="iconbtn" id="btn-notifs" title="Notificações" hidden>🔔</button>
+  <button class="iconbtn" id="btn-notifs" title="Notificações" aria-label="Notificações" hidden><span data-ico="bell"></span></button>
   <button class="iconbtn" id="btn-logout" title="Sair" hidden>🚪</button>
 </header>
 
@@ -38,17 +38,17 @@
 <!-- painel -->
 <div class="admin-layout" id="admin-wrap" hidden>
   <aside class="sidebar">
-    <button data-sec="dashboard" class="active">📊 Dashboard</button>
-    <button data-sec="drivers">🏍️ Mototaxistas</button>
-    <button data-sec="passengers">👥 Passageiros</button>
-    <button data-sec="rides">🛣️ Corridas</button>
-    <button data-sec="finance">💰 Financeiro</button>
-    <button data-sec="issues">⚠️ Ocorrências</button>
-    <button data-sec="payments">💳 Pagamentos</button>
-    <button data-sec="maps">🗺️ Mapas</button>
-    <button data-sec="settings">⚙️ Configurações</button>
-    <button data-sec="audit">📜 Auditoria</button>
-    <button data-sec="support">🛟 Suporte</button>
+    <button data-sec="dashboard" class="active"><span class="nico" data-ico="dashboard"></span>Dashboard</button>
+    <button data-sec="drivers"><span class="nico" data-ico="bike"></span>Mototaxistas</button>
+    <button data-sec="passengers"><span class="nico" data-ico="users"></span>Passageiros</button>
+    <button data-sec="rides"><span class="nico" data-ico="route"></span>Corridas</button>
+    <button data-sec="finance"><span class="nico" data-ico="coins"></span>Financeiro</button>
+    <button data-sec="issues"><span class="nico" data-ico="alert"></span>Ocorrências</button>
+    <button data-sec="payments"><span class="nico" data-ico="card"></span>Pagamentos</button>
+    <button data-sec="maps"><span class="nico" data-ico="map"></span>Mapas</button>
+    <button data-sec="settings"><span class="nico" data-ico="settings"></span>Configurações</button>
+    <button data-sec="audit"><span class="nico" data-ico="scroll"></span>Auditoria</button>
+    <button data-sec="support"><span class="nico" data-ico="lifebuoy"></span>Suporte</button>
   </aside>
   <main class="admin-main" id="admin-main">
     <div class="spinner"></div>

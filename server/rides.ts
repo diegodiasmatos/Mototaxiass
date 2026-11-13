@@ -214,7 +214,7 @@ export async function chargeAcceptedRide(ride: any): Promise<void> {
   const payment = await createCharge({
     rideId: ride.id, method: ride.payment_method as Method, amountCents: ride.price_cents,
     payerEmail: passenger.email, payerName: passenger.name,
-    description: `Corrida Assis MotoTáxi ${ride.origin_text} → ${ride.dest_text}`,
+    description: `Corrida VAIRO ${ride.origin_text} → ${ride.dest_text}`,
     sellerDriverId: seller ? ride.driver_id : undefined,
     applicationFeeCents: split.commission_cents,
     notificationUrl: process.env.PUBLIC_URL
@@ -337,7 +337,7 @@ export async function finalizeRide(rideId: string, by: string): Promise<void> {
   }
 
   notify(r.passenger_id, 'ride_completed', 'Corrida concluída!',
-    { body: 'Obrigado por viajar com o Assis MotoTáxi. Avalie seu mototaxista!', rideId });
+    { body: 'Obrigado por viajar com o VAIRO. Avalie seu mototaxista!', rideId });
   notify(r.driver_id, 'ride_completed', 'Corrida concluída',
     {
       body: payment?.seller_driver_id
@@ -604,7 +604,7 @@ export const rideRoutes: Route[] = [
       payment = await createCharge({
         rideId: rid, method, amountCents: q.price_cents,
         payerEmail: user!.email, payerName: user!.name,
-        description: `Corrida Assis MotoTáxi ${q.origin_text} → ${q.dest_text}`,
+        description: `Corrida VAIRO ${q.origin_text} → ${q.dest_text}`,
         cardToken: typeof b.card_token === 'string' ? b.card_token : undefined,
         installments: 1,
         cardPaymentMethodId: typeof b.card_brand === 'string' ? b.card_brand : undefined,

@@ -1,4 +1,4 @@
-/* Assis MotoTáxi — painel do mototaxista */
+/* VAIRO — painel do mototaxista */
 'use strict';
 
 const S = {
@@ -242,7 +242,7 @@ function renderPanel() {
 
   const warn = $('#drv-debt-warn');
   if (warn && S.balance && S.balance.debt_cents > (S.debtLimit ?? Infinity)) {
-    warn.innerHTML = `<div class="testbar" style="background:#fee2e2;border-color:#fca5a5;color:#991b1b">
+    warn.innerHTML = `<div class="testbar bad">
       ⛔ Comissão em aberto de ${fmt.money(S.balance.debt_cents)} (limite ${fmt.money(S.debtLimit)}).
       Quite com a plataforma para voltar a receber corridas.</div>`;
   } else if (warn) warn.innerHTML = '';
@@ -449,7 +449,7 @@ function renderDrive() {
     </div>
     <div class="list-item"><div class="li-main"><div class="li-sub">📍 Embarque</div><div class="li-title">${escapeHtml(r.origin.text)}</div></div></div>
     <div class="list-item"><div class="li-main"><div class="li-sub">🏁 Destino</div><div class="li-title">${escapeHtml(r.dest.text)}</div></div></div>
-    ${r.pickup_updated_at ? `<p class="muted small mt" style="color:#b45309">
+    ${r.pickup_updated_at ? `<p class="muted small mt" style="color:var(--amber)">
       📍 O passageiro atualizou o ponto de embarque em ${fmt.time(r.pickup_updated_at)}.</p>` : ''}
     <div class="row between mt" style="flex-wrap:wrap;gap:8px">
       <span class="chip soft">${fmt.dist(r.distance_m)}</span>
@@ -612,7 +612,7 @@ async function loadEarnings() {
         <div class="fin-card ${debtWarn ? 'bad' : 'warn'}"><div class="fv">${fmt.money(e.debt_cents)}</div>
           <div class="fl">Comissão a pagar (corridas em dinheiro)</div></div>
       </div>
-      ${debtWarn ? `<div class="testbar" style="background:#fee2e2;border-color:#fca5a5;color:#991b1b">
+      ${debtWarn ? `<div class="testbar bad">
         ⛔ Sua dívida passou do limite de ${fmt.money(e.debt_limit_cents)} — você não recebe novas corridas
         até quitar com a plataforma.</div>` : ''}
       ${row('Hoje', e.day) + row('Esta semana', e.week) + row('Este mês', e.month) + row('Total', e.total)}

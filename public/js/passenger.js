@@ -1,4 +1,4 @@
-/* Assis MotoTáxi — aplicativo do passageiro (V2) */
+/* VAIRO — aplicativo do passageiro (V2) */
 'use strict';
 
 const S = {
@@ -25,7 +25,7 @@ async function init() {
     welcome_message: 'Olá! Para onde vamos?',
   }));
   await initMaps(S.config);
-  $('#auth-hero').innerHTML = `${LOGO_SVG}<h1>Assis MotoTáxi</h1>
+  $('#auth-hero').innerHTML = `${LOGO_SVG}<h1>VAIRO</h1>
     <p>Transporte rápido e seguro em ${escapeHtml(S.config.city_name)}</p>`;
 
   bindAuth(); bindHome(); bindQuote(); bindRide(); bindProfile(); bindNav();

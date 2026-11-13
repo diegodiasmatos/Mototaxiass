@@ -1,5 +1,5 @@
 /**
- * Testes ponta a ponta do Assis MotoTáxi.
+ * Testes ponta a ponta do VAIRO.
  * Sobe o servidor real em porta aleatória com banco temporário e GEO_OFFLINE=1
  * (sem depender de internet) e percorre os fluxos de passageiro, mototaxista,
  * administrador e as regras de segurança.

@@ -158,7 +158,7 @@ export async function start(opts: StartOptions = {}): Promise<{ server: http.Ser
   });
   const actual = (server.address() as any).port;
   if (!opts.quiet) {
-    console.log(`\n🏍️  Assis MotoTáxi rodando em http://localhost:${actual}`);
+    console.log(`\n🏍️  VAIRO rodando em http://localhost:${actual}`);
     console.log(`   Passageiro:  http://localhost:${actual}/`);
     console.log(`   Mototaxista: http://localhost:${actual}/motorista`);
     console.log(`   Admin:       http://localhost:${actual}/admin`);

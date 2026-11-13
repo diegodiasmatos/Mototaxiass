@@ -1,4 +1,4 @@
-/* Assis MotoTáxi — service worker (instalação no celular + resiliência offline).
+/* VAIRO — service worker (instalação no celular + resiliência offline).
    Política deliberada:
    - API, SSE e documentos: SEMPRE rede, nunca cache (dados sensíveis e em tempo real).
    - HTML/CSS/JS: rede primeiro, cache como reserva → nunca serve código velho.
@@ -36,7 +36,7 @@ self.addEventListener('message', e => { if (e.data === 'skip-waiting') self.skip
 
 /* ---------- Web Push: chamadas de corrida com o app fechado ---------- */
 self.addEventListener('push', event => {
-  let d = { title: 'Assis MotoTáxi', body: '', url: '/' };
+  let d = { title: 'VAIRO', body: '', url: '/' };
   try { if (event.data) d = { ...d, ...event.data.json() }; }
   catch { if (event.data) d.body = event.data.text(); }
 

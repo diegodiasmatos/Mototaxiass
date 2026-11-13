@@ -10,8 +10,9 @@ import { fileURLToPath } from 'node:url';
 
 const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'img');
 
-const YELLOW: RGB = [0xff, 0xb7, 0x03];
-const NAVY: RGB = [0x0d, 0x1b, 0x2e];
+const LIME: RGB = [0xe7, 0xff, 0x00];
+const DARK: RGB = [0x09, 0x09, 0x09];
+const WHITE: RGB = [0xff, 0xff, 0xff];
 type RGB = [number, number, number];
 
 /** distância de um ponto ao segmento AB (coords normalizadas 0..1) */
@@ -23,50 +24,33 @@ function segDist(px: number, py: number, ax: number, ay: number, bx: number, by:
   return Math.hypot(px - cx, py - cy);
 }
 
-/** Desenho da moto em coordenadas normalizadas. `scale` encolhe para a zona segura. */
-function motoInk(x: number, y: number, scale: number): boolean {
-  // converte para o espaço do desenho centrado
+/** "V" do VAIRO em coordenadas normalizadas. `scale` encolhe para a zona segura. */
+function vInk(x: number, y: number, scale: number): boolean {
   const u = (x - 0.5) / scale + 0.5;
   const v = (y - 0.5) / scale + 0.5;
   if (u < 0 || u > 1 || v < 0 || v > 1) return false;
-
-  const w = 0.058;              // espessura do traço
-  const wheelR = 0.125;
-  const wheels: [number, number][] = [[0.28, 0.68], [0.72, 0.68]];
-  for (const [cx, cy] of wheels) {
-    const d = Math.abs(Math.hypot(u - cx, v - cy) - wheelR);
-    if (d <= w / 2) return true;
-  }
+  const w = 0.11;                // espessura do traço (7/64)
   const segs: [number, number, number, number][] = [
-    [0.28, 0.68, 0.45, 0.44],   // quadro traseiro
-    [0.45, 0.44, 0.63, 0.44],   // tanque
-    [0.63, 0.44, 0.72, 0.68],   // garfo dianteiro
-    [0.63, 0.44, 0.73, 0.36],   // coluna do guidão
-    [0.73, 0.36, 0.84, 0.36],   // guidão
-    [0.45, 0.44, 0.40, 0.33],   // banco
-    [0.40, 0.33, 0.52, 0.33],
+    [0.30, 0.30, 0.50, 0.70],
+    [0.50, 0.70, 0.70, 0.30],
   ];
   for (const [ax, ay, bx, by] of segs) {
     if (segDist(u, v, ax, ay, bx, by) <= w / 2) return true;
   }
-  // traços de velocidade
-  const speed: [number, number, number, number][] = [
-    [0.06, 0.18, 0.30, 0.18],
-    [0.03, 0.27, 0.23, 0.27],
-  ];
-  for (const [ax, ay, bx, by] of speed) {
-    if (segDist(u, v, ax, ay, bx, by) <= 0.023) return true;
-  }
   return false;
+}
+
+/** distância assinada ao quadrado arredondado (negativa = dentro). */
+function sdRound(x: number, y: number): number {
+  const r = 0.22;
+  const qx = Math.abs(x - 0.5) - (0.5 - r), qy = Math.abs(y - 0.5) - (0.5 - r);
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
 }
 
 /** true se o pixel pertence ao fundo (badge arredondado ou quadrado cheio). */
 function inBackground(x: number, y: number, fullBleed: boolean): boolean {
   if (fullBleed) return true;
-  const r = 0.22;
-  const dx = Math.max(Math.abs(x - 0.5) - (0.5 - r), 0);
-  const dy = Math.max(Math.abs(y - 0.5) - (0.5 - r), 0);
-  return Math.hypot(dx, dy) <= r;
+  return sdRound(x, y) <= 0;
 }
 
 function crc32(buf: Buffer): number {
@@ -111,6 +95,7 @@ function render(size: number, fullBleed: boolean): Buffer {
   const out = Buffer.alloc(size * size * 4);
   // no modo maskable o conteúdo fica dentro da zona segura (80%)
   const logoScale = fullBleed ? 0.72 : 0.94;
+  const RING = 0.045;           // borda limão do tile
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       let r = 0, g = 0, b = 0, a = 0;
@@ -120,7 +105,8 @@ function render(size: number, fullBleed: boolean): Buffer {
           const ny = (y + (sy + 0.5) / SS) / size;
           let px: RGB | null = null;
           if (inBackground(nx, ny, fullBleed)) {
-            px = motoInk(nx, ny, logoScale) ? NAVY : YELLOW;
+            if (!fullBleed && sdRound(nx, ny) > -RING) px = LIME;
+            else px = vInk(nx, ny, logoScale) ? WHITE : DARK;
           }
           if (px) { r += px[0]; g += px[1]; b += px[2]; a += 255; }
         }
@@ -138,7 +124,7 @@ function render(size: number, fullBleed: boolean): Buffer {
 }
 
 fs.mkdirSync(OUT, { recursive: true });
-console.log('Gerando ícones do Assis MotoTáxi…');
+console.log('Gerando ícones do VAIRO…');
 for (const [name, size, full] of [
   ['icon-192.png', 192, false],
   ['icon-512.png', 512, false],

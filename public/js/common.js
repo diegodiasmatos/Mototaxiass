@@ -1,4 +1,4 @@
-/* Assis MotoTáxi — utilitários compartilhados (passageiro, mototaxista, admin) */
+/* VAIRO — utilitários compartilhados (passageiro, mototaxista, admin) */
 'use strict';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -352,7 +352,7 @@ async function promptInstall() {
   // iOS (Safari) não oferece prompt automático
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
   openModal(`
-    <h3>📲 Instalar o Assis MotoTáxi</h3>
+    <h3>📲 Instalar o VAIRO</h3>
     ${ios ? `
       <p class="muted mb">No iPhone, use o Safari e siga:</p>
       <div class="list-item"><div class="li-main"><div class="li-title">1. Toque em Compartilhar</div>
@@ -609,22 +609,40 @@ function confirmModal(title, text, confirmLabel = 'Confirmar', danger = false) {
   });
 }
 
-/* ---------- logo ---------- */
+/* ---------- ícones (traço, herdam a cor do texto) ---------- */
+const ICONS = {
+  home: '<path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/>',
+  receipt: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',
+  wallet: '<path d="M3 7h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 7l2-3h12v3"/><circle cx="16.5" cy="14" r="1"/>',
+  bell: '<path d="M6 17v-6a6 6 0 0 1 12 0v6l2 2H4z"/><path d="M10 21h4"/>',
+  dashboard: '<rect x="3" y="3" width="8" height="9" rx="1"/><rect x="13" y="3" width="8" height="5" rx="1"/><rect x="13" y="11" width="8" height="10" rx="1"/><rect x="3" y="15" width="8" height="6" rx="1"/>',
+  bike: '<circle cx="6" cy="17" r="3.5"/><circle cx="18" cy="17" r="3.5"/><path d="M6 17l4-7h5l3 7"/><path d="M10 10L8 6h3"/><path d="M15 10l1-3h3"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2 20c0-3.5 3-5.5 7-5.5s7 2 7 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.8c2.4.7 4 2.3 4 5.2"/>',
+  route: '<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h8a3.5 3.5 0 0 0 0-7H8a3.5 3.5 0 0 1 0-7h8"/>',
+  coins: '<circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.5-1-1.6-1.5-3-1.5-1.7 0-3 .8-3 2s1.2 1.6 3 2 3 .8 3 2-1.3 2-3 2c-1.4 0-2.5-.5-3-1.5M12 6v2M12 16v2"/>',
+  alert: '<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.01"/>',
+  card: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/>',
+  map: '<path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/>',
+  settings: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
+  scroll: '<path d="M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M9 8h6M9 12h6M9 16h4"/>',
+  lifebuoy: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/><path d="M5.6 5.6l3.9 3.9M14.5 14.5l3.9 3.9M18.4 5.6l-3.9 3.9M9.5 14.5l-3.9 3.9"/>'
+};
+const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+function hydrateIcons(root = document) {
+  $$('[data-ico]', root).forEach(el => { if (!el.firstChild) el.innerHTML = icon(el.dataset.ico); });
+}
+hydrateIcons();
+
+/* ---------- logo (tile escuro, borda limão, "V" branco) ---------- */
 const LOGO_SVG = `
-<svg class="logo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-label="Assis MotoTáxi">
-  <rect x="2" y="2" width="60" height="60" rx="16" fill="#ffb703"/>
-  <g fill="none" stroke="#0d1b2e" stroke-width="4" stroke-linecap="round">
-    <circle cx="18" cy="43" r="7.5"/>
-    <circle cx="46" cy="43" r="7.5"/>
-    <path d="M18 43 L28 28 H40 L46 43"/>
-    <path d="M28 28 L24 21 H31"/>
-    <path d="M40 28 L46 24 H52"/>
-  </g>
-  <path d="M6 14 h14 M4 20 h12" stroke="#0d1b2e" stroke-width="3" stroke-linecap="round" opacity=".55"/>
+<svg class="logo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-label="VAIRO">
+  <rect x="2.5" y="2.5" width="59" height="59" rx="16" fill="#090909" stroke="#e7ff00" stroke-width="3"/>
+  <path d="M19 19 L32 45 L45 19" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`;
 
 function renderBrand(el, subtitle) {
-  el.innerHTML = `${LOGO_SVG}<span>Assis MotoTáxi<small>${escapeHtml(subtitle || 'Assis Chateaubriand - PR')}</small></span>`;
+  el.innerHTML = `${LOGO_SVG}<span><span class="bname">VAIRO <span class="tag-pro">Pro Ecosystem</span></span><small>${escapeHtml(subtitle || 'A cidade no seu ritmo')}</small></span>`;
 }
 
 /* ---------- leitura de arquivos (upload base64 com compressão de imagem) ---------- */

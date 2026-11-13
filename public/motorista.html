@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0d1b2e">
-  <title>Assis MotoTáxi — Parceiro Mototaxista</title>
+  <meta name="theme-color" content="#101014">
+  <title>VAIRO — Parceiro Mototaxista</title>
   <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="MotoTáxi Parceiro">
+  <meta name="apple-mobile-web-app-title" content="VAIRO Motorista">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/css/app.css">
 </head>
@@ -19,7 +19,7 @@
 <header class="topbar">
   <div class="brand" id="brand"></div>
   <div class="spacer"></div>
-  <button class="iconbtn" id="btn-notifs" title="Notificações" hidden>🔔</button>
+  <button class="iconbtn" id="btn-notifs" title="Notificações" aria-label="Notificações" hidden><span data-ico="bell"></span></button>
 </header>
 
 <main class="app">
@@ -27,6 +27,10 @@
   <!-- ============ AUTENTICAÇÃO ============ -->
   <section class="screen" id="screen-auth" hidden>
     <div class="auth-hero" id="auth-hero"></div>
+    <nav class="rolebar" aria-label="Perfil">
+      <a class="rolebtn" href="/"><span data-ico="user"></span>Passageiro</a>
+      <a class="rolebtn active" href="/motorista"><span data-ico="bike"></span>Motorista</a>
+    </nav>
     <div class="card">
       <div class="seg mb">
         <button id="tab-login" class="active">Entrar</button>
@@ -176,9 +180,9 @@
 </main>
 
 <nav class="bottomnav" id="bottomnav" hidden>
-  <button data-screen="screen-panel"><span class="nico">🏠</span>Início</button>
-  <button data-screen="screen-earnings"><span class="nico">💰</span>Ganhos</button>
-  <button data-screen="screen-profile"><span class="nico">👤</span>Perfil</button>
+  <button data-screen="screen-panel"><span class="nico" data-ico="home"></span>Início</button>
+  <button data-screen="screen-earnings"><span class="nico" data-ico="wallet"></span>Ganhos</button>
+  <button data-screen="screen-profile"><span class="nico" data-ico="user"></span>Perfil</button>
 </nav>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
