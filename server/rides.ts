@@ -465,6 +465,23 @@ export const rideRoutes: Route[] = [
     json(res, 200, { place: await resolvePlace(placeId, session) });
   }),
 
+  /**
+   * O passageiro ajustou o pino de um "rua + número": grava a posição real.
+   * Na próxima busca desse endereço (por qualquer pessoa), o ponto é exato.
+   */
+  route('POST /api/geo/learn', 'any', async ({ req, res, ip }) => {
+    if (!rateLimit(`learn:${ip}`, 20, 60_000)) throw new ApiError(429, 'Aguarde um instante.');
+    const { learnHouseNumber } = await import('./address-base.ts');
+    const b = await readBody(req);
+    const street = reqStr(b.street, 'rua', 120);
+    const number = reqNum(b.number, 'número');
+    const lat = reqNum(b.lat, 'lat'), lng = reqNum(b.lng, 'lng');
+    assertInCoverage({ lat, lng }, 'ajuste');
+    const r = learnHouseNumber(street, Math.round(number), lat, lng);
+    if (!r.ok) throw new ApiError(422, `Não foi possível salvar o ponto (${r.reason}).`);
+    json(res, 200, { ok: true });
+  }),
+
   route('GET /api/geo/reverse', 'any', async ({ res, query }) => {
     const lat = reqNum(query.get('lat'), 'lat'), lng = reqNum(query.get('lng'), 'lng');
     const cLat = getSettingNum('center_lat'), cLng = getSettingNum('center_lng');

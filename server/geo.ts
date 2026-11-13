@@ -122,6 +122,12 @@ export interface GeoSearchResult {
   secondary?: string;
   /** true quando a coordenada ainda precisa ser resolvida */
   needs_details?: boolean;
+  /** presentes quando a busca foi "rua + número" na base local */
+  street?: string;
+  number?: string;
+  /** exato = ponto conhecido; interpolado = entre dois números conhecidos;
+   *  centro = centro da rua (o app pede ajuste do pino) */
+  number_how?: 'exato' | 'interpolado' | 'centro';
 }
 
 function normalize(s: string): string {
@@ -165,7 +171,13 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
       cityName,
     ].filter(Boolean).join(', ');
     const item = decorate(line, hit.lat, hit.lng, 'local');
-    if (hit.number) item.approx = true;   // coordenada = centro da rua
+    if (hit.number) {
+      item.street = hit.name;
+      item.number = hit.number;
+      item.number_how = hit.number_how;
+      // só o ponto exato dispensa ajuste; interpolado/centro são aproximados
+      item.approx = hit.number_how !== 'exato';
+    }
     results.push(item);
   }
   const baseHits = results.length;

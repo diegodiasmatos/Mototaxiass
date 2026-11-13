@@ -391,6 +391,41 @@ test('base: busca por categoria acha estabelecimento sem a palavra no nome', asy
     '"mercado" deveria listar o Lorena Alimentos pelas palavras-chave');
 });
 
+test('números de casa: o app aprende com o passageiro e passa a acertar', async () => {
+  // rua que não existe na base é recusada (ninguém ensina endereço inventado)
+  assert.equal((await pax.req('POST', '/api/geo/learn',
+    { street: 'Rua Inexistente Xyz', number: 10, lat: -24.4161, lng: -53.5191 })).status, 422);
+  // fora da área de cobertura é recusado
+  assert.equal((await pax.req('POST', '/api/geo/learn',
+    { street: 'Avenida Tupassi', number: 10, lat: -25.5, lng: -54.5 })).status, 422);
+
+  // passageiros confirmam o nº 400 e o nº 800 da Avenida Tupassi
+  assert.equal((await pax.req('POST', '/api/geo/learn',
+    { street: 'Avenida Tupassi', number: 400, lat: -24.4100, lng: -53.5190 })).status, 200);
+  assert.equal((await pax.req('POST', '/api/geo/learn',
+    { street: 'Avenida Tupassi', number: 800, lat: -24.4200, lng: -53.5190 })).status, 200);
+
+  // nº 400 de novo: ponto EXATO, sem pedir ajuste
+  const r1 = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('avenida tupassi 400'));
+  const h1 = r1.data.results[0];
+  assert.equal(h1.number_how, 'exato');
+  assert.ok(!h1.approx, 'ponto confirmado não é aproximado');
+  assert.ok(Math.abs(h1.lat - (-24.4100)) < 1e-6, 'usa a coordenada aprendida');
+
+  // nº 600 (entre 400 e 800): interpolado no meio do caminho
+  const r2 = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('avenida tupassi 600'));
+  const h2 = r2.data.results[0];
+  assert.equal(h2.number_how, 'interpolado');
+  assert.equal(h2.approx, true);
+  assert.ok(Math.abs(h2.lat - (-24.4150)) < 1e-4, 'posição proporcional entre os dois números');
+
+  // rua sem nenhum número conhecido: centro da rua, marcado para ajuste
+  const r3 = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('avenida brasil 500'));
+  const h3 = r3.data.results.find((x: any) => x.text.startsWith('Avenida Brasil'));
+  assert.equal(h3.number_how, 'centro');
+  assert.equal(h3.approx, true);
+});
+
 test('estabelecimento manual: cadastrar, aparecer na busca e remover', async () => {
   // fora da área de cobertura é recusado
   assert.equal((await adm.req('POST', '/api/admin/places',

@@ -95,8 +95,12 @@ OpenStreetMap (Overpass) **todas as ruas, bairros e estabelecimentos** do
 município para a tabela `local_addresses`. A partir daí o autocomplete é
 local: instantâneo, completo e funciona até sem internet externa.
 
-- Entende número de casa ("rua curitiba 123") — o resultado fica marcado como
-  aproximado (centro da rua), nunca uma posição inventada;
+- Entende número de casa ("rua curitiba 123"). A posição vem, nesta ordem:
+  ponto **confirmado** (OSM ou por um passageiro), **interpolação** entre dois
+  números conhecidos da rua, ou centro da rua — e nesse último caso o app
+  **pede o ajuste do pino no mapa** antes da corrida, nunca aceita um ponto
+  errado em silêncio. O ajuste é **gravado**: a próxima busca daquele número,
+  por qualquer pessoa, já acerta direto ("nº confirmado ✅");
 - entende abreviações ("av brasil" → "Avenida Brasil") e ignora acentos;
 - **tolera erro de digitação** ("av tupanssi" acha a "Avenida Tupassi");
 - **busca por categoria**: "hospital" lista hospitais e UBSs, "posto" acha

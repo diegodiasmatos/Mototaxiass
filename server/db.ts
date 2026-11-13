@@ -604,6 +604,32 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     ALTER TABLE local_addresses ADD COLUMN source TEXT NOT NULL DEFAULT 'osm';
     `,
   },
+
+  // ----------------------------------------------------------------
+  // V2.3.2 — números de casa: o OSM da cidade tem só ~11 números
+  // mapeados, então "rua + número" caía no centro da rua (longe do
+  // ponto real). Esta tabela guarda posições de números: as poucas do
+  // OSM + as confirmadas pelos próprios passageiros ao ajustar o pino.
+  // Entre dois números conhecidos, a posição é interpolada.
+  // ----------------------------------------------------------------
+  {
+    version: 7,
+    sql: `
+    CREATE TABLE address_points (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      street_norm TEXT NOT NULL,
+      street_name TEXT NOT NULL,
+      number      INTEGER NOT NULL,
+      lat         REAL NOT NULL,
+      lng         REAL NOT NULL,
+      source      TEXT NOT NULL DEFAULT 'passageiro',
+      hits        INTEGER NOT NULL DEFAULT 1,
+      updated_at  INTEGER NOT NULL,
+      UNIQUE (street_norm, number)
+    );
+    CREATE INDEX idx_addr_pts_street ON address_points(street_norm);
+    `,
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {

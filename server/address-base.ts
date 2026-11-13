@@ -42,8 +42,85 @@ export interface BaseHit {
   detail: string | null;
   lat: number;
   lng: number;
-  /** número de casa digitado pelo usuário (coordenada fica no centro da rua) */
+  /** número de casa digitado pelo usuário */
   number?: string;
+  /** como o número foi posicionado: exato (ponto conhecido), interpolado
+   *  (entre dois números conhecidos) ou centro (centro da rua — pede ajuste) */
+  number_how?: 'exato' | 'interpolado' | 'centro';
+}
+
+/**
+ * Posição de um número de casa numa rua.
+ * Fontes: pontos do OSM + pontos confirmados pelos passageiros (quando
+ * ajustam o pino no mapa). Entre dois números conhecidos, interpola.
+ */
+export function resolveHouseNumber(streetNorm: string, n: number):
+  { lat: number; lng: number; how: 'exato' | 'interpolado' } | null {
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const pts = db.prepare(`SELECT number, lat, lng FROM address_points
+    WHERE street_norm = ? ORDER BY number`).all(streetNorm) as any[];
+  if (!pts.length) return null;
+  const exact = pts.find(p => p.number === n);
+  if (exact) return { lat: exact.lat, lng: exact.lng, how: 'exato' };
+  let lo: any = null, hi: any = null;
+  for (const p of pts) {
+    if (p.number < n) lo = p;
+    else if (!hi) { hi = p; break; }
+  }
+  if (lo && hi) {
+    const f = (n - lo.number) / (hi.number - lo.number);
+    return {
+      lat: lo.lat + (hi.lat - lo.lat) * f,
+      lng: lo.lng + (hi.lng - lo.lng) * f,
+      how: 'interpolado',
+    };
+  }
+  // sem par para interpolar: um vizinho de numeração próxima ainda é muito
+  // melhor que o centro da rua
+  const near = lo || hi;
+  if (near && Math.abs(near.number - n) <= 80) {
+    return { lat: near.lat, lng: near.lng, how: 'interpolado' };
+  }
+  return null;
+}
+
+/**
+ * Grava a posição real de um número confirmada por um passageiro (ajuste do
+ * pino). A rua precisa existir na base — nada de aprender endereço inventado.
+ */
+export function learnHouseNumber(street: string, number: number, lat: number, lng: number):
+  { ok: boolean; reason?: string } {
+  const streetNorm = normalize(street);
+  const rua = db.prepare(`SELECT name, lat, lng FROM local_addresses
+    WHERE kind = 'rua' AND norm = ?`).get(streetNorm) as any;
+  if (!rua) return { ok: false, reason: 'rua desconhecida' };
+  if (!Number.isInteger(number) || number <= 0 || number > 99999) {
+    return { ok: false, reason: 'número inválido' };
+  }
+  // o ponto confirmado precisa estar perto da rua (tolerante: ruas longas
+  // têm centro distante das pontas), senão é toque errado ou abuso
+  if (haversineM(lat, lng, rua.lat, rua.lng) > 4000) {
+    return { ok: false, reason: 'ponto longe demais da rua' };
+  }
+  db.prepare(`INSERT INTO address_points
+      (street_norm, street_name, number, lat, lng, source, hits, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'passageiro', 1, ?)
+    ON CONFLICT(street_norm, number) DO UPDATE SET
+      lat = excluded.lat, lng = excluded.lng, source = 'passageiro',
+      hits = hits + 1, updated_at = excluded.updated_at`)
+    .run(streetNorm, rua.name, number, lat, lng, Date.now());
+  return { ok: true };
+}
+
+export function addressPointStats(): { total: number; osm: number; aprendidos: number } {
+  const rows = db.prepare(
+    'SELECT source, COUNT(*) c FROM address_points GROUP BY source').all() as any[];
+  const by: Record<string, number> = {};
+  for (const r of rows) by[r.source] = r.c;
+  return {
+    total: (by.osm || 0) + (by.passageiro || 0),
+    osm: by.osm || 0, aprendidos: by.passageiro || 0,
+  };
 }
 
 /**
@@ -204,11 +281,19 @@ export function searchBase(q: string, limit = 8): BaseHit[] {
     return { r, score };
   }).sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, limit).map(({ r }) => ({
-    kind: r.kind, name: r.name, detail: r.detail || null,
-    lat: r.lat, lng: r.lng,
-    number: houseNumber && r.kind === 'rua' ? houseNumber : undefined,
-  }));
+  return scored.slice(0, limit).map(({ r }) => {
+    const hit: BaseHit = {
+      kind: r.kind, name: r.name, detail: r.detail || null,
+      lat: r.lat, lng: r.lng,
+      number: houseNumber && r.kind === 'rua' ? houseNumber : undefined,
+    };
+    if (hit.number) {
+      const res = resolveHouseNumber(r.norm, Number(hit.number));
+      if (res) { hit.lat = res.lat; hit.lng = res.lng; hit.number_how = res.how; }
+      else hit.number_how = 'centro';
+    }
+    return hit;
+  });
 }
 
 /** Rua da base mais próxima de um ponto (fallback do reverse geocoding). */
@@ -289,6 +374,7 @@ area["name"="${cityName}"]["boundary"="administrative"]->.a;
   nwr(area.a)["name"]["craft"];
   nwr(area.a)["name"]["emergency"];
   way(area.a)["name"]["building"~"^(commercial|retail|supermarket|hospital|school|university|college|church|civic|public|industrial)$"];
+  nwr(area.a)["addr:housenumber"]["addr:street"];
 );
 out center tags;`;
 
@@ -323,13 +409,27 @@ out center tags;`;
   const suburbs = new Map<string, { name: string; lat: number; lng: number }>();
   const pois = new Map<string, { name: string; detail: string | null; tags: string | null; lat: number; lng: number }>();
 
+  const addrPts: { streetNorm: string; street: string; number: number; lat: number; lng: number }[] = [];
+
   for (const el of elements) {
     const tags = el.tags || {};
-    const name = (tags.name || '').trim();
-    if (!name || name.length < 2) continue;
     const lat = el.lat ?? el.center?.lat, lng = el.lon ?? el.center?.lon;
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
     if (haversineM(lat!, lng!, cLat, cLng) > maxDistM) continue; // fora do município
+
+    // número de casa mapeado no OSM (raro na cidade, mas cada um vale ouro)
+    if (tags['addr:housenumber'] && tags['addr:street']) {
+      const n = parseInt(tags['addr:housenumber'], 10);
+      if (Number.isInteger(n) && n > 0) {
+        addrPts.push({
+          streetNorm: normalize(tags['addr:street']), street: tags['addr:street'].trim(),
+          number: n, lat: lat!, lng: lng!,
+        });
+      }
+    }
+
+    const name = (tags.name || '').trim();
+    if (!name || name.length < 2) continue;
     const key = normalize(name);
 
     if (tags.highway) {
@@ -364,6 +464,14 @@ out center tags;`;
     }
     for (const [key, b] of suburbs) ins.run('bairro', b.name, key, null, null, b.lat, b.lng, t);
     for (const [key, p] of pois) ins.run('local', p.name, key, p.detail, p.tags, p.lat, p.lng, t);
+
+    // números de casa do OSM — os confirmados por passageiros têm prioridade
+    // (INSERT OR IGNORE não sobrescreve o que já foi aprendido)
+    db.prepare(`DELETE FROM address_points WHERE source = 'osm'`).run();
+    const insPt = db.prepare(`INSERT OR IGNORE INTO address_points
+      (street_norm, street_name, number, lat, lng, source, hits, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'osm', 1, ?)`);
+    for (const p of addrPts) insPt.run(p.streetNorm, p.street, p.number, p.lat, p.lng, t);
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');

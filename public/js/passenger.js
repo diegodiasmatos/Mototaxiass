@@ -353,6 +353,54 @@ function startMapPick(map, host) {
   map.on('click', onClick);
 }
 
+/**
+ * O número digitado não está mapeado: o pino foi para o centro da rua.
+ * Pede ao passageiro o toque no ponto exato — e GRAVA a posição no servidor,
+ * para a próxima busca desse endereço (de qualquer pessoa) acertar direto.
+ */
+function startNumberAdjust(which, p) {
+  initHomeMap();
+  const map = S.maps.home, host = document.getElementById('map-home');
+  const finish = (lat, lng, adjusted) => {
+    const point = { lat, lng, text: p.text };
+    if (which === 'origin') { S.origin = point; S.originConfirmed = true; $('#in-origin').value = p.text; }
+    else { S.dest = point; S.destConfirmed = true; $('#in-dest').value = p.text; }
+    placeHomePin(point, which);
+    if (adjusted && p.street && p.number) {
+      api('/api/geo/learn', {
+        method: 'POST',
+        body: { street: p.street, number: Number(p.number), lat, lng },
+      }).then(() => toast('Ponto exato salvo — a próxima busca desse endereço já acerta. 🎯', 'ok'))
+        .catch(() => { });
+    }
+  };
+  if (!map || !host) { finish(p.lat, p.lng, false); return; }
+
+  // remove ajuste anterior pendente, se houver
+  host.querySelector('.map-hint')?.remove();
+  placeHomePin(p, which);
+  map.setView([p.lat, p.lng], 17);
+  host.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  const hint = document.createElement('div');
+  hint.className = 'map-hint';
+  hint.innerHTML = `O nº ${escapeHtml(String(p.number))} não está no mapa ainda —
+    toque no PONTO EXATO (portão/fachada)
+    <button type="button" data-asis style="margin-left:6px;padding:2px 10px;border-radius:8px;
+      border:1px solid rgba(255,255,255,.5);background:transparent;color:inherit;cursor:pointer">
+      Usar assim mesmo</button>`;
+  host.appendChild(hint);
+
+  const done = (lat, lng, adjusted) => {
+    map.off('click', onClick);
+    hint.remove();
+    finish(lat, lng, adjusted);
+  };
+  const onClick = e => done(e.latlng.lat, e.latlng.lng, true);
+  map.on('click', onClick);
+  hint.querySelector('[data-asis]').onclick = () => done(p.lat, p.lng, false);
+}
+
 async function refreshStats() {
   try {
     const st = await api('/api/public/stats');
@@ -367,12 +415,18 @@ async function refreshStats() {
 }
 
 function bindHome() {
+  const pick = which => p => {
+    // "rua + número" sem posição conhecida: o pino cai no centro da rua —
+    // em vez de aceitar um ponto errado, pedimos o ajuste no mapa
+    if (p.approx && p.number) { startNumberAdjust(which, p); return; }
+    if (which === 'origin') { S.origin = p; S.originConfirmed = true; }
+    else { S.dest = p; S.destConfirmed = true; }
+    placeHomePin(p, which);
+  };
   setupAutocomplete($('#in-origin'), $('#ac-origin'),
-    p => { S.origin = p; S.originConfirmed = true; placeHomePin(p, 'origin'); },
-    () => { S.originConfirmed = false; });
+    pick('origin'), () => { S.originConfirmed = false; });
   setupAutocomplete($('#in-dest'), $('#ac-dest'),
-    p => { S.dest = p; S.destConfirmed = true; placeHomePin(p, 'dest'); },
-    () => { S.destConfirmed = false; });
+    pick('dest'), () => { S.destConfirmed = false; });
 
   $('#btn-mylocation').onclick = () => withLoading($('#btn-mylocation'), async () => {
     const pos = S.gps.lat != null && Date.now() - S.gps.at < 30000
@@ -450,9 +504,12 @@ function setupAutocomplete(input, list, onPick, onEdit) {
           return;
         }
         list.innerHTML = results.map((r, i) => {
+          const num = r.number_how === 'exato' ? ' · nº confirmado ✅'
+            : r.number_how === 'interpolado' ? ' · nº estimado'
+              : r.number_how === 'centro' ? ' · ajuste o ponto no mapa' : '';
           const detalhe = r.needs_details
             ? (r.secondary ? `<span class="muted small">${escapeHtml(r.secondary)}</span>` : '')
-            : `<span class="muted small">· ${fmt.dist(r.distance_m)} do centro${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>`;
+            : `<span class="muted small">· ${fmt.dist(r.distance_m)} do centro${num}${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>`;
           return `<button type="button" data-i="${i}">${escapeHtml(r.text)}<br>${detalhe}</button>`;
         }).join('');
 
@@ -475,7 +532,11 @@ function setupAutocomplete(input, list, onPick, onEdit) {
           input.value = r.text;
           list.hidden = true;
           session = null;                     // sessão encerrada na escolha
-          onPick({ lat: r.lat, lng: r.lng, text: r.text });
+          onPick({
+            lat: r.lat, lng: r.lng, text: r.text,
+            approx: !!r.approx, street: r.street, number: r.number,
+            number_how: r.number_how,
+          });
         });
       } catch (e) {
         list.innerHTML = `<button type="button" disabled>${escapeHtml(e.message)}</button>`;
