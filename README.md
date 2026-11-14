@@ -1,5 +1,5 @@
+
 # VAIRO
-# 🏍️ Assis MotoTáxi
 
 Plataforma completa de transporte de passageiros por motocicleta para
 **Assis Chateaubriand – PR**: aplicativo do passageiro, painel do mototaxista
