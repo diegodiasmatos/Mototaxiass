@@ -1,10 +1,11 @@
 
-# 🏍️ Assis MotoTáxi
+# VAIRO Street
 
-Plataforma completa de transporte de passageiros por motocicleta para
-**Assis Chateaubriand – PR**: aplicativo do passageiro, painel do mototaxista
-e central administrativa, com mapas reais, GPS em tempo real, tarifas
-calculadas no servidor e comissão automática de 15%.
+**VAIRO — a cidade no seu ritmo.** Plataforma de transporte de passageiros por
+motocicleta (antes "Assis MotoTáxi"), em operação em **Assis Chateaubriand – PR**:
+aplicativo do passageiro, painel do motorista e central administrativa, com
+mapas reais, GPS em tempo real, tarifas calculadas no servidor e comissão
+automática de 15%.
 
 ## Como executar
 
@@ -20,9 +21,15 @@ Acesse:
 
 | Área | URL |
 |---|---|
-| Passageiro | http://localhost:8780/ |
-| Mototaxista | http://localhost:8780/motorista |
+| Visão Geral (entrada do site) | http://localhost:8780/ |
+| Passageiro | http://localhost:8780/passageiro |
+| Motorista | http://localhost:8780/motorista |
+| Empresa (ainda sem funções — página "em breve") | http://localhost:8780/empresa |
 | Central administrativa | http://localhost:8780/admin |
+
+Quem já está conectado e abre `/` cai direto no próprio aplicativo (passageiro
+no app, motorista em `/motorista`, administrador em `/admin`); visitante vê a
+Visão Geral.
 
 Para testar no celular, use o IP da máquina na mesma rede Wi-Fi
 (ex.: `http://192.168.0.10:8780`).
@@ -35,6 +42,29 @@ em produção coloque o app atrás de HTTPS (ver "Publicação").
 - Caso contrário, na primeira execução é criado `admin@assismototaxi.local`
   com **senha aleatória impressa uma única vez no console** — anote-a.
 - Não existe cadastro público de administrador.
+
+## Visual VAIRO
+
+O visual segue a referência do projeto VAIRO: tema escuro (`#090909`), cartões
+`#17171d`, amarelo neon (`#dcf302` / `#e7ff00`) e verde (`#85df01`) nas ações da
+área do Motorista. Tudo está em `public/css/app.css`, por variáveis CSS.
+
+- **Cabeçalho comum** (`initChrome` em `public/js/common.js`): marca, áreas
+  *Visão Geral · Passageiro · Motorista · Empresa* e botão de tema
+  (escuro/claro, guardado no aparelho). Em telas estreitas as áreas somem do
+  cabeçalho; o logotipo leva à Visão Geral.
+- **Submenu de telas** (`setupScreenMenu`): o seletor "Tela N de M" de cada área
+  lista as telas da referência. As que já existem navegam de verdade; as que
+  dependem de estado (ex.: "Viagem Ativa" sem corrida) avisam o motivo; as que
+  ainda não existem no sistema ficam desabilitadas como "em breve".
+- **Fonte e ícones no próprio app**: Inter (`public/fonts/`, licença OFL) e
+  ícones do Font Awesome Free (`public/js/icons.js`, CC BY 4.0) — sem CDN,
+  funcionam offline.
+- **Ícones de instalação**: `node tools/make-icons.ts` regenera os PNG.
+
+O que ainda **não existe** e por isso aparece só como "em breve": a área
+Empresa (lojas, cardápio, pedidos), a Vitrine de Lojas e o Carrinho no app do
+passageiro, e a Central de Segurança/SOS.
 
 ## Arquitetura
 
@@ -229,8 +259,8 @@ data/            banco, segredo de sessão e uploads privados (criado em runtime
 
 ## Testes da V2 (executados de verdade)
 
-`npm test` roda **59 testes**. Resultado da última execução:
-**59/59 aprovados**. Cobrem, entre outros:
+`npm test` roda **61 testes**. Resultado da última execução:
+**61/61 aprovados**. Cobrem, entre outros:
 
 - **Credenciais**: salvas cifradas (o `.db` não revela o segredo), devolvidas
   mascaradas, valor mascarado reenviado não corrompe o que está salvo, URL
@@ -364,7 +394,7 @@ banco** (AES-256-GCM) e nunca voltam em texto puro para a tela.
 
 1. **Criar o aplicativo** — entre em
    [mercadopago.com.br/developers](https://www.mercadopago.com.br/developers/panel/app)
-   com a conta da empresa → **Criar aplicação** → nome "Assis MotoTáxi" →
+   com a conta da empresa → **Criar aplicação** → nome "VAIRO" →
    produto **Pagamentos online** → modelo **Marketplace** (necessário para o split).
 2. **Copiar as credenciais de produção** — na aplicação, aba *Credenciais de
    produção*: **Access token** (`APP_USR-…`) e **Public key**.

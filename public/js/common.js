@@ -1,4 +1,5 @@
-/* Assis MotoTáxi — utilitários compartilhados (passageiro, mototaxista, admin) */
+/* VAIRO — utilitários compartilhados (passageiro, motorista, empresa, central).
+   Depende de icons.js, carregado antes deste arquivo. */
 'use strict';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -352,7 +353,7 @@ async function promptInstall() {
   // iOS (Safari) não oferece prompt automático
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
   openModal(`
-    <h3>📲 Instalar o Assis MotoTáxi</h3>
+    <h3>📲 Instalar a VAIRO</h3>
     ${ios ? `
       <p class="muted mb">No iPhone, use o Safari e siga:</p>
       <div class="list-item"><div class="li-main"><div class="li-title">1. Toque em Compartilhar</div>
@@ -360,7 +361,7 @@ async function promptInstall() {
       <div class="list-item"><div class="li-main"><div class="li-title">2. Toque em "Adicionar à Tela de Início"</div>
         <div class="li-sub">Role a lista de opções até encontrar.</div></div></div>
       <div class="list-item"><div class="li-main"><div class="li-title">3. Confirme em "Adicionar"</div>
-        <div class="li-sub">O ícone do mototáxi aparece junto dos seus apps.</div></div></div>`
+        <div class="li-sub">O ícone da VAIRO aparece junto dos seus apps.</div></div></div>`
       : `
       <p class="muted mb">No Android (Chrome), siga:</p>
       <div class="list-item"><div class="li-main"><div class="li-title">1. Toque no menu ⋮</div>
@@ -612,7 +613,7 @@ function emojiMarker(map, lat, lng, emoji, title = '') {
 }
 
 /** geometry: [[lng,lat],...] (GeoJSON) */
-function drawRoute(map, geometry, color = '#0d1b2e') {
+function drawRoute(map, geometry, color = '#111118') {
   if (!map) return null;
   if (map._provider === 'mapbox') {
     const layout = { 'line-join': 'round', 'line-cap': 'round' };
@@ -670,6 +671,7 @@ function getPosition(options = {}) {
 function showScreen(id) {
   $$('.screen').forEach(s => { s.hidden = s.id !== id; });
   $$('.bottomnav button').forEach(b => b.classList.toggle('active', b.dataset.screen === id));
+  syncScreenMenu();
   window.scrollTo({ top: 0 });
 }
 
@@ -699,22 +701,131 @@ function confirmModal(title, text, confirmLabel = 'Confirmar', danger = false) {
   });
 }
 
-/* ---------- logo ---------- */
-const LOGO_SVG = `
-<svg class="logo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-label="Assis MotoTáxi">
-  <rect x="2" y="2" width="60" height="60" rx="16" fill="#ffb703"/>
-  <g fill="none" stroke="#0d1b2e" stroke-width="4" stroke-linecap="round">
-    <circle cx="18" cy="43" r="7.5"/>
-    <circle cx="46" cy="43" r="7.5"/>
-    <path d="M18 43 L28 28 H40 L46 43"/>
-    <path d="M28 28 L24 21 H31"/>
-    <path d="M40 28 L46 24 H52"/>
-  </g>
-  <path d="M6 14 h14 M4 20 h12" stroke="#0d1b2e" stroke-width="3" stroke-linecap="round" opacity=".55"/>
-</svg>`;
+/* ---------- marca ---------- */
+// "V" da VAIRO redesenhado a partir da referência (não havia o arquivo original).
+const LOGO_MARK = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+  <path fill="#fff" d="M3.4 4.8h4.7l3.9 10.4 3.9-10.4h4.7l-6.3 14.6H9.7z"/>
+  <path d="M15.3 9.7l2.8-2.1" stroke="#090909" stroke-width=".95"/></svg>`;
+const logoTile = (cls = '') => `<span class="logo-tile${cls ? ' ' + cls : ''}">${LOGO_MARK}</span>`;
+/** Logo grande (tela de entrada da central). */
+const LOGO_SVG = `<span class="logo-tile lg" role="img" aria-label="VAIRO">${LOGO_MARK}</span>`;
 
-function renderBrand(el, subtitle) {
-  el.innerHTML = `${LOGO_SVG}<span>Assis MotoTáxi<small>${escapeHtml(subtitle || 'Assis Chateaubriand - PR')}</small></span>`;
+const BRAND_TAGLINE = 'A cidade no seu ritmo — Mobilidade & Marketplace';
+
+function renderBrand(el, tagline) {
+  if (!el) return;
+  el.innerHTML = `${logoTile()}
+    <span class="brand-text">
+      <span class="brand-line"><span class="brand-name">VAIRO</span><span class="brand-badge">Pro Ecosystem</span></span>
+      <span class="brand-tag">${escapeHtml(tagline || BRAND_TAGLINE)}</span>
+    </span>`;
+}
+
+/* ---------- cabeçalho: áreas do ecossistema e tema ---------- */
+const AREAS = [
+  { id: 'visao', label: 'Visão Geral', href: '/visao-geral', icon: 'layer-group' },
+  { id: 'passageiro', label: 'Passageiro', href: '/passageiro', icon: 'user' },
+  { id: 'motorista', label: 'Motorista', href: '/motorista', icon: 'motorcycle' },
+  { id: 'empresa', label: 'Empresa', href: '/empresa', icon: 'store' },
+];
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+}
+function applyTheme(theme) {
+  if (theme === 'light') document.documentElement.dataset.theme = 'light';
+  else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem('vairo-theme', theme); } catch { /* modo privado */ }
+  $('meta[name="theme-color"]')?.setAttribute('content', theme === 'light' ? '#ffffff' : '#101014');
+  const btn = $('#btn-theme');
+  if (btn) {
+    // no escuro o botão mostra o sol (como na referência); no claro, a lua
+    btn.innerHTML = icon(theme === 'light' ? 'moon' : 'sun');
+    btn.title = theme === 'light' ? 'Usar tema escuro' : 'Usar tema claro';
+    btn.setAttribute('aria-label', btn.title);
+  }
+}
+
+/**
+ * Monta o cabeçalho comum: marca, áreas (Visão Geral · Passageiro ·
+ * Motorista · Empresa) e botão de tema. A área ativa vem de
+ * <body data-area="…">; a central administrativa não mostra as áreas.
+ */
+function initChrome() {
+  const bar = $('.topbar');
+  if (!bar) return;
+  const area = document.body.dataset.area || '';
+  renderBrand($('#brand'), area === 'central' ? 'Central Administrativa' : undefined);
+
+  const anchor = $('#btn-notifs', bar) || null;
+  if (area !== 'central' && !$('.areanav', bar)) {
+    const nav = document.createElement('nav');
+    nav.className = 'areanav';
+    nav.setAttribute('aria-label', 'Áreas da VAIRO');
+    nav.innerHTML = AREAS.map(a =>
+      `<a href="${a.href}" class="${a.id === area ? 'active' : ''}"${a.id === area ? ' aria-current="page"' : ''}>${icon(a.icon)}${a.label}</a>`).join('');
+    bar.insertBefore(nav, anchor);
+  }
+  if (!$('#btn-theme')) {
+    const btn = document.createElement('button');
+    btn.id = 'btn-theme';
+    btn.className = 'iconbtn theme';
+    btn.type = 'button';
+    btn.onclick = () => applyTheme(currentTheme() === 'light' ? 'dark' : 'light');
+    bar.insertBefore(btn, anchor);
+  }
+  applyTheme(currentTheme());
+  hydrateIcons();
+}
+
+/* ---------- submenu de telas da área ---------- */
+/**
+ * Seletor "Tela N de M" no topo de cada área, com as telas da referência.
+ * Cada item:
+ *   label  — nome da tela
+ *   soon   — true quando a tela ainda não existe no app (fica desabilitada)
+ *   match  — () => true quando o app está nessa tela agora
+ *   go     — () => leva até a tela; devolve um texto quando não dá
+ *            (ex.: "viagem ativa" sem corrida em andamento)
+ * `fallback` devolve o nome da tela atual quando ela não está na lista
+ * (ex.: Perfil), para o seletor nunca mostrar a tela errada.
+ */
+let _screenMenu = null;
+
+function setupScreenMenu(items, fallback) {
+  const sel = $('#screen-select');
+  if (!sel) return;
+  _screenMenu = { items, fallback, picked: -1 };
+  sel.innerHTML = '<option value="" hidden></option>' + items.map((it, i) =>
+    `<option value="${i}"${it.soon ? ' disabled' : ''}>${i + 1}. ${escapeHtml(it.label)}${it.soon ? ' — em breve' : ''}</option>`).join('');
+  sel.onchange = () => {
+    const i = Number(sel.value);
+    const it = items[i];
+    if (!it || it.soon) { syncScreenMenu(); return; }
+    _screenMenu.picked = i;
+    const msg = it.go();
+    if (typeof msg === 'string' && msg) toast(msg);
+    syncScreenMenu();
+  };
+  syncScreenMenu();
+}
+
+function syncScreenMenu() {
+  const m = _screenMenu, sel = $('#screen-select');
+  if (!m || !sel) return;
+  const matches = m.items.map((it, i) => (!it.soon && it.match?.()) ? i : -1).filter(i => i >= 0);
+  // várias telas da lista podem ser a mesma tela do app: vale a que o usuário escolheu
+  const cur = matches.includes(m.picked) ? m.picked : (matches[0] ?? -1);
+  if (cur !== m.picked) m.picked = -1;
+  const count = $('#sb-count');
+  if (cur >= 0) {
+    sel.value = String(cur);
+    if (count) count.textContent = `Tela ${cur + 1} de ${m.items.length}`;
+  } else {
+    sel.options[0].textContent = m.fallback?.() || '';
+    sel.value = '';
+    if (count) count.textContent = `${m.items.length} telas`;
+  }
 }
 
 /* ---------- leitura de arquivos (upload base64 com compressão de imagem) ---------- */
@@ -775,3 +886,5 @@ function setNotifBadge(count) {
     btn.appendChild(b);
   }
 }
+
+initChrome();

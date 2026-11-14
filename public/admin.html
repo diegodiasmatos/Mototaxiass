@@ -3,20 +3,22 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0d1b2e">
-  <title>Assis MotoTáxi — Central Administrativa</title>
+  <meta name="theme-color" content="#101014">
+  <title>VAIRO Street — Central Administrativa</title>
   <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
+  <link rel="preload" href="/fonts/inter-latin-var.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/css/app.css">
+  <script>try{if(localStorage.getItem('vairo-theme')==='light')document.documentElement.dataset.theme='light'}catch(e){}</script>
 </head>
-<body>
+<body data-area="central">
 
 <header class="topbar">
-  <div class="brand" id="brand"></div>
+  <a class="brand" id="brand" href="/visao-geral" title="Visão geral da VAIRO"></a>
   <div class="spacer"></div>
-  <button class="iconbtn" id="btn-notifs" title="Notificações" hidden>🔔</button>
-  <button class="iconbtn" id="btn-logout" title="Sair" hidden>🚪</button>
+  <button class="iconbtn" id="btn-notifs" title="Notificações" aria-label="Notificações" hidden><i data-icon="bell"></i></button>
+  <button class="iconbtn" id="btn-logout" title="Sair" aria-label="Sair" hidden><i data-icon="right-from-bracket"></i></button>
 </header>
 
 <!-- login -->
@@ -29,7 +31,7 @@
       <form id="form-login">
         <div class="field"><label>E-mail</label><input class="input" name="email" type="email" required></div>
         <div class="field"><label>Senha</label><input class="input" name="password" type="password" required></div>
-        <button class="btn btn-navy" type="submit">Entrar na central</button>
+        <button class="btn btn-primary" type="submit">Entrar na central</button>
       </form>
     </div>
   </section>
@@ -55,6 +57,7 @@
   </main>
 </div>
 
+<script src="/js/icons.js"></script>
 <script src="/js/common.js"></script>
 <script src="/js/admin.js"></script>
 </body>

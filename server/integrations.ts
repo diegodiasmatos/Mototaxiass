@@ -222,7 +222,7 @@ export const integrationRoutes: Route[] = [
   route('POST /api/push/test', 'any', async ({ res, user }) => {
     const { pushToUser } = await import('./push.ts');
     const sent = await pushToUser(user!.id, {
-      title: 'Assis MotoTáxi 🏍️',
+      title: 'VAIRO 🏍️',
       body: 'Notificações ativadas! Você será avisado das corridas por aqui.',
       kind: 'test',
     });

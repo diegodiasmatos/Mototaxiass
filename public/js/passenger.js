@@ -1,4 +1,4 @@
-/* Assis MotoTáxi — aplicativo do passageiro (V2) */
+/* VAIRO — aplicativo do passageiro */
 'use strict';
 
 const S = {
@@ -25,10 +25,10 @@ async function init() {
     welcome_message: 'Olá! Para onde vamos?',
   }));
   await initMaps(S.config);
-  $('#auth-hero').innerHTML = `${LOGO_SVG}<h1>Assis MotoTáxi</h1>
-    <p>Transporte rápido e seguro em ${escapeHtml(S.config.city_name)}</p>`;
+  $('#auth-logo').innerHTML = LOGO_MARK;
 
   bindAuth(); bindHome(); bindQuote(); bindRide(); bindProfile(); bindNav();
+  bindScreenMenu();
 
   navigator.serviceWorker?.addEventListener('message', e => {
     if (e.data?.type === 'notification-click') refreshActiveRide();
@@ -80,10 +80,81 @@ function bindAuth() {
   };
 }
 function authTab(login) {
-  $('#tab-login').classList.toggle('active', login);
-  $('#tab-register').classList.toggle('active', !login);
   $('#form-login').hidden = !login;
   $('#form-register').hidden = login;
+  $('#auth-title').textContent = login ? 'Entrar como Passageiro' : 'Cadastro de Passageiro';
+  syncScreenMenu();
+}
+
+/* ================= submenu de telas (referência VAIRO) ================= */
+function bindScreenMenu() {
+  const ride = () => S.activeRide;
+  const onRide = (...st) => currentScreen() === 'screen-ride' && !!ride() && st.includes(ride().status);
+  const needLogin = 'Entre na sua conta para continuar.';
+  const openRide = () => { showScreen('screen-ride'); };
+
+  setupScreenMenu([
+    {
+      label: 'Login',
+      match: () => currentScreen() === 'screen-auth' && !$('#form-login').hidden,
+      go: () => {
+        if (S.user) return 'Você já entrou na sua conta.';
+        showScreen('screen-auth'); authTab(true);
+      },
+    },
+    {
+      label: 'Cadastro & Termos',
+      match: () => currentScreen() === 'screen-auth' && $('#form-login').hidden,
+      go: () => {
+        if (S.user) return 'Você já tem uma conta e está conectado(a).';
+        showScreen('screen-auth'); authTab(false);
+      },
+    },
+    {
+      label: 'Início & Mapa com Preferências',
+      match: () => ['screen-home', 'screen-quote'].includes(currentScreen()),
+      go: () => {
+        if (!S.user) return needLogin;
+        if (ride()) { openRide(); return 'Você tem uma corrida em andamento — ela fica no lugar da tela inicial.'; }
+        showScreen('screen-home');
+      },
+    },
+    { label: 'Vitrine de Lojas (Compre de Empresas)', soon: true },
+    { label: 'Cardápio & Carrinho de Produtos', soon: true },
+    { label: 'Central de Segurança & SOS', soon: true },
+    {
+      label: 'Busca de Motociclista',
+      match: () => onRide('pending_payment', 'requested'),
+      go: () => {
+        if (!S.user) return needLogin;
+        if (!ride() || !['pending_payment', 'requested'].includes(ride().status)) {
+          return 'Nenhuma busca em andamento. Peça uma corrida na tela Início.';
+        }
+        openRide();
+      },
+    },
+    {
+      label: 'Viagem Ativa & Chat',
+      match: () => onRide('accepted', 'in_progress'),
+      go: () => {
+        if (!S.user) return needLogin;
+        if (!ride() || !['accepted', 'in_progress'].includes(ride().status)) {
+          return 'Você não tem uma viagem em andamento agora.';
+        }
+        openRide();
+      },
+    },
+    {
+      label: 'Avaliação & Pagamento',
+      match: () => onRide('awaiting_confirmation', 'disputed') || currentScreen() === 'screen-history',
+      go: () => {
+        if (!S.user) return needLogin;
+        if (ride() && ['awaiting_confirmation', 'disputed'].includes(ride().status)) { openRide(); return; }
+        // corridas já feitas: é onde ficam o pagamento e a avaliação de cada uma
+        showScreen('screen-history'); loadHistory();
+      },
+    },
+  ], () => ({ 'screen-profile': 'Perfil' })[currentScreen()] || '');
 }
 function setupGoogleButton() {
   if (!S.config.google_client_id) return;
@@ -702,6 +773,7 @@ async function refreshActiveRide() {
       showScreen('screen-home');
       refreshStats();
     }
+    syncScreenMenu();          // o status da corrida muda a tela do submenu
   } catch { /* mantém estado */ }
 }
 function currentScreen() { return $$('.screen').find(s => !s.hidden)?.id; }

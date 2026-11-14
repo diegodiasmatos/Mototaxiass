@@ -1145,6 +1145,79 @@ test('diagnóstico de mapas: tudo certo, e token público restrito por URL é ex
   }
 });
 
+// ================= páginas (VAIRO) =================
+
+/** Faz login e devolve o cookie de sessão, para pedir páginas como aquele usuário. */
+async function sessionCookie(email: string, password: string): Promise<string> {
+  const r = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  assert.equal(r.status, 200);
+  return /amt_session=[^;]*/.exec(r.headers.getSetCookie()[0])![0];
+}
+
+test('páginas: cada área tem seu endereço e a entrada mostra a Visão Geral', async () => {
+  const page = async (p: string) => {
+    const r = await fetch(base + p, { redirect: 'manual' });
+    return { status: r.status, html: await r.text(), type: r.headers.get('content-type') || '' };
+  };
+
+  // visitante sem sessão: "/" é a Visão Geral do ecossistema
+  const home = await page('/');
+  assert.equal(home.status, 200);
+  assert.match(home.html, /data-area="visao"/);
+  assert.match(home.html, /Mobilidade, Entregas &amp; Lojas/);
+  assert.equal((await page('/visao-geral')).html, home.html);
+
+  // cada área abre a própria página, sem misturar as opções das outras
+  const pax = await page('/passageiro');
+  assert.match(pax.html, /data-area="passageiro"/);
+  assert.match(pax.html, /Entrar como Passageiro/);
+  assert.doesNotMatch(pax.html, /Login Motorista/);
+  const drv = await page('/motorista');
+  assert.match(drv.html, /data-area="motorista"/);
+  assert.match(drv.html, /Login Motorista VAIRO/);
+  assert.doesNotMatch(drv.html, /Entrar como Passageiro/);
+  const emp = await page('/empresa');
+  assert.match(emp.html, /data-area="empresa"/);
+  // a área Empresa ainda não existe: a página avisa, sem formulário de login falso
+  assert.match(emp.html, /ainda não está disponível/);
+  assert.doesNotMatch(emp.html, /<form|<input/);
+  assert.match((await page('/admin')).html, /data-area="central"/);
+
+  // a marca antiga não aparece em nenhuma página
+  for (const h of [home, pax, drv, emp]) assert.doesNotMatch(h.html, /Assis MotoTáxi/);
+
+  // a fonte e os ícones são servidos pelo próprio app (funciona offline, sem CDN)
+  const font = await fetch(base + '/fonts/inter-latin-var.woff2');
+  assert.equal(font.status, 200);
+  assert.equal(font.headers.get('content-type'), 'font/woff2');
+  assert.equal((await fetch(base + '/js/icons.js')).status, 200);
+});
+
+test('páginas: "/" leva quem já entrou direto ao seu aplicativo', async () => {
+  // notificações e retorno do pagamento apontam para "/": o passageiro cai no app
+  const paxCookie = await sessionCookie('ana@v2.test', 'senha12345');
+  const asPax = await fetch(base + '/', { headers: { Cookie: paxCookie }, redirect: 'manual' });
+  assert.equal(asPax.status, 200);
+  assert.match(await asPax.text(), /data-area="passageiro"/);
+
+  const drvCookie = await sessionCookie('beto@v2.test', 'senha12345');
+  const asDrv = await fetch(base + '/', { headers: { Cookie: drvCookie }, redirect: 'manual' });
+  assert.equal(asDrv.status, 302);
+  assert.equal(asDrv.headers.get('location'), '/motorista');
+
+  const admCookie = await sessionCookie('dono2@teste.com', 'senha-admin-v2-teste');
+  const asAdm = await fetch(base + '/', { headers: { Cookie: admCookie }, redirect: 'manual' });
+  assert.equal(asAdm.status, 302);
+  assert.equal(asAdm.headers.get('location'), '/admin');
+
+  // a Visão Geral continua acessível para quem está conectado
+  const visao = await fetch(base + '/visao-geral', { headers: { Cookie: paxCookie } });
+  assert.match(await visao.text(), /data-area="visao"/);
+});
+
 // ================= permissões =================
 
 test('permissões: cada perfil só faz o que lhe cabe', async () => {

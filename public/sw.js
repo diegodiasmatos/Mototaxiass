@@ -1,17 +1,18 @@
-/* Assis MotoTáxi — service worker (instalação no celular + resiliência offline).
+/* VAIRO — service worker (instalação no celular + resiliência offline).
    Política deliberada:
    - API, SSE e documentos: SEMPRE rede, nunca cache (dados sensíveis e em tempo real).
    - HTML/CSS/JS: rede primeiro, cache como reserva → nunca serve código velho.
    - Imagens e mapas: cache primeiro (economiza dados do celular do usuário). */
 'use strict';
 
-const VERSION = 'amt-v2';
+const VERSION = 'amt-v3';
 const SHELL = `${VERSION}-shell`;
 const MEDIA = `${VERSION}-media`;
 
 const PRECACHE = [
-  '/', '/motorista', '/admin',
-  '/css/app.css', '/js/common.js', '/js/passenger.js', '/js/driver.js', '/js/admin.js',
+  '/visao-geral', '/passageiro', '/motorista', '/empresa', '/admin',
+  '/css/app.css', '/fonts/inter-latin-var.woff2',
+  '/js/icons.js', '/js/common.js', '/js/passenger.js', '/js/driver.js', '/js/admin.js',
   '/img/icon.svg', '/img/icon-192.png', '/offline.html',
 ];
 
@@ -36,7 +37,7 @@ self.addEventListener('message', e => { if (e.data === 'skip-waiting') self.skip
 
 /* ---------- Web Push: chamadas de corrida com o app fechado ---------- */
 self.addEventListener('push', event => {
-  let d = { title: 'Assis MotoTáxi', body: '', url: '/' };
+  let d = { title: 'VAIRO', body: '', url: '/' };
   try { if (event.data) d = { ...d, ...event.data.json() }; }
   catch { if (event.data) d.body = event.data.text(); }
 

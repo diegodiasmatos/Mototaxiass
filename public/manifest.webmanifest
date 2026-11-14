@@ -1,15 +1,15 @@
 {
-  "name": "Assis MotoTáxi",
-  "short_name": "MotoTáxi",
-  "description": "Peça seu mototáxi em Assis Chateaubriand - PR. Rápido, seguro e com preço na hora.",
+  "name": "VAIRO Street",
+  "short_name": "VAIRO",
+  "description": "VAIRO — a cidade no seu ritmo. Mobilidade & Marketplace.",
   "lang": "pt-BR",
   "dir": "ltr",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#f2f5f9",
-  "theme_color": "#0d1b2e",
+  "background_color": "#090909",
+  "theme_color": "#101014",
   "categories": ["travel", "navigation"],
   "icons": [
     { "src": "/img/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
@@ -24,8 +24,8 @@
       "icons": [{ "src": "/img/icon-192.png", "sizes": "192x192" }]
     },
     {
-      "name": "Painel do mototaxista",
-      "short_name": "Parceiro",
+      "name": "Painel do motorista",
+      "short_name": "Motorista",
       "url": "/motorista",
       "icons": [{ "src": "/img/icon-192.png", "sizes": "192x192" }]
     }

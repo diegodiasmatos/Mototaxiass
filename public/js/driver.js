@@ -1,4 +1,4 @@
-/* Assis MotoTáxi — painel do mototaxista */
+/* VAIRO — painel do motorista */
 'use strict';
 
 const S = {
@@ -13,13 +13,13 @@ const S = {
 init();
 
 async function init() {
-  renderBrand($('#brand'), 'Parceiro');
+  renderBrand($('#brand'));
   S.config = await api('/api/config').catch(() => ({ city_name: 'Assis Chateaubriand - PR', center: { lat: -24.4156, lng: -53.5216 } }));
   await initMaps(S.config);
-  $('#auth-hero').innerHTML = `${LOGO_SVG}<h1>Seja parceiro</h1>
-    <p>Ganhe dinheiro com sua moto em ${escapeHtml(S.config.city_name)} — 85% de cada corrida é seu</p>`;
+  $('#auth-logo').innerHTML = LOGO_MARK;
 
   bindAuth(); bindApply(); bindPanel(); bindProfile(); bindNav();
+  bindScreenMenu();
 
   try {
     const me = await api('/api/me');
@@ -60,10 +60,96 @@ function bindAuth() {
   };
 }
 function authTab(login) {
-  $('#tab-login').classList.toggle('active', login);
-  $('#tab-register').classList.toggle('active', !login);
   $('#form-login').hidden = !login;
   $('#form-register').hidden = login;
+  $('#auth-title').textContent = login ? 'Login Motorista VAIRO' : 'Cadastro Profissional';
+  syncScreenMenu();
+}
+
+/* ================= submenu de telas (referência VAIRO) ================= */
+function currentScreen() { return $$('.screen').find(s => !s.hidden)?.id; }
+
+function bindScreenMenu() {
+  const needLogin = 'Entre na sua conta de motorista para continuar.';
+  const approved = () => S.driver?.status === 'approved';
+  const notApproved = () => !S.driver
+    ? 'Envie seu cadastro profissional primeiro.'
+    : 'Seu cadastro ainda não foi aprovado.';
+  const openPanel = () => {
+    if (S.activeRide) { showScreen('screen-drive'); return 'Você tem uma corrida em andamento.'; }
+    renderPanel(); showScreen('screen-panel');
+  };
+
+  setupScreenMenu([
+    {
+      label: 'Login Motorista',
+      match: () => currentScreen() === 'screen-auth' && !$('#form-login').hidden,
+      go: () => {
+        if (S.user) return 'Você já entrou na sua conta.';
+        showScreen('screen-auth'); authTab(true);
+      },
+    },
+    {
+      label: 'Cadastro Profissional & Termos',
+      match: () => currentScreen() === 'screen-apply'
+        || (currentScreen() === 'screen-auth' && $('#form-login').hidden),
+      go: () => {
+        if (!S.user) { showScreen('screen-auth'); authTab(false); return; }
+        // sem cadastro, ou cadastro devolvido para correção: abre o formulário
+        if (!S.driver || ['rejected', 'correction'].includes(S.driver.status)) { showScreen('screen-apply'); return; }
+        return approved() ? 'Seu cadastro já está aprovado. ✅' : 'Seu cadastro já foi enviado e está em análise.';
+      },
+    },
+    {
+      label: 'Mapa de Calor & Online',
+      match: () => currentScreen() === 'screen-panel',
+      go: () => {
+        if (!S.user) return needLogin;
+        if (!approved()) return notApproved();
+        return openPanel();
+      },
+    },
+    {
+      label: 'Alerta de Corrida & Detalhes',
+      match: () => currentScreen() === 'screen-panel',
+      go: () => {
+        if (!S.user) return needLogin;
+        if (!approved()) return notApproved();
+        const msg = openPanel();
+        if (!msg) $('#offers-list')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return msg;
+      },
+    },
+    {
+      label: 'Navegação ao Passageiro',
+      match: () => currentScreen() === 'screen-drive',
+      go: () => {
+        if (!S.user) return needLogin;
+        if (!S.activeRide) return 'Você não tem uma corrida em andamento agora.';
+        showScreen('screen-drive');
+      },
+    },
+    {
+      label: 'Painel de Ganhos & Pix',
+      match: () => currentScreen() === 'screen-earnings',
+      go: () => {
+        if (!S.user) return needLogin;
+        if (!approved()) return notApproved();
+        showScreen('screen-earnings'); loadEarnings(); loadDrvHistory();
+      },
+    },
+    {
+      label: 'Aprovação',
+      match: () => currentScreen() === 'screen-pending',
+      go: () => {
+        if (!S.user) return needLogin;
+        if (!S.driver) return 'Envie seu cadastro profissional primeiro.';
+        if (approved()) return 'Seu cadastro já está aprovado. ✅';
+        clearInterval(S.pendingTimer);
+        renderPending(); showScreen('screen-pending');
+      },
+    },
+  ], () => ({ 'screen-profile': 'Perfil' })[currentScreen()] || '');
 }
 
 /* ================= roteamento pós-login ================= */
@@ -242,7 +328,7 @@ function renderPanel() {
 
   const warn = $('#drv-debt-warn');
   if (warn && S.balance && S.balance.debt_cents > (S.debtLimit ?? Infinity)) {
-    warn.innerHTML = `<div class="testbar" style="background:#fee2e2;border-color:#fca5a5;color:#991b1b">
+    warn.innerHTML = `<div class="testbar danger">
       ⛔ Comissão em aberto de ${fmt.money(S.balance.debt_cents)} (limite ${fmt.money(S.debtLimit)}).
       Quite com a plataforma para voltar a receber corridas.</div>`;
   } else if (warn) warn.innerHTML = '';
@@ -449,7 +535,7 @@ function renderDrive() {
     </div>
     <div class="list-item"><div class="li-main"><div class="li-sub">📍 Embarque</div><div class="li-title">${escapeHtml(r.origin.text)}</div></div></div>
     <div class="list-item"><div class="li-main"><div class="li-sub">🏁 Destino</div><div class="li-title">${escapeHtml(r.dest.text)}</div></div></div>
-    ${r.pickup_updated_at ? `<p class="muted small mt" style="color:#b45309">
+    ${r.pickup_updated_at ? `<p class="muted small mt warn-text">
       📍 O passageiro atualizou o ponto de embarque em ${fmt.time(r.pickup_updated_at)}.</p>` : ''}
     <div class="row between mt" style="flex-wrap:wrap;gap:8px">
       <span class="chip soft">${fmt.dist(r.distance_m)}</span>
@@ -624,7 +710,7 @@ async function loadEarnings() {
         <div class="fin-card ${debtWarn ? 'bad' : 'warn'}"><div class="fv">${fmt.money(e.debt_cents)}</div>
           <div class="fl">Comissão a pagar (corridas em dinheiro)</div></div>
       </div>
-      ${debtWarn ? `<div class="testbar" style="background:#fee2e2;border-color:#fca5a5;color:#991b1b">
+      ${debtWarn ? `<div class="testbar danger">
         ⛔ Sua dívida passou do limite de ${fmt.money(e.debt_limit_cents)} — você não recebe novas corridas
         até quitar com a plataforma.</div>` : ''}
       ${row('Hoje', e.day) + row('Esta semana', e.week) + row('Este mês', e.month) + row('Total', e.total)}

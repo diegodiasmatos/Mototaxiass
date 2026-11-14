@@ -1,4 +1,4 @@
-/* Assis MotoTáxi — central administrativa (V2) */
+/* VAIRO — central administrativa */
 'use strict';
 
 const S = { user: null, section: 'dashboard', testMode: false };
@@ -8,7 +8,7 @@ init();
 
 async function init() {
   renderBrand($('#brand'), 'Central Administrativa');
-  $('#auth-hero').innerHTML = `${LOGO_SVG}<h1>Central Administrativa</h1><p>Assis MotoTáxi</p>`;
+  $('#auth-hero').innerHTML = `${LOGO_SVG}<h1>Central Administrativa</h1><p>VAIRO</p>`;
 
   $('#form-login').onsubmit = async e => {
     e.preventDefault();
@@ -559,7 +559,7 @@ async function secPayments() {
       <h3>Passo 1 · Criar o aplicativo no Mercado Pago</h3>
       <ol class="muted small" style="padding-left:18px;line-height:1.9">
         <li>Entre em <a href="https://www.mercadopago.com.br/developers/panel/app" target="_blank" rel="noopener">mercadopago.com.br/developers</a> com a conta <b>da empresa</b>.</li>
-        <li>Clique em <b>Criar aplicação</b> → nome "Assis MotoTáxi" → produto <b>Pagamentos online</b> → modelo <b>Marketplace</b>.</li>
+        <li>Clique em <b>Criar aplicação</b> → nome "VAIRO" → produto <b>Pagamentos online</b> → modelo <b>Marketplace</b>.</li>
         <li>Na aplicação criada, abra <b>Credenciais de produção</b> e copie o <b>Access token</b> e a <b>Public key</b>.</li>
         <li>Em <b>Webhooks</b>, cadastre a URL abaixo, marque o evento <b>Pagamentos</b> e copie a <b>Assinatura secreta</b>.</li>
       </ol>
@@ -655,7 +655,7 @@ async function secPayments() {
           <div class="li-sub">${escapeHtml(c2.detail)}</div></div>
       </div>`).join('') +
       (r.test_mode ? '<div class="testbar mt">Ainda em modo de teste: nenhum valor real é movimentado.</div>'
-        : '<div class="testbar mt" style="background:#dcfce7;border-color:#86efac;color:#166534">✅ Operando com dinheiro real.</div>');
+        : '<div class="testbar ok mt">✅ Operando com dinheiro real.</div>');
   });
 }
 

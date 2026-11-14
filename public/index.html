@@ -3,51 +3,64 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0d1b2e">
-  <title>Assis MotoTáxi — Peça sua corrida</title>
-  <meta name="description" content="Peça seu mototáxi em Assis Chateaubriand - PR. Preço na hora, rastreamento em tempo real.">
+  <meta name="theme-color" content="#101014">
+  <title>VAIRO Street — Passageiro</title>
+  <meta name="description" content="VAIRO — a cidade no seu ritmo. Peça sua corrida com preço na hora e acompanhamento em tempo real.">
   <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="MotoTáxi">
+  <meta name="apple-mobile-web-app-title" content="VAIRO">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="preload" href="/fonts/inter-latin-var.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/css/app.css">
+  <script>try{if(localStorage.getItem('vairo-theme')==='light')document.documentElement.dataset.theme='light'}catch(e){}</script>
 </head>
-<body>
+<body data-area="passageiro">
 
 <header class="topbar">
-  <div class="brand" id="brand"></div>
+  <a class="brand" id="brand" href="/visao-geral" title="Visão geral da VAIRO"></a>
   <div class="spacer"></div>
-  <button class="iconbtn" id="btn-notifs" title="Notificações" hidden>🔔</button>
+  <button class="iconbtn" id="btn-notifs" title="Notificações" aria-label="Notificações" hidden><i data-icon="bell"></i></button>
 </header>
+
+<div class="screenbar" id="screenbar">
+  <span class="sb-count" id="sb-count"></span>
+  <div class="sb-select">
+    <select id="screen-select" aria-label="Telas da área do Passageiro"></select>
+    <i data-icon="chevron-down"></i>
+  </div>
+</div>
 
 <main class="app">
 
   <!-- ============ AUTENTICAÇÃO ============ -->
-  <section class="screen" id="screen-auth" hidden>
-    <div class="auth-hero" id="auth-hero"></div>
-    <div class="card">
-      <div class="seg mb">
-        <button id="tab-login" class="active">Entrar</button>
-        <button id="tab-register">Criar conta</button>
-      </div>
-      <form id="form-login">
-        <div class="field"><label>E-mail</label><input class="input" name="email" type="email" required autocomplete="email"></div>
-        <div class="field"><label>Senha</label><input class="input" name="password" type="password" required autocomplete="current-password"></div>
-        <button class="btn btn-primary" type="submit">Entrar</button>
-      </form>
-      <form id="form-register" hidden>
-        <div class="field"><label>Nome completo</label><input class="input" name="name" required autocomplete="name"></div>
-        <div class="field"><label>Telefone (WhatsApp)</label><input class="input" name="phone" type="tel" required placeholder="(44) 99999-9999"></div>
-        <div class="field"><label>E-mail</label><input class="input" name="email" type="email" required></div>
-        <div class="field"><label>Senha (mín. 8 caracteres)</label><input class="input" name="password" type="password" minlength="8" required autocomplete="new-password"></div>
-        <button class="btn btn-primary" type="submit">Criar minha conta</button>
-      </form>
-      <div id="google-slot" class="mt center"></div>
-      <p class="muted small center mt">É mototaxista? <a href="/motorista">Cadastre-se aqui</a></p>
+  <section class="screen auth" id="screen-auth" hidden>
+    <div class="auth-head">
+      <span class="logo-tile" id="auth-logo"></span>
+      <div><h1 id="auth-title">Entrar como Passageiro</h1><p id="auth-sub">A cidade no seu ritmo.</p></div>
     </div>
+    <form id="form-login" class="auth-form">
+      <div class="field"><label for="login-email">E-mail</label><input class="input" id="login-email" name="email" type="email" required autocomplete="email" placeholder="voce@email.com"></div>
+      <div class="field"><label for="login-password">Senha</label><input class="input" id="login-password" name="password" type="password" required autocomplete="current-password" placeholder="Sua senha"></div>
+      <div class="auth-foot">
+        <button class="btn btn-primary" type="submit">Entrar na VAIRO</button>
+        <p class="auth-switch">Não tem uma conta? <button type="button" class="linkbtn" id="tab-register">Cadastre-se</button></p>
+      </div>
+    </form>
+    <form id="form-register" class="auth-form" hidden>
+      <div class="field"><label for="reg-name">Nome completo</label><input class="input" id="reg-name" name="name" required autocomplete="name"></div>
+      <div class="field"><label for="reg-phone">Telefone (WhatsApp)</label><input class="input" id="reg-phone" name="phone" type="tel" required placeholder="(44) 99999-9999"></div>
+      <div class="field"><label for="reg-email">E-mail</label><input class="input" id="reg-email" name="email" type="email" required autocomplete="email"></div>
+      <div class="field"><label for="reg-password">Senha (mín. 8 caracteres)</label><input class="input" id="reg-password" name="password" type="password" minlength="8" required autocomplete="new-password"></div>
+      <div class="auth-foot">
+        <button class="btn btn-primary" type="submit">Criar minha conta</button>
+        <p class="auth-switch">Já tem uma conta? <button type="button" class="linkbtn" id="tab-login">Entrar</button></p>
+      </div>
+    </form>
+    <div id="google-slot" class="mt center"></div>
+    <p class="auth-note">É motorista? <a href="/motorista">Acesse a área do Motorista</a></p>
   </section>
 
   <!-- ============ INÍCIO (pedir corrida) ============ -->
@@ -124,7 +137,7 @@
       <form id="form-profile">
         <div class="field"><label>Nome</label><input class="input" name="name"></div>
         <div class="field"><label>Telefone</label><input class="input" name="phone"></div>
-        <button class="btn btn-navy" type="submit">Salvar alterações</button>
+        <button class="btn btn-primary" type="submit">Salvar alterações</button>
       </form>
     </div>
     <div class="card">
@@ -147,12 +160,13 @@
 </main>
 
 <nav class="bottomnav" id="bottomnav" hidden>
-  <button data-screen="screen-home"><span class="nico">🏠</span>Início</button>
-  <button data-screen="screen-history"><span class="nico">🧾</span>Corridas</button>
-  <button data-screen="screen-profile"><span class="nico">👤</span>Perfil</button>
+  <button data-screen="screen-home"><span class="nico"><i data-icon="house"></i></span>Início</button>
+  <button data-screen="screen-history"><span class="nico"><i data-icon="receipt"></i></span>Corridas</button>
+  <button data-screen="screen-profile"><span class="nico"><i data-icon="user"></i></span>Perfil</button>
 </nav>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/js/icons.js"></script>
 <script src="/js/common.js"></script>
 <script src="/js/passenger.js"></script>
 </body>

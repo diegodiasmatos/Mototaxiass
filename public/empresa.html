@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101014">
+  <title>VAIRO Street — Empresa</title>
+  <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
+  <link rel="preload" href="/fonts/inter-latin-var.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/css/app.css">
+  <script>try{if(localStorage.getItem('vairo-theme')==='light')document.documentElement.dataset.theme='light'}catch(e){}</script>
+</head>
+<body data-area="empresa">
+
+<header class="topbar">
+  <a class="brand" id="brand" href="/visao-geral" title="Visão geral da VAIRO"></a>
+  <div class="spacer"></div>
+</header>
+
+<div class="screenbar" id="screenbar">
+  <span class="sb-count" id="sb-count"></span>
+  <div class="sb-select">
+    <select id="screen-select" aria-label="Telas da área da Empresa"></select>
+    <i data-icon="chevron-down"></i>
+  </div>
+</div>
+
+<main class="app">
+  <!-- A área de Empresa ainda não existe no sistema (não há cadastro de loja,
+       pedidos nem cardápio no backend). Esta página só informa isso: nenhum
+       formulário falso de login é exibido. -->
+  <section class="screen auth" id="screen-empresa">
+    <div class="auth-head">
+      <span class="logo-tile" id="auth-logo"></span>
+      <div><h1>Empresa / Loja</h1><p>Painel Parceiro iFood Style</p></div>
+    </div>
+
+    <div class="card">
+      <span class="soon-pill">Em breve</span>
+      <h2 class="mt">A área de Empresas &amp; Lojas ainda não está disponível</h2>
+      <p class="muted">O login da loja, o cadastro e o painel de pedidos serão liberados aqui.
+        Por enquanto, a VAIRO funciona para Passageiros e Motoristas.</p>
+    </div>
+
+    <div class="auth-foot">
+      <a class="btn btn-primary" href="/passageiro">Pedir uma corrida</a>
+      <p class="auth-switch">É motorista? <a href="/motorista">Acesse a área do Motorista</a></p>
+    </div>
+  </section>
+</main>
+
+<script src="/js/icons.js"></script>
+<script src="/js/common.js"></script>
+<script>
+  'use strict';
+  $('#auth-logo').innerHTML = LOGO_MARK;
+  // telas da área Empresa na referência: nenhuma existe no app ainda
+  setupScreenMenu([
+    'Login Empresa',
+    'Cadastro de Loja & Termos',
+    'Painel de Pedidos em Tempo Real',
+    'Gestão de Cardápio & Estoque',
+    'Vitrine de Loja para Clientes',
+    'Despacho com Motoboy VAIRO',
+    'Estoque',
+  ].map(label => ({ label, soon: true })), () => 'Empresa — em breve');
+</script>
+</body>
+</html>
