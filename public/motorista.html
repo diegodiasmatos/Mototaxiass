@@ -19,6 +19,12 @@
 <header class="topbar">
   <div class="brand" id="brand"></div>
   <div class="spacer"></div>
+  <nav class="topnav" id="topnav" aria-label="Áreas do VAIRO" hidden>
+    <a data-tab="overview" href="/"><span data-ico="layers"></span>Visão Geral</a>
+    <a data-tab="passenger" href="/#entrar"><span data-ico="user"></span>Passageiro</a>
+    <a data-tab="driver" href="/motorista"><span data-ico="bike"></span>Motorista</a>
+    <a data-tab="empresa" href="#" data-empresa><span data-ico="store"></span>Empresa</a>
+  </nav>
   <button class="iconbtn" id="btn-notifs" title="Notificações" aria-label="Notificações" hidden><span data-ico="bell"></span></button>
 </header>
 
@@ -27,10 +33,6 @@
   <!-- ============ AUTENTICAÇÃO ============ -->
   <section class="screen" id="screen-auth" hidden>
     <div class="auth-hero" id="auth-hero"></div>
-    <nav class="rolebar" aria-label="Perfil">
-      <a class="rolebtn" href="/"><span data-ico="user"></span>Passageiro</a>
-      <a class="rolebtn active" href="/motorista"><span data-ico="bike"></span>Motorista</a>
-    </nav>
     <div class="card">
       <div class="seg mb">
         <button id="tab-login" class="active">Entrar</button>
@@ -50,7 +52,7 @@
         <div class="field"><label>Senha (mín. 8 caracteres)</label><input class="input" name="password" type="password" minlength="8" required></div>
         <button class="btn btn-primary" type="submit">Criar conta de parceiro</button>
       </form>
-      <p class="muted small center mt">É passageiro? <a href="/">Peça sua corrida aqui</a></p>
+      <p class="muted small center mt">É passageiro? <a href="/#entrar">Peça sua corrida aqui</a></p>
     </div>
   </section>
 

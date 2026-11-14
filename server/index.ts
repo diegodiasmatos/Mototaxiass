@@ -22,6 +22,7 @@ const MIME: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8', '.json': 'application/json',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json',
+  '.woff2': 'font/woff2',
 };
 
 function serveStatic(res: http.ServerResponse, urlPath: string): boolean {

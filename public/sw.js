@@ -5,7 +5,7 @@
    - Imagens e mapas: cache primeiro (economiza dados do celular do usuário). */
 'use strict';
 
-const VERSION = 'amt-v1';
+const VERSION = 'vairo-v2';
 const SHELL = `${VERSION}-shell`;
 const MEDIA = `${VERSION}-media`;
 
@@ -13,6 +13,7 @@ const PRECACHE = [
   '/', '/motorista', '/admin',
   '/css/app.css', '/js/common.js', '/js/passenger.js', '/js/driver.js', '/js/admin.js',
   '/img/icon.svg', '/img/icon-192.png', '/offline.html',
+  '/fonts/inter-latin-wght-normal.woff2',
 ];
 
 self.addEventListener('install', event => {

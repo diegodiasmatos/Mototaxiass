@@ -44,9 +44,18 @@ async function init() {
     setNotifBadge(me.unread);
     enterApp();
   } catch {
-    showScreen('screen-auth');
     setupGoogleButton();
+    routeVisitor();
+    addEventListener('hashchange', routeVisitor);
   }
+}
+
+/* visitante: Visão Geral em "/" e login do passageiro em "/#entrar" */
+function routeVisitor() {
+  if (S.user) return;
+  const auth = location.hash === '#entrar';
+  showScreen(auth ? 'screen-auth' : 'screen-overview');
+  setTopnav(auth ? 'passenger' : 'overview');
 }
 
 /* ================= autenticação ================= */
@@ -109,6 +118,8 @@ function setupGoogleButton() {
 
 /* ================= entrada no app ================= */
 async function enterApp() {
+  setTopnav(null);
+  if (location.hash === '#entrar') history.replaceState(null, '', '/');
   $('#bottomnav').hidden = false;
   $('#btn-notifs').hidden = false;
   $('#btn-notifs').onclick = openNotifications;

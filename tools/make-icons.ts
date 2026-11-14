@@ -10,39 +10,30 @@ import { fileURLToPath } from 'node:url';
 
 const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'img');
 
-const LIME: RGB = [0xe7, 0xff, 0x00];
+const LIME: RGB = [0x62, 0x6b, 0x05];   // limão #e7ff00 a 40% sobre #090909 (borda do tile na referência)
 const DARK: RGB = [0x09, 0x09, 0x09];
 const WHITE: RGB = [0xff, 0xff, 0xff];
 type RGB = [number, number, number];
 
-/** distância de um ponto ao segmento AB (coords normalizadas 0..1) */
-function segDist(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const dx = bx - ax, dy = by - ay;
-  const len2 = dx * dx + dy * dy;
-  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
-  const cx = ax + t * dx, cy = ay + t * dy;
-  return Math.hypot(px - cx, py - cy);
-}
+/** "V" do VAIRO (mesmo polígono de public/img/icon.svg, viewBox 40). `scale` encolhe para a zona segura. */
+const V_POLY: [number, number][] = [
+  [10, 11.5], [15.2, 11.5], [20, 22.6], [24.8, 11.5], [30, 11.5], [22.1, 27.8], [17.9, 27.8],
+].map(([x, y]) => [x / 40, y / 40] as [number, number]);
 
-/** "V" do VAIRO em coordenadas normalizadas. `scale` encolhe para a zona segura. */
 function vInk(x: number, y: number, scale: number): boolean {
   const u = (x - 0.5) / scale + 0.5;
   const v = (y - 0.5) / scale + 0.5;
-  if (u < 0 || u > 1 || v < 0 || v > 1) return false;
-  const w = 0.11;                // espessura do traço (7/64)
-  const segs: [number, number, number, number][] = [
-    [0.30, 0.30, 0.50, 0.70],
-    [0.50, 0.70, 0.70, 0.30],
-  ];
-  for (const [ax, ay, bx, by] of segs) {
-    if (segDist(u, v, ax, ay, bx, by) <= w / 2) return true;
+  let inside = false;
+  for (let i = 0, j = V_POLY.length - 1; i < V_POLY.length; j = i++) {
+    const [xi, yi] = V_POLY[i], [xj, yj] = V_POLY[j];
+    if ((yi > v) !== (yj > v) && u < ((xj - xi) * (v - yi)) / (yj - yi) + xi) inside = !inside;
   }
-  return false;
+  return inside;
 }
 
 /** distância assinada ao quadrado arredondado (negativa = dentro). */
 function sdRound(x: number, y: number): number {
-  const r = 0.22;
+  const r = 0.29;                // 11.5/40, como no SVG
   const qx = Math.abs(x - 0.5) - (0.5 - r), qy = Math.abs(y - 0.5) - (0.5 - r);
   return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
 }
@@ -94,8 +85,8 @@ function render(size: number, fullBleed: boolean): Buffer {
   const SS = 4;
   const out = Buffer.alloc(size * size * 4);
   // no modo maskable o conteúdo fica dentro da zona segura (80%)
-  const logoScale = fullBleed ? 0.72 : 0.94;
-  const RING = 0.045;           // borda limão do tile
+  const logoScale = fullBleed ? 0.8 : 1;
+  const RING = 0.025;           // borda de 1px em 40
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       let r = 0, g = 0, b = 0, a = 0;

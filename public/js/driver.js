@@ -29,6 +29,7 @@ async function init() {
     await enterApp();
   } catch {
     showScreen('screen-auth');
+    setTopnav('driver');
   }
 }
 
@@ -68,6 +69,7 @@ function authTab(login) {
 
 /* ================= roteamento pós-login ================= */
 async function enterApp() {
+  setTopnav(null);
   $('#btn-notifs').hidden = false;
   $('#btn-notifs').onclick = openNotifications;
   refreshPushSubscription();

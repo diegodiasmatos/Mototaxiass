@@ -20,18 +20,68 @@
 <header class="topbar">
   <div class="brand" id="brand"></div>
   <div class="spacer"></div>
+  <nav class="topnav" id="topnav" aria-label="Áreas do VAIRO" hidden>
+    <a data-tab="overview" href="/"><span data-ico="layers"></span>Visão Geral</a>
+    <a data-tab="passenger" href="/#entrar"><span data-ico="user"></span>Passageiro</a>
+    <a data-tab="driver" href="/motorista"><span data-ico="bike"></span>Motorista</a>
+    <a data-tab="empresa" href="#" data-empresa><span data-ico="store"></span>Empresa</a>
+  </nav>
   <button class="iconbtn" id="btn-notifs" title="Notificações" aria-label="Notificações" hidden><span data-ico="bell"></span></button>
 </header>
+
+<!-- ============ VISÃO GERAL (visitante) — referência Canva VAIRO ============ -->
+<section class="screen overview" id="screen-overview" hidden>
+  <div class="ov-hero">
+    <div class="ov-hero-text">
+      <span class="ov-tag">Ecossistema completo VAIRO</span>
+      <h1>Mobilidade, Entregas &amp; Lojas</h1>
+      <p>Inspirado nos padrões de liderança de mercado da Uber, 99 e iFood. Com recursos avançados de segurança (PIN, SOS, Moto Mulher), gestão de frotas e marketplace de estabelecimentos comerciais integrados à frota VAIRO.</p>
+    </div>
+    <div class="ov-actions">
+      <a class="ov-btn primary" href="/#entrar" id="ov-passenger"><span data-ico="user"></span>Passageiro</a>
+      <a class="ov-btn" href="/motorista"><span data-ico="bike"></span>Motorista</a>
+      <a class="ov-btn outline" href="#" data-empresa><span data-ico="store"></span>Empresa (iFood Style)</a>
+    </div>
+  </div>
+  <div class="ov-grid">
+    <article class="ov-card">
+      <span class="ov-ico" data-ico="shield"></span>
+      <h3>Passageiro (Uber/99 Standard)</h3>
+      <ul>
+        <li><span data-ico="check"></span>Central de Segurança &amp; Botão SOS</li>
+        <li><span data-ico="check"></span>Verificação de Corrida por PIN</li>
+        <li><span data-ico="check"></span>Filtro Moto Mulher e Conforto</li>
+        <li><span data-ico="check"></span>Chat em tempo real e gorjeta</li>
+      </ul>
+    </article>
+    <article class="ov-card green">
+      <span class="ov-ico" data-ico="gauge"></span>
+      <h3>Motorista Profissional</h3>
+      <ul>
+        <li><span data-ico="check"></span>Mapa de Calor de Alta Demanda</li>
+        <li><span data-ico="check"></span>Detalhamento de Ganhos &amp; Extrato Pix</li>
+        <li><span data-ico="check"></span>Alerta dinâmico de corrida e metas</li>
+        <li><span data-ico="check"></span>Validação de documentos e CNH</li>
+      </ul>
+    </article>
+    <article class="ov-card">
+      <span class="ov-ico" data-ico="utensils"></span>
+      <h3>Empresa &amp; Lojas (iFood Style)</h3>
+      <ul>
+        <li><span data-ico="check"></span>Painel de Pedidos em Tempo Real</li>
+        <li><span data-ico="check"></span>Gestão de Cardápio e Estoque</li>
+        <li><span data-ico="check"></span>Vitrine de Clientes com Carrinho</li>
+        <li><span data-ico="check"></span>Despacho automático com Motoboy VAIRO</li>
+      </ul>
+    </article>
+  </div>
+</section>
 
 <main class="app">
 
   <!-- ============ AUTENTICAÇÃO ============ -->
   <section class="screen" id="screen-auth" hidden>
     <div class="auth-hero" id="auth-hero"></div>
-    <nav class="rolebar" aria-label="Perfil">
-      <a class="rolebtn active" href="/"><span data-ico="user"></span>Passageiro</a>
-      <a class="rolebtn" href="/motorista"><span data-ico="bike"></span>Motorista</a>
-    </nav>
     <div class="card">
       <div class="seg mb">
         <button id="tab-login" class="active">Entrar</button>
