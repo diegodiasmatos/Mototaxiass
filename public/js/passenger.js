@@ -210,7 +210,7 @@ async function loadPaymentMethods() {
     const f = await api('/api/public/fares');
     S.payMethods = f.payment_methods;
     S.testMode = f.test_mode;
-    S.payment = (f.payment_methods.find(m => m.enabled) || {}).method || 'dinheiro';
+    S.payment = (f.payment_methods.find(m => m.enabled) || {}).method || null;
   } catch { S.payMethods = []; }
 }
 
@@ -669,7 +669,9 @@ function renderQuotes(r) {
 
   // formas de pagamento reais, vindas do servidor
   const ICONS = { pix: '⚡', cartao: '💳', dinheiro: '💵' };
-  $('#pay-options').innerHTML = S.payMethods.map(m => `
+  // dinheiro desligado pela central nem aparece: pagamento só pelo aplicativo
+  $('#pay-options').innerHTML = S.payMethods
+    .filter(m => m.enabled || m.method !== 'dinheiro').map(m => `
     <button class="pay-option ${m.method === S.payment ? 'selected' : ''}"
             data-pay="${m.method}" ${m.enabled ? '' : 'disabled'}>
       <span class="pico">${ICONS[m.method]}</span>

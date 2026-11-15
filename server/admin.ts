@@ -322,9 +322,11 @@ export const adminRoutes: Route[] = [
     const bal = driverBalance(driverId);
     const amount = Math.round(reqNum(b.amount_cents, 'valor'));
     if (amount <= 0) throw new ApiError(400, 'Valor do repasse deve ser maior que zero.');
-    if (amount > bal.pending_cents) {
+    // o que já está separado em saques pedidos não pode ser repassado de novo
+    const livre = bal.pending_cents - bal.reserved_cents;
+    if (amount > livre) {
       throw new ApiError(400,
-        `Valor acima do saldo a repassar (${(bal.pending_cents / 100).toFixed(2)}).`);
+        `Valor acima do saldo a repassar (${(livre / 100).toFixed(2)}).`);
     }
     const pid = id('pyo');
     const t = now();
@@ -345,6 +347,48 @@ export const adminRoutes: Route[] = [
     }
     audit(user!.id, 'payout_create', 'driver', driverId, `${amount} centavos`);
     json(res, 201, { ok: true, id: pid });
+  }),
+
+  /**
+   * Saque pedido pelo motorista: a central faz o Pix para a chave informada
+   * e confirma aqui. Só então o valor sai do saldo (lançamento no livro-caixa).
+   */
+  route('POST /api/admin/payouts/:id/pay', 'admin', async ({ req, res, user, params }) => {
+    const b = await readBody(req);
+    const p = db.prepare('SELECT * FROM payouts WHERE id = ?').get(params.id) as any;
+    if (!p) throw new ApiError(404, 'Saque não encontrado.');
+    if (p.status !== 'pendente') throw new ApiError(409, 'Este saque já foi processado.');
+    const bal = driverBalance(p.driver_id);
+    // o saldo pode ter caído depois do pedido (ex.: estorno de uma corrida)
+    if (p.amount_cents > bal.pending_cents) {
+      throw new ApiError(409,
+        `O saldo do motorista (R$ ${(bal.pending_cents / 100).toFixed(2)}) não cobre mais este saque. Recuse o pedido.`);
+    }
+    const reference = typeof b.reference === 'string' ? b.reference.trim().slice(0, 120) : '';
+    const t = now();
+    db.prepare(`UPDATE payouts SET status = 'pago', paid_at = ?, reference = ? WHERE id = ?`)
+      .run(t, reference || null, p.id);
+    ledger('repasse_pago', p.amount_cents, {
+      driverId: p.driver_id, description: `Saque via Pix${reference ? ` (${reference})` : ''}`,
+    });
+    notify(p.driver_id, 'payout', '💸 Saque pago',
+      { body: `R$ ${(p.amount_cents / 100).toFixed(2)} foram enviados para a sua chave Pix.` });
+    audit(user!.id, 'payout_pay', 'driver', p.driver_id, `${p.amount_cents} centavos`);
+    json(res, 200, { ok: true, balance: driverBalance(p.driver_id) });
+  }),
+
+  /** Recusa o saque: o valor volta a ficar disponível na carteira do motorista. */
+  route('POST /api/admin/payouts/:id/reject', 'admin', async ({ req, res, user, params }) => {
+    const b = await readBody(req);
+    const reason = reqStr(b.reason, 'motivo', 200);
+    const r = db.prepare(`UPDATE payouts SET status = 'falhou', reject_reason = ?
+      WHERE id = ? AND status = 'pendente'`).run(reason, params.id);
+    if (!r.changes) throw new ApiError(404, 'Saque não encontrado ou já processado.');
+    const p = db.prepare('SELECT driver_id, amount_cents FROM payouts WHERE id = ?').get(params.id) as any;
+    notify(p.driver_id, 'payout', 'Saque não realizado',
+      { body: `${reason} O valor voltou para a sua carteira.` });
+    audit(user!.id, 'payout_reject', 'driver', p.driver_id, reason);
+    json(res, 200, { ok: true });
   }),
 
   /** Quita a dívida de comissão das corridas em dinheiro. */
@@ -408,6 +452,8 @@ export const adminRoutes: Route[] = [
       webhook_url: base ? `${base.replace(/\/$/, '')}/api/webhooks/mercadopago` : null,
       oauth_redirect_uri: base ? `${base.replace(/\/$/, '')}/api/mp/oauth/callback` : null,
       charge_timing: getSetting('charge_timing'),
+      cash_enabled: getSetting('cash_enabled') === '1',
+      withdraw_min_cents: getSettingNum('withdraw_min_cents'),
       connected_drivers: (db.prepare(`SELECT COUNT(*) c FROM drivers
         WHERE mp_user_id IS NOT NULL`).get() as any).c,
     });
@@ -430,6 +476,18 @@ export const adminRoutes: Route[] = [
     if (b.charge_timing === 'antes' || b.charge_timing === 'apos_aceite') {
       setSetting('charge_timing', b.charge_timing);
       changed.push(`cobrança: ${b.charge_timing}`);
+    }
+    if (typeof b.cash_enabled === 'boolean') {
+      setSetting('cash_enabled', b.cash_enabled ? '1' : '0');
+      changed.push(`dinheiro em mãos: ${b.cash_enabled ? 'aceito' : 'desligado'}`);
+    }
+    if (b.withdraw_min_cents !== undefined) {
+      const n = Number(b.withdraw_min_cents);
+      if (!Number.isInteger(n) || n < 100 || n > 100_000_00) {
+        throw new ApiError(400, 'O saque mínimo deve ficar entre R$ 1,00 e R$ 100.000,00.');
+      }
+      setSetting('withdraw_min_cents', String(n));
+      changed.push(`saque mínimo: ${n} centavos`);
     }
     if (changed.length) audit(user!.id, 'payment_config', 'settings', undefined, changed.join('; '));
     json(res, 200, { ok: true, changed, test_mode: isTestMode(), split_available: splitAvailable() });

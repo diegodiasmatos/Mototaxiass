@@ -66,6 +66,27 @@ O que ainda **não existe** e por isso aparece só como "em breve": a área
 Empresa (lojas, cardápio, pedidos), a Vitrine de Lojas e o Carrinho no app do
 passageiro, e a Central de Segurança/SOS.
 
+## Pagamento só pelo app e carteira do motorista
+
+- **Pagamento só pelo aplicativo**: o dinheiro em mãos vem **desligado**. A
+  corrida é paga por Pix ou cartão antes de o motorista ser chamado, e o valor
+  é estornado se ela for cancelada. A central pode religar o dinheiro em
+  💳 Pagamentos → "Dinheiro em mãos".
+- **Taxa automática**: ao concluir cada corrida, o livro-caixa separa a taxa
+  da plataforma e credita o **líquido** na carteira do motorista.
+- **Carteira** (app do motorista → aba Carteira): saldo disponível, extrato
+  (corrida, taxa e líquido de cada uma) e saques.
+- **Saque via Pix**: o motorista informa o valor e a chave Pix. O valor fica
+  reservado; a central faz o Pix e clica em **Paguei** (💰 Financeiro → Saques
+  solicitados), e só então ele sai do saldo. A central também pode recusar, e
+  o motorista pode cancelar um pedido ainda não pago. Um saque por vez; o
+  saque mínimo é configurável (padrão R$ 10,00).
+
+O Pix do saque é feito **manualmente** pela central (pelo banco ou pelo
+Mercado Pago); o sistema controla o saldo e o registro, não transfere sozinho.
+Com o Mercado Pago ainda em modo de teste e o dinheiro desligado, **não há
+cobrança real**: a tela de Pagamentos da central avisa isso.
+
 ## Arquitetura
 
 | Camada | Tecnologia | Por quê |
@@ -278,8 +299,8 @@ data/            banco, segredo de sessão e uploads privados (criado em runtime
 
 ## Testes da V2 (executados de verdade)
 
-`npm test` roda **67 testes**. Resultado da última execução:
-**67/67 aprovados**. Cobrem, entre outros:
+`npm test` roda **70 testes**. Resultado da última execução:
+**70/70 aprovados**. Cobrem, entre outros:
 
 - **Credenciais**: salvas cifradas (o `.db` não revela o segredo), devolvidas
   mascaradas, valor mascarado reenviado não corrompe o que está salvo, URL

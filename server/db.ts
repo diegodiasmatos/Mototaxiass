@@ -630,15 +630,32 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     CREATE INDEX idx_addr_pts_street ON address_points(street_norm);
     `,
   },
+
+  // ----------------------------------------------------------------
+  // Carteira do motorista: ele pede o saque do saldo (com a chave Pix) e a
+  // central paga ou recusa. Pagamento só pelo aplicativo: o dinheiro em
+  // mãos é desligado (a central pode religar em 💳 Pagamentos).
+  // ----------------------------------------------------------------
+  {
+    version: 8,
+    sql: `
+    ALTER TABLE payouts ADD COLUMN pix_key TEXT;
+    ALTER TABLE payouts ADD COLUMN requested_by_driver INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE payouts ADD COLUMN reject_reason TEXT;
+    ALTER TABLE drivers ADD COLUMN pix_key TEXT;
+    UPDATE app_settings SET value = '0' WHERE key = 'cash_enabled';
+    `,
+  },
 ];
 
-const DEFAULT_SETTINGS: Record<string, string> = {
+export const DEFAULT_SETTINGS: Record<string, string> = {
   // --- V2 ---
   confirm_window_s: '5',
   payment_provider: 'auto',        // auto = mercadopago se houver credencial, senão teste
   pix_enabled: '1',
   card_enabled: '1',
-  cash_enabled: '1',
+  cash_enabled: '0',               // pagamento só pelo app; dinheiro em mãos fica desligado
+  withdraw_min_cents: '1000',      // menor saque que o motorista pode pedir
   pix_expires_min: '15',
   driver_debt_limit_cents: '5000', // dívida de comissão (corridas em dinheiro) que bloqueia novas corridas
   pickup_move_alert_m: '80',       // distância que dispara "você mudou de local?"

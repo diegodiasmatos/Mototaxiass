@@ -103,7 +103,7 @@ export function availableMethods(): { method: Method; label: string; enabled: bo
     },
     {
       method: 'dinheiro', label: 'Dinheiro', enabled: getSetting('cash_enabled') === '1',
-      note: 'pago direto ao mototaxista; a comissão fica registrada como dívida sua na plataforma',
+      note: 'pago direto ao motorista, fora do aplicativo',
     },
   ];
 }
@@ -168,6 +168,8 @@ export interface DriverBalance {
   pending_cents: number;     // a receber da plataforma
   debt_cents: number;        // comissão devida por corridas em dinheiro
   auto_cents: number;        // recebido direto na conta dele (split automático)
+  reserved_cents: number;    // saques pedidos, aguardando a central pagar
+  available_cents: number;   // o que ele pode sacar agora
 }
 
 export function driverBalance(driverId: string): DriverBalance {
@@ -177,10 +179,16 @@ export function driverBalance(driverId: string): DriverBalance {
   const earned = sum('repasse_devido');
   const paid = sum('repasse_pago');
   const debt = sum('divida_comissao') - sum('quitacao_divida');
+  const reserved = (db.prepare(`SELECT COALESCE(SUM(amount_cents),0) v FROM payouts
+    WHERE driver_id = ? AND status = 'pendente'`).get(driverId) as any).v as number;
   return {
     earned_cents: earned, paid_cents: paid,
     pending_cents: earned - paid, debt_cents: debt,
     auto_cents: sum('repasse_automatico'),
+    reserved_cents: reserved,
+    // saldo livre: o que a plataforma deve, menos o que ele deve de comissão
+    // e menos o que já está separado em saques pedidos
+    available_cents: Math.max(0, earned - paid - Math.max(0, debt) - reserved),
   };
 }
 

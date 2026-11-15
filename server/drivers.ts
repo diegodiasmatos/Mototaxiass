@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { db, getSettingNum, getSetting } from './db.ts';
 import {
-  ApiError, id, now, json, readBody, reqStr, reqNum, dataDir, haversineM,
+  ApiError, id, now, json, readBody, reqStr, reqNum, dataDir, haversineM, rateLimit,
 } from './util.ts';
 import { route, type Route } from './router.ts';
 import { splitCommission } from './fares.ts';
@@ -399,6 +399,73 @@ export const driverRoutes: Route[] = [
       debt_limit_cents: getSettingNum('driver_debt_limit_cents'),
       payouts,
     });
+  }),
+
+  /**
+   * Carteira: saldo que o motorista pode sacar, saques pedidos e extrato.
+   * A taxa da plataforma já sai descontada em cada corrida — o extrato mostra
+   * o valor da corrida, a taxa e o líquido que entrou.
+   */
+  route('GET /api/driver/wallet', 'driver', ({ res, user }) => {
+    const d = db.prepare('SELECT status, pix_key FROM drivers WHERE user_id = ?').get(user!.id) as any;
+    const statement = db.prepare(`SELECT t.id, t.kind, t.amount_cents, t.description, t.created_at,
+        t.test_mode, r.price_cents, r.commission_cents, r.origin_text, r.dest_text, r.payment_method
+      FROM financial_transactions t LEFT JOIN rides r ON r.id = t.ride_id
+      WHERE t.driver_id = ? AND t.kind IN
+        ('repasse_devido','repasse_pago','repasse_automatico','divida_comissao','quitacao_divida')
+      ORDER BY t.created_at DESC, t.rowid DESC LIMIT 60`).all(user!.id);
+    const withdrawals = db.prepare(`SELECT id, amount_cents, status, pix_key, reference,
+        reject_reason, requested_by_driver, created_at, paid_at
+      FROM payouts WHERE driver_id = ? ORDER BY created_at DESC LIMIT 30`).all(user!.id);
+    json(res, 200, {
+      balance: driverBalance(user!.id),
+      commission_pct: getSettingNum('commission_pct'),
+      min_withdraw_cents: getSettingNum('withdraw_min_cents'),
+      pix_key: d?.pix_key || null,
+      approved: d?.status === 'approved',
+      withdrawals,
+      statement,
+    });
+  }),
+
+  /** Pede o saque do saldo para uma chave Pix. A central paga e confirma. */
+  route('POST /api/driver/withdrawals', 'driver', async ({ req, res, user, ip }) => {
+    if (!rateLimit(`saque:${ip}`, 10, 10 * 60_000)) throw new ApiError(429, 'Aguarde um instante.');
+    requireApprovedDriver(user!.id);
+    const b = await readBody(req);
+    const pixKey = reqStr(b.pix_key, 'chave Pix', 140);
+    if (pixKey.length < 5) throw new ApiError(400, 'Informe uma chave Pix válida (CPF, e-mail, telefone ou chave aleatória).');
+    const amount = reqNum(b.amount_cents, 'valor');
+    if (!Number.isInteger(amount) || amount <= 0) throw new ApiError(400, 'Valor de saque inválido.');
+
+    const open = db.prepare(`SELECT id FROM payouts
+      WHERE driver_id = ? AND status = 'pendente' AND requested_by_driver = 1`).get(user!.id);
+    if (open) throw new ApiError(409, 'Você já tem um saque em análise. Aguarde o pagamento ou cancele o pedido.');
+
+    const bal = driverBalance(user!.id);
+    const min = getSettingNum('withdraw_min_cents');
+    if (amount > bal.available_cents) {
+      throw new ApiError(400, `Saldo disponível insuficiente (R$ ${(bal.available_cents / 100).toFixed(2)}).`);
+    }
+    if (amount < min) throw new ApiError(400, `O saque mínimo é de R$ ${(min / 100).toFixed(2)}.`);
+
+    const pid = id('pyo');
+    db.prepare(`INSERT INTO payouts
+        (id, driver_id, amount_cents, status, method, pix_key, requested_by_driver, created_by, created_at)
+      VALUES (?,?,?,'pendente','pix',?,1,?,?)`).run(pid, user!.id, amount, pixKey, user!.id, now());
+    db.prepare('UPDATE drivers SET pix_key = ? WHERE user_id = ?').run(pixKey, user!.id);
+    notifyAdmins('withdrawal', '💸 Saque solicitado',
+      `${user!.name} pediu R$ ${(amount / 100).toFixed(2)} via Pix.`);
+    json(res, 201, { ok: true, id: pid, balance: driverBalance(user!.id) });
+  }),
+
+  /** O motorista desiste de um saque ainda não pago: o valor volta ao saldo. */
+  route('POST /api/driver/withdrawals/:id/cancel', 'driver', ({ res, user, params }) => {
+    const r = db.prepare(`UPDATE payouts SET status = 'falhou', reject_reason = 'Cancelado pelo motorista'
+      WHERE id = ? AND driver_id = ? AND status = 'pendente' AND requested_by_driver = 1`)
+      .run(params.id, user!.id);
+    if (!r.changes) throw new ApiError(404, 'Saque não encontrado ou já processado.');
+    json(res, 200, { ok: true, balance: driverBalance(user!.id) });
   }),
 
   /** Avaliações recebidas, com médias por critério. */

@@ -130,7 +130,7 @@ function bindScreenMenu() {
       },
     },
     {
-      label: 'Painel de Ganhos & Pix',
+      label: 'Painel de Ganhos & Pix',  // é a Carteira
       match: () => currentScreen() === 'screen-earnings',
       go: () => {
         if (!S.user) return needLogin;
@@ -691,39 +691,131 @@ async function sendDChat() {
 
 /* ================= ganhos ================= */
 async function loadEarnings() {
+  loadWallet();
   try {
     const e = await api('/api/driver/earnings');
     S.balance = e.balance;
     const row = (label, a) => `
       <div class="list-item">
         <div class="li-main"><div class="li-title">${label}</div>
-        <div class="li-sub">${a.rides} corrida(s) · bruto ${fmt.money(a.gross)} · comissão ${fmt.money(a.commission)}</div></div>
+        <div class="li-sub">${a.rides} corrida(s) · bruto ${fmt.money(a.gross)} · taxa ${fmt.money(a.commission)}</div></div>
         <b style="color:var(--green)">${fmt.money(a.net)}</b>
       </div>`;
-    const debtWarn = e.debt_cents > e.debt_limit_cents;
-    $('#earnings-box').innerHTML = `
-      <div class="fin-grid mb">
-        <div class="fin-card in"><div class="fv">${fmt.money(e.balance.pending_cents)}</div>
-          <div class="fl">A receber da plataforma</div></div>
-        <div class="fin-card out"><div class="fv">${fmt.money(e.balance.paid_cents)}</div>
-          <div class="fl">Já repassado a você</div></div>
-        <div class="fin-card ${debtWarn ? 'bad' : 'warn'}"><div class="fv">${fmt.money(e.debt_cents)}</div>
-          <div class="fl">Comissão a pagar (corridas em dinheiro)</div></div>
-      </div>
-      ${debtWarn ? `<div class="testbar danger">
-        ⛔ Sua dívida passou do limite de ${fmt.money(e.debt_limit_cents)} — você não recebe novas corridas
-        até quitar com a plataforma.</div>` : ''}
-      ${row('Hoje', e.day) + row('Esta semana', e.week) + row('Este mês', e.month) + row('Total', e.total)}
-      <h3 class="mt">Repasses recebidos</h3>
-      ${e.payouts.length ? e.payouts.map(p => `
-        <div class="list-item"><div class="li-main">
-          <div class="li-title">${fmt.money(p.amount_cents)} · ${escapeHtml(p.method || 'pix')}</div>
-          <div class="li-sub">${fmt.dt(p.created_at)}${p.reference ? ` · ${escapeHtml(p.reference)}` : ''}</div>
-        </div><span class="pill ${p.status === 'pago' ? 'green' : 'yellow'}">${p.status}</span></div>`).join('')
-        : '<p class="muted small">Nenhum repasse registrado ainda.</p>'}
-      <p class="muted small mt">Só corridas concluídas entram nos ganhos. Pix e cartão são recebidos
-      pela plataforma e repassados a você; em dinheiro você recebe na hora e fica devendo a comissão.</p>`;
+    $('#earnings-box').innerHTML =
+      row('Hoje', e.day) + row('Esta semana', e.week) + row('Este mês', e.month) + row('Total', e.total) +
+      `<p class="muted small mt">Só corridas concluídas entram nos ganhos. O valor líquido de cada
+      corrida vai para a sua carteira com a taxa da plataforma já descontada.</p>`;
   } catch (err) { $('#earnings-box').innerHTML = `<p class="muted">${escapeHtml(err.message)}</p>`; }
+}
+
+/* ================= carteira ================= */
+const WALLET_KIND = {
+  repasse_devido: { sign: '+', cls: 'in', title: 'Corrida concluída' },
+  repasse_pago: { sign: '−', cls: 'out', title: 'Saque via Pix' },
+  repasse_automatico: { sign: '', cls: 'info', title: 'Recebido direto na sua conta' },
+  divida_comissao: { sign: '−', cls: 'out', title: 'Taxa de corrida paga em dinheiro' },
+  quitacao_divida: { sign: '+', cls: 'in', title: 'Taxa quitada' },
+};
+const WITHDRAW_PILL = { pendente: ['yellow', 'em análise'], pago: ['green', 'pago'], falhou: ['red', 'não realizado'] };
+
+/** Carteira: saldo que pode ser sacado, saque em análise, extrato e saques. */
+async function loadWallet() {
+  const box = $('#wallet-box');
+  if (!box) return;
+  try {
+    const w = await api('/api/driver/wallet');
+    const b = w.balance;
+    const open = w.withdrawals.find(x => x.status === 'pendente' && x.requested_by_driver);
+    const canWithdraw = !open && b.available_cents >= w.min_withdraw_cents;
+    const whyNot = open ? ''
+      : b.available_cents <= 0 ? 'Conclua corridas para ter saldo.'
+        : b.available_cents < w.min_withdraw_cents ? `Saque mínimo de ${fmt.money(w.min_withdraw_cents)}.` : '';
+    const debtWarn = b.debt_cents > (S.debtLimit ?? Infinity);
+
+    box.innerHTML = `
+      <div class="wallet-hero">
+        <div class="wl-label">Disponível para saque</div>
+        <div class="wl-value" id="wallet-available">${fmt.money(b.available_cents)}</div>
+        <div class="wl-sub">A taxa da plataforma (${String(w.commission_pct).replace('.', ',')}%) já sai descontada de cada corrida.</div>
+        <button class="btn btn-primary mt" id="btn-withdraw" ${canWithdraw ? '' : 'disabled'}>Sacar via Pix</button>
+        ${whyNot ? `<div class="wl-sub mt">${whyNot}</div>` : ''}
+      </div>
+      ${open ? `<div class="card" id="withdraw-open">
+        <div class="row between"><h3 style="margin:0">Saque em análise</h3><span class="pill yellow">em análise</span></div>
+        <p class="mt"><b>${fmt.money(open.amount_cents)}</b> para a chave Pix <b>${escapeHtml(open.pix_key || '')}</b></p>
+        <p class="muted small">Pedido em ${fmt.dt(open.created_at)}. A central faz o Pix e você é avisado aqui.</p>
+        <button class="btn btn-outline btn-sm mt" id="btn-withdraw-cancel">Cancelar pedido</button>
+      </div>` : ''}
+      ${debtWarn ? `<div class="testbar danger">
+        ⛔ Você deve ${fmt.money(b.debt_cents)} de taxa à plataforma, acima do limite de
+        ${fmt.money(S.debtLimit)} — novas corridas ficam bloqueadas até quitar.</div>` : ''}
+      <div class="fin-grid mb">
+        <div class="fin-card warn"><div class="fv">${fmt.money(b.reserved_cents)}</div><div class="fl">Em saque</div></div>
+        <div class="fin-card out"><div class="fv">${fmt.money(b.paid_cents)}</div><div class="fl">Já sacado</div></div>
+        ${b.debt_cents > 0 ? `<div class="fin-card ${debtWarn ? 'bad' : 'warn'}"><div class="fv">${fmt.money(b.debt_cents)}</div>
+          <div class="fl">Taxa a pagar (corridas em dinheiro)</div></div>` : ''}
+      </div>
+      <div class="card">
+        <h2>Extrato</h2>
+        ${w.statement.length ? w.statement.map(t => {
+      const k = WALLET_KIND[t.kind] || { sign: '', cls: 'info', title: t.kind };
+      const detail = t.kind === 'repasse_devido' && t.price_cents != null
+        ? `Corrida ${fmt.money(t.price_cents)} − taxa ${fmt.money(t.commission_cents)}${t.dest_text ? ` · ${escapeHtml(t.dest_text)}` : ''}`
+        : escapeHtml(t.description || '');
+      return `<div class="list-item">
+            <div class="li-main"><div class="li-title">${k.title}</div>
+              <div class="li-sub">${fmt.dt(t.created_at)}${detail ? ` · ${detail}` : ''}</div></div>
+            <b class="wl-amount ${k.cls}">${k.sign}${fmt.money(t.amount_cents)}</b>
+          </div>`;
+    }).join('') : '<p class="muted small">Nenhum lançamento ainda. Cada corrida concluída aparece aqui.</p>'}
+      </div>
+      <div class="card">
+        <h2>Saques</h2>
+        ${w.withdrawals.length ? w.withdrawals.map(p => {
+      const [cls, label] = WITHDRAW_PILL[p.status] || ['gray', p.status];
+      return `<div class="list-item"><div class="li-main">
+            <div class="li-title">${fmt.money(p.amount_cents)}${p.pix_key ? ` · ${escapeHtml(p.pix_key)}` : ''}</div>
+            <div class="li-sub">${fmt.dt(p.created_at)}${p.reference ? ` · ${escapeHtml(p.reference)}` : ''}${p.status === 'falhou' && p.reject_reason ? ` · ${escapeHtml(p.reject_reason)}` : ''}</div>
+          </div><span class="pill ${cls}">${label}</span></div>`;
+    }).join('') : '<p class="muted small">Nenhum saque pedido ainda.</p>'}
+      </div>`;
+
+    if ($('#btn-withdraw')) $('#btn-withdraw').onclick = () => openWithdraw(w);
+    if ($('#btn-withdraw-cancel')) {
+      $('#btn-withdraw-cancel').onclick = () => withLoading($('#btn-withdraw-cancel'), async () => {
+        await api(`/api/driver/withdrawals/${open.id}/cancel`, { method: 'POST' });
+        loadWallet();
+      }, { okMsg: 'Pedido cancelado. O valor voltou para o saldo.' }).catch(() => { });
+    }
+  } catch (err) {
+    box.innerHTML = `<div class="card"><p class="muted">${escapeHtml(err.message)}</p></div>`;
+  }
+}
+
+/** Pedido de saque: valor (até o saldo disponível) e chave Pix. */
+function openWithdraw(w) {
+  const max = w.balance.available_cents;
+  const m = openModal(`
+    <h3>Sacar via Pix</h3>
+    <p class="muted mb">Disponível: <b>${fmt.money(max)}</b> · mínimo ${fmt.money(w.min_withdraw_cents)}</p>
+    <div class="field"><label for="wd-amount">Valor (R$)</label>
+      <input class="input" id="wd-amount" inputmode="decimal" value="${(max / 100).toFixed(2).replace('.', ',')}"></div>
+    <div class="field"><label for="wd-pix">Sua chave Pix</label>
+      <input class="input" id="wd-pix" placeholder="CPF, e-mail, telefone ou chave aleatória" maxlength="140"
+        value="${escapeHtml(w.pix_key || '')}"></div>
+    <p class="muted small mb">Confira a chave: o Pix é enviado para ela pela central e você é avisado quando sair.</p>
+    <button class="btn btn-primary" id="wd-send">Pedir saque</button>
+    <button class="btn btn-outline mt" data-no>Voltar</button>`);
+  $('[data-no]', m).onclick = () => m.close();
+  $('#wd-send', m).onclick = () => withLoading($('#wd-send', m), async () => {
+    const cents = Math.round(parseFloat($('#wd-amount', m).value.replace(/\./g, '').replace(',', '.')) * 100);
+    if (!Number.isFinite(cents) || cents <= 0) throw new Error('Informe o valor do saque.');
+    await api('/api/driver/withdrawals', {
+      method: 'POST', body: { amount_cents: cents, pix_key: $('#wd-pix', m).value.trim() },
+    });
+    m.close();
+    loadWallet();
+  }, { okMsg: 'Saque pedido! Você será avisado quando o Pix for enviado.' }).catch(() => { });
 }
 
 /** Conexão da conta Mercado Pago do parceiro (recebimento direto). */

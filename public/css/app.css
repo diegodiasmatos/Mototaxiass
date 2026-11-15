@@ -715,6 +715,21 @@ input:focus, textarea:focus, select:focus { scroll-margin-bottom: 140px; }
 .fin-card .fv { font-size: 1.3rem; font-weight: 800; letter-spacing: -.02em; }
 .fin-card .fl { font-size: .74rem; color: var(--muted); font-weight: 600; margin-top: 3px; }
 
+/* ---------- carteira do motorista ---------- */
+.wallet-hero {
+  background: var(--card); border: 1px solid var(--accent-line); border-radius: 22px;
+  box-shadow: 0 0 28px var(--accent-glow); padding: 22px 18px; margin-bottom: 14px; text-align: center;
+}
+.wallet-hero .wl-label {
+  font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+}
+.wallet-hero .wl-value { font-size: 2.3rem; font-weight: 900; letter-spacing: -.04em; margin: 6px 0 4px; }
+.wallet-hero .wl-sub { font-size: .78rem; color: var(--muted); }
+.wl-amount { white-space: nowrap; font-weight: 800; }
+.wl-amount.in { color: var(--green); }
+.wl-amount.out { color: var(--red); }
+.wl-amount.info { color: var(--muted); }
+
 /* ---------- timeline ---------- */
 .timeline { border-left: 2px solid var(--line); margin-left: 8px; padding-left: 14px; }
 .timeline .tev { position: relative; padding: 7px 0; font-size: .82rem; }

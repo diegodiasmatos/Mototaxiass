@@ -383,12 +383,29 @@ async function openRide(idd) {
 /* ============ financeiro ============ */
 async function secFinance() {
   const f = await api('/api/admin/finance');
+  const { payouts } = await api('/api/admin/payouts');
+  const saques = payouts.filter(p => p.status === 'pendente');
   const t = f.totals;
   main().innerHTML = `
     ${testBanner(f.test_mode)}
     <h2 class="mb">💰 Financeiro</h2>
     <p class="muted small mb">Provedor: <b>${escapeHtml(f.provider)}</b> ·
       todos os valores vêm do livro-caixa (somente inserção, nunca editado).</p>
+
+    <div class="card" id="withdrawals-card">
+      <h3>💸 Saques solicitados <span class="pill ${saques.length ? 'yellow' : 'gray'}">${saques.length}</span></h3>
+      <p class="muted small mb">O motorista pede o saque na carteira dele. Faça o Pix para a chave
+        informada e clique em <b>Paguei</b> — só aí o valor sai do saldo dele.</p>
+      ${saques.length ? saques.map(p => `
+        <div class="list-item">
+          <div class="li-main">
+            <div class="li-title">${escapeHtml(p.driver_name)} · ${fmt.money(p.amount_cents)}</div>
+            <div class="li-sub">Chave Pix: <b>${escapeHtml(p.pix_key || 'não informada')}</b> · pedido em ${fmt.dt(p.created_at)}</div>
+          </div>
+          <button class="btn btn-green btn-sm" data-wd-pay="${p.id}">Paguei</button>
+          <button class="btn btn-outline btn-sm" data-wd-reject="${p.id}">Recusar</button>
+        </div>`).join('') : '<p class="muted small">Nenhum saque aguardando pagamento.</p>'}
+    </div>
 
     <div class="fin-grid mb">
       <div class="fin-card in"><div class="fv">${fmt.money(t.cobrado)}</div><div class="fl">Total cobrado</div></div>
@@ -445,6 +462,24 @@ async function secFinance() {
       </tr>`).join('') || '<tr><td class="muted center">Nenhuma transação.</td></tr>'}
       </tbody></table>
     </div>`;
+
+  $$('[data-wd-pay]').forEach(b => b.onclick = async () => {
+    const ref = await askText('Confirmar pagamento do saque',
+      'Identificação do Pix enviado (opcional)');
+    if (ref === null) return;
+    await withLoading(b, async () => {
+      await api(`/api/admin/payouts/${b.dataset.wdPay}/pay`, { method: 'POST', body: { reference: ref || null } });
+      secFinance();
+    }, { okMsg: 'Saque marcado como pago e motorista avisado.' }).catch(() => { });
+  });
+  $$('[data-wd-reject]').forEach(b => b.onclick = async () => {
+    const reason = await askText('Recusar saque', 'Motivo (o motorista vai ler)');
+    if (!reason) return;
+    await withLoading(b, async () => {
+      await api(`/api/admin/payouts/${b.dataset.wdReject}/reject`, { method: 'POST', body: { reason } });
+      secFinance();
+    }, { okMsg: 'Saque recusado. O valor voltou para a carteira do motorista.' }).catch(() => { });
+  });
 
   $$('[data-pay]').forEach(b => b.onclick = async () => {
     const max = Number(b.dataset.max);
@@ -589,6 +624,23 @@ async function secPayments() {
       <h3 class="mt">Recebimento direto (split)</h3>
       ${f('MP_CLIENT_ID', 'Client ID do aplicativo', 'Permite que cada mototaxista conecte a conta dele e receba direto.')}
       ${f('MP_CLIENT_SECRET', 'Client Secret do aplicativo', 'Fica só no servidor, cifrado.')}
+      <h3 class="mt">Regras de pagamento</h3>
+      ${c.test_mode && !c.cash_enabled ? `<div class="testbar danger">
+        ⚠️ Nenhuma forma de pagamento real está ativa: o dinheiro em mãos está desligado e o
+        Mercado Pago ainda está em modo de teste. Configure as credenciais acima para cobrar de verdade.</div>` : ''}
+      <div class="field">
+        <label>Dinheiro em mãos</label>
+        <select class="input" id="cash-enabled">
+          <option value="0" ${c.cash_enabled ? '' : 'selected'}>Desligado — pagamento só pelo aplicativo (Pix e cartão)</option>
+          <option value="1" ${c.cash_enabled ? 'selected' : ''}>Aceitar dinheiro pago direto ao motorista</option>
+        </select>
+        <p class="muted small" style="margin-top:4px">Desligado, toda corrida é paga pelo app antes de
+          começar e a taxa da plataforma é descontada sozinha.</p>
+      </div>
+      <div class="field">
+        <label>Saque mínimo do motorista (R$)</label>
+        <input class="input" id="withdraw-min" inputmode="decimal" value="${(c.withdraw_min_cents / 100).toFixed(2).replace('.', ',')}">
+      </div>
       <div class="field">
         <label>Quando cobrar o passageiro</label>
         <select class="input" id="charge-timing">
@@ -641,7 +693,12 @@ async function secPayments() {
     const credentials = {};
     $$('[data-cred]').forEach(i => { if (i.value.trim()) credentials[i.dataset.cred] = i.value.trim(); });
     await api('/api/admin/payment-config', {
-      method: 'PUT', body: { credentials, charge_timing: $('#charge-timing').value },
+      method: 'PUT',
+      body: {
+        credentials, charge_timing: $('#charge-timing').value,
+        cash_enabled: $('#cash-enabled').value === '1',
+        withdraw_min_cents: Math.round(parseFloat($('#withdraw-min').value.replace(/\./g, '').replace(',', '.')) * 100),
+      },
     });
     secPayments();
   }, { okMsg: 'Credenciais salvas (cifradas).' }).catch(() => { });

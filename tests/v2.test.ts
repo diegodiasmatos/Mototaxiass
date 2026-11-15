@@ -79,6 +79,8 @@ before(async () => {
   const s = await start({ port: 0, quiet: true, dbPath: path.join(process.env.DATA_DIR!, 'v2.db') });
   base = `http://127.0.0.1:${s.port}`;
   close = s.close;
+  // os testes de corrida em dinheiro precisam da forma ligada (o padrão é só pelo app)
+  setSetting('cash_enabled', '1');
 
   await pax.req('POST', '/api/auth/register', {
     role: 'passenger', name: 'Ana Passageira', phone: '(44) 90000-1111',
@@ -1588,4 +1590,150 @@ test('número de casa: sem chave do Google, o Mapbox responde; "forçar OSM" des
       assert.equal(calls.google.length + calls.mapbox.length, 0);
     });
   } finally { await cleanNumberTests(); }
+});
+
+// ================= carteira do motorista e pagamento só pelo app =================
+
+test('pagamento só pelo app: dinheiro vem desligado e a corrida em dinheiro é recusada', async () => {
+  // padrão de instalação nova (os testes religam o dinheiro no início para os cenários antigos)
+  assert.equal((await import('../server/db.ts')).DEFAULT_SETTINGS.cash_enabled, '0');
+  const liga = (on: boolean) => adm.req('PUT', '/api/admin/payment-config', { cash_enabled: on });
+  try {
+    assert.equal((await liga(false)).status, 200);
+    const cfg = await adm.req('GET', '/api/admin/payment-config');
+    assert.equal(cfg.data.cash_enabled, false);
+
+    const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+    const dinheiro = q.data.payment_methods.find((m: any) => m.method === 'dinheiro');
+    assert.equal(dinheiro.enabled, false);
+    assert.equal(q.data.payment_methods.find((m: any) => m.method === 'pix').enabled, true);
+
+    // forçar a forma desligada pela API não passa
+    const quote = q.data.quotes.find((x: any) => x.category === 'economica');
+    const c = await pax.req('POST', '/api/rides', { quote_id: quote.id, payment_method: 'dinheiro' });
+    assert.ok(c.status >= 400 && c.status < 500, `status ${c.status}`);
+    assert.equal((await pax.req('GET', '/api/rides/active')).data.ride, null);
+
+    // passageiro e motorista não mudam essa regra
+    assert.equal((await drv.req('PUT', '/api/admin/payment-config', { cash_enabled: true })).status, 403);
+    assert.equal((await pax.req('PUT', '/api/admin/payment-config', { cash_enabled: true })).status, 403);
+  } finally {
+    await liga(true);
+  }
+});
+
+test('carteira: a corrida paga no app entra líquida, com a taxa já descontada', async () => {
+  const antes = (await drv.req('GET', '/api/driver/wallet')).data.balance;
+  const rid = await newRide('pix');
+  await driveToCompletion(rid);
+  // enquanto o passageiro não confirma, nada entra na carteira
+  assert.equal((await drv.req('GET', '/api/driver/wallet')).data.balance.available_cents, antes.available_cents);
+  await pax.req('POST', `/api/rides/${rid}/confirm`);
+
+  const ride = (await adm.req('GET', `/api/admin/rides/${rid}`)).data.ride;
+  const w = (await drv.req('GET', '/api/driver/wallet')).data;
+  assert.equal(ride.commission_cents + ride.driver_cents, ride.price_cents);
+  assert.equal(ride.commission_cents, Math.round(ride.price_cents * 0.15));
+  // entrou exatamente o líquido: preço menos a taxa de 15%
+  assert.equal(w.balance.pending_cents - antes.pending_cents, ride.driver_cents);
+  assert.equal(w.commission_pct, 15);
+
+  // o extrato mostra a corrida, a taxa e o líquido
+  const linha = w.statement[0];
+  assert.equal(linha.kind, 'repasse_devido');
+  assert.equal(linha.amount_cents, ride.driver_cents);
+  assert.equal(linha.price_cents, ride.price_cents);
+  assert.equal(linha.commission_cents, ride.commission_cents);
+});
+
+test('carteira: pedido de saque, regras e pagamento pela central', async () => {
+  const wallet = async () => (await drv.req('GET', '/api/driver/wallet')).data;
+  const saque = (amount_cents: unknown, pix_key: unknown = 'beto@pix.test') =>
+    drv.req('POST', '/api/driver/withdrawals', { amount_cents, pix_key });
+  // garante saldo: uma corrida paga no app, concluída e confirmada
+  const rid = await newRide('pix');
+  await driveToCompletion(rid);
+  await pax.req('POST', `/api/rides/${rid}/confirm`);
+  // quita qualquer taxa pendente de corridas em dinheiro dos testes anteriores
+  const d0 = (await wallet()).balance.debt_cents;
+  if (d0 > 0) await adm.req('POST', `/api/admin/drivers/${driverId}/settle-debt`, { amount_cents: d0 });
+
+  const w0 = await wallet();
+  const disp = w0.balance.available_cents;
+  assert.ok(disp >= 100, `saldo ${disp}`);
+  assert.equal(disp, w0.balance.pending_cents);     // nada reservado, nada devido
+
+  await adm.req('PUT', '/api/admin/payment-config', { withdraw_min_cents: 300 });
+  try {
+    // regras do pedido
+    assert.equal((await saque(disp + 1)).status, 400);                 // acima do saldo
+    assert.equal((await saque(200)).status, 400);                      // abaixo do mínimo
+    assert.equal((await saque(-500)).status, 400);
+    assert.equal((await saque(350.5)).status, 400);                    // centavos quebrados
+    assert.equal((await saque(disp, '')).status, 400);                 // sem chave Pix
+    assert.equal((await pax.req('POST', '/api/driver/withdrawals', { amount_cents: 300, pix_key: 'x@y.z' })).status, 403);
+    assert.equal((await wallet()).withdrawals.filter((x: any) => x.status === 'pendente').length, 0);
+
+    // pedido válido: o valor fica reservado, mas ainda não saiu do saldo devido
+    const parte = disp - 100;
+    const pedido = await saque(parte);
+    assert.equal(pedido.status, 201, JSON.stringify(pedido.data));
+    let w = await wallet();
+    assert.equal(w.balance.reserved_cents, parte);
+    assert.equal(w.balance.available_cents, 100);
+    assert.equal(w.balance.pending_cents, disp);
+    assert.equal(w.pix_key, 'beto@pix.test');                          // chave fica salva para o próximo
+    assert.equal(w.withdrawals[0].status, 'pendente');
+
+    // um saque por vez; e o reservado não pode ser repassado de novo pela central
+    assert.equal((await saque(100)).status, 409);
+    assert.equal((await adm.req('POST', '/api/admin/payouts',
+      { driver_id: driverId, amount_cents: disp })).status, 400);
+
+    // só a central paga ou recusa
+    const pid = pedido.data.id;
+    assert.equal((await drv.req('POST', `/api/admin/payouts/${pid}/pay`, {})).status, 403);
+    assert.equal((await pax.req('POST', `/api/admin/payouts/${pid}/reject`, { reason: 'x' })).status, 403);
+
+    // o motorista desiste: o valor volta
+    assert.equal((await drv.req('POST', `/api/driver/withdrawals/${pid}/cancel`)).status, 200);
+    w = await wallet();
+    assert.equal(w.balance.available_cents, disp);
+    assert.equal(w.withdrawals[0].status, 'falhou');
+    assert.equal((await adm.req('POST', `/api/admin/payouts/${pid}/pay`, {})).status, 409);   // já processado
+
+    // novo pedido, recusado pela central com motivo: o valor volta
+    const p2 = (await saque(disp)).data.id;
+    assert.equal((await adm.req('POST', `/api/admin/payouts/${p2}/reject`, {})).status, 400);  // motivo obrigatório
+    assert.equal((await adm.req('POST', `/api/admin/payouts/${p2}/reject`, { reason: 'Chave Pix inválida.' })).status, 200);
+    w = await wallet();
+    assert.equal(w.balance.available_cents, disp);
+    assert.equal(w.withdrawals[0].reject_reason, 'Chave Pix inválida.');
+
+    // novo pedido, pago pela central: sai do saldo e entra no livro-caixa uma única vez
+    const p3 = (await saque(disp)).data.id;
+    const lista = await adm.req('GET', '/api/admin/payouts');
+    const naFila = lista.data.payouts.find((x: any) => x.id === p3);
+    assert.equal(naFila.status, 'pendente');
+    assert.equal(naFila.pix_key, 'beto@pix.test');
+    const pago = await adm.req('POST', `/api/admin/payouts/${p3}/pay`, { reference: 'E123' });
+    assert.equal(pago.status, 200, JSON.stringify(pago.data));
+    assert.equal((await adm.req('POST', `/api/admin/payouts/${p3}/pay`, {})).status, 409);    // não paga duas vezes
+    w = await wallet();
+    assert.equal(w.balance.available_cents, 0);
+    assert.equal(w.balance.reserved_cents, 0);
+    assert.equal(w.balance.paid_cents - w0.balance.paid_cents, disp);
+    assert.equal(w.withdrawals[0].status, 'pago');
+    assert.equal(w.statement[0].kind, 'repasse_pago');
+    assert.equal(w.statement[0].amount_cents, disp);
+    const lanc = db.prepare(`SELECT COUNT(*) c FROM financial_transactions
+      WHERE driver_id = ? AND kind = 'repasse_pago' AND amount_cents = ? AND description LIKE '%E123%'`)
+      .get(driverId, disp) as any;
+    assert.equal(lanc.c, 1);
+
+    // sem saldo, não há o que sacar
+    assert.equal((await saque(300)).status, 400);
+  } finally {
+    await adm.req('PUT', '/api/admin/payment-config', { withdraw_min_cents: 1000 });
+  }
 });

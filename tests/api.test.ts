@@ -64,6 +64,8 @@ before(async () => {
   const s = await start({ port: 0, quiet: true, dbPath: path.join(process.env.DATA_DIR!, 'test.db') });
   base = `http://127.0.0.1:${s.port}`;
   close = s.close;
+  // os testes de corrida em dinheiro precisam da forma ligada (o padrão é só pelo app)
+  (await import('../server/db.ts')).setSetting('cash_enabled', '1');
 });
 after(async () => { await close(); });
 
