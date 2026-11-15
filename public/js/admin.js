@@ -413,7 +413,7 @@ async function secFinance() {
       <div class="fin-card out"><div class="fv">${fmt.money(t.repasse_devido)}</div><div class="fl">Repasses devidos</div></div>
       <div class="fin-card out"><div class="fv">${fmt.money(t.repasse_pago)}</div><div class="fl">Repasses pagos</div></div>
       <div class="fin-card warn"><div class="fv">${fmt.money(t.repasse_devido - t.repasse_pago)}</div><div class="fl">A repassar</div></div>
-      <div class="fin-card warn"><div class="fv">${fmt.money(t.divida_motoboys)}</div><div class="fl">Comissão a receber (dinheiro)</div></div>
+      <div class="fin-card warn"><div class="fv">${fmt.money(t.divida_motoboys)}</div><div class="fl">Taxa a receber (corridas em dinheiro)</div></div>
       <div class="fin-card bad"><div class="fv">${fmt.money(t.estornos)}</div><div class="fl">Estornos</div></div>
       <div class="fin-card"><div class="fv">${fmt.money(t.taxas_provedor)}</div><div class="fl">Taxas do provedor</div></div>
     </div>
@@ -631,11 +631,11 @@ async function secPayments() {
       <div class="field">
         <label>Dinheiro em mãos</label>
         <select class="input" id="cash-enabled">
-          <option value="0" ${c.cash_enabled ? '' : 'selected'}>Desligado — pagamento só pelo aplicativo (Pix e cartão)</option>
           <option value="1" ${c.cash_enabled ? 'selected' : ''}>Aceitar dinheiro pago direto ao motorista</option>
+          <option value="0" ${c.cash_enabled ? '' : 'selected'}>Desligado — pagamento só pelo aplicativo (Pix e cartão)</option>
         </select>
-        <p class="muted small" style="margin-top:4px">Desligado, toda corrida é paga pelo app antes de
-          começar e a taxa da plataforma é descontada sozinha.</p>
+        <p class="muted small" style="margin-top:4px">Na corrida em dinheiro o motorista recebe em mãos e a
+          taxa é descontada sozinha da carteira dele, ou da próxima corrida paga pelo app.</p>
       </div>
       <div class="field">
         <label>Saque mínimo do motorista (R$)</label>

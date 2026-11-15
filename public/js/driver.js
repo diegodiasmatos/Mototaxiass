@@ -547,7 +547,8 @@ function renderDrive() {
       ? `<p class="muted small mt">✅ <b>Já pago pela plataforma</b> — não cobre nada do passageiro.
          ${fmt.money(r.driver_cents)} entram no seu saldo após a confirmação.</p>`
       : `<p class="muted small mt">💵 <b>Receba ${fmt.money(r.collect_cash_cents)} em dinheiro</b> do passageiro.
-         A comissão de ${fmt.money(r.commission_cents)} fica registrada como sua dívida com a plataforma.</p>`}
+         A taxa de ${fmt.money(r.commission_cents)} será <b>descontada da sua carteira</b> ou, se não
+         houver saldo, <b>da próxima corrida paga pelo app</b>.</p>`}
     <p class="muted small">Valor da corrida: ${fmt.money(r.price_cents)} · Taxa da plataforma: ${fmt.money(r.commission_cents)}</p>`;
 
   const navTarget = toPassenger ? r.origin : r.dest;
@@ -611,7 +612,8 @@ async function completeFlow() {
          Você recebe <b style="font-size:1.15rem;color:var(--green)">${fmt.money(r.driver_cents)}</b>.</p>`
       : `<p class="muted mb">Receba <b style="font-size:1.2rem">${fmt.money(r.collect_cash_cents)}</b>
          em dinheiro do passageiro.<br>
-         A comissão de ${fmt.money(r.commission_cents)} fica registrada como sua dívida.</p>`}
+         A taxa de ${fmt.money(r.commission_cents)} será descontada da sua carteira ou da
+         próxima corrida paga pelo app.</p>`}
     <p class="muted small mb">O passageiro vai confirmar a chegada. Sem resposta dele,
     confirmamos automaticamente em poucos segundos.</p>
     <button class="btn btn-green btn-lg" data-ok>Declarar conclusão ✓</button>
@@ -713,8 +715,8 @@ const WALLET_KIND = {
   repasse_devido: { sign: '+', cls: 'in', title: 'Corrida concluída' },
   repasse_pago: { sign: '−', cls: 'out', title: 'Saque via Pix' },
   repasse_automatico: { sign: '', cls: 'info', title: 'Recebido direto na sua conta' },
-  divida_comissao: { sign: '−', cls: 'out', title: 'Taxa de corrida paga em dinheiro' },
-  quitacao_divida: { sign: '+', cls: 'in', title: 'Taxa quitada' },
+  divida_comissao: { sign: '', cls: 'info', title: 'Taxa da corrida em dinheiro (a descontar)' },
+  quitacao_divida: { sign: '', cls: 'info', title: 'Taxa quitada com a plataforma' },
 };
 const WITHDRAW_PILL = { pendente: ['yellow', 'em análise'], pago: ['green', 'pago'], falhou: ['red', 'não realizado'] };
 
@@ -736,7 +738,8 @@ async function loadWallet() {
       <div class="wallet-hero">
         <div class="wl-label">Disponível para saque</div>
         <div class="wl-value" id="wallet-available">${fmt.money(b.available_cents)}</div>
-        <div class="wl-sub">A taxa da plataforma (${String(w.commission_pct).replace('.', ',')}%) já sai descontada de cada corrida.</div>
+        <div class="wl-sub">A taxa da plataforma (${String(w.commission_pct).replace('.', ',')}%) já sai descontada de cada corrida.
+          Nas corridas em dinheiro, ela é descontada daqui ou da próxima corrida.</div>
         <button class="btn btn-primary mt" id="btn-withdraw" ${canWithdraw ? '' : 'disabled'}>Sacar via Pix</button>
         ${whyNot ? `<div class="wl-sub mt">${whyNot}</div>` : ''}
       </div>
@@ -751,17 +754,21 @@ async function loadWallet() {
         ${fmt.money(S.debtLimit)} — novas corridas ficam bloqueadas até quitar.</div>` : ''}
       <div class="fin-grid mb">
         <div class="fin-card warn"><div class="fv">${fmt.money(b.reserved_cents)}</div><div class="fl">Em saque</div></div>
-        <div class="fin-card out"><div class="fv">${fmt.money(b.paid_cents)}</div><div class="fl">Já sacado</div></div>
+        <div class="fin-card out"><div class="fv">${fmt.money(w.withdrawn_cents)}</div><div class="fl">Já sacado</div></div>
         ${b.debt_cents > 0 ? `<div class="fin-card ${debtWarn ? 'bad' : 'warn'}"><div class="fv">${fmt.money(b.debt_cents)}</div>
-          <div class="fl">Taxa a pagar (corridas em dinheiro)</div></div>` : ''}
+          <div class="fl">Taxa de corridas em dinheiro a descontar</div></div>` : ''}
       </div>
+      ${b.debt_cents > 0 && !debtWarn ? `<p class="muted small mb">💵 Essa taxa sai sozinha da
+        próxima corrida paga pelo app (Pix ou cartão).</p>` : ''}
       <div class="card">
         <h2>Extrato</h2>
         ${w.statement.length ? w.statement.map(t => {
-      const k = WALLET_KIND[t.kind] || { sign: '', cls: 'info', title: t.kind };
+      const k = t.fee_discount
+        ? { sign: '−', cls: 'out', title: 'Taxa de corrida em dinheiro descontada' }
+        : (WALLET_KIND[t.kind] || { sign: '', cls: 'info', title: t.kind });
       const detail = t.kind === 'repasse_devido' && t.price_cents != null
         ? `Corrida ${fmt.money(t.price_cents)} − taxa ${fmt.money(t.commission_cents)}${t.dest_text ? ` · ${escapeHtml(t.dest_text)}` : ''}`
-        : escapeHtml(t.description || '');
+        : t.fee_discount ? '' : escapeHtml(t.description || '');
       return `<div class="list-item">
             <div class="li-main"><div class="li-title">${k.title}</div>
               <div class="li-sub">${fmt.dt(t.created_at)}${detail ? ` · ${detail}` : ''}</div></div>
@@ -829,7 +836,7 @@ async function loadMpConnect() {
         <div class="list-item"><span style="font-size:1.2rem">💵</span>
           <div class="li-main"><div class="li-title">Você recebe por repasse da plataforma</div>
             <div class="li-sub">Pix e cartão são recebidos pela plataforma e repassados a você;
-            corridas em dinheiro você recebe na hora e a comissão fica registrada.</div></div></div>
+            corridas em dinheiro você recebe na hora e a taxa é descontada da sua carteira.</div></div></div>
         <p class="muted small mt">O recebimento direto na sua conta ainda não foi liberado pela administração.</p>`;
       return;
     }

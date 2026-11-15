@@ -66,26 +66,32 @@ O que ainda **não existe** e por isso aparece só como "em breve": a área
 Empresa (lojas, cardápio, pedidos), a Vitrine de Lojas e o Carrinho no app do
 passageiro, e a Central de Segurança/SOS.
 
-## Pagamento só pelo app e carteira do motorista
+## Pagamentos e carteira do motorista
 
-- **Pagamento só pelo aplicativo**: o dinheiro em mãos vem **desligado**. A
-  corrida é paga por Pix ou cartão antes de o motorista ser chamado, e o valor
-  é estornado se ela for cancelada. A central pode religar o dinheiro em
-  💳 Pagamentos → "Dinheiro em mãos".
+- **Pix e cartão (pelo app)**: a corrida é paga antes de o motorista ser
+  chamado, e o valor é estornado se ela for cancelada.
+- **Dinheiro em mãos**: continua aceito. O motorista recebe o valor inteiro do
+  passageiro e a **taxa da plataforma é descontada sozinha**: da carteira, se
+  houver saldo, ou da próxima corrida paga pelo app. Ele é avisado disso na
+  oferta, na tela da corrida e na notificação de conclusão. Enquanto a taxa
+  pendente passar do limite configurado, ele deixa de receber corridas. A
+  central pode desligar o dinheiro em 💳 Pagamentos → "Dinheiro em mãos".
 - **Taxa automática**: ao concluir cada corrida, o livro-caixa separa a taxa
   da plataforma e credita o **líquido** na carteira do motorista.
 - **Carteira** (app do motorista → aba Carteira): saldo disponível, extrato
-  (corrida, taxa e líquido de cada uma) e saques.
+  (corrida, taxa e líquido de cada uma, descontos de taxa) e saques.
 - **Saque via Pix**: o motorista informa o valor e a chave Pix. O valor fica
   reservado; a central faz o Pix e clica em **Paguei** (💰 Financeiro → Saques
   solicitados), e só então ele sai do saldo. A central também pode recusar, e
   o motorista pode cancelar um pedido ainda não pago. Um saque por vez; o
-  saque mínimo é configurável (padrão R$ 10,00).
+  saque mínimo é configurável (padrão R$ 10,00). Valor reservado num saque
+  não é usado para pagar taxa.
 
 O Pix do saque é feito **manualmente** pela central (pelo banco ou pelo
 Mercado Pago); o sistema controla o saldo e o registro, não transfere sozinho.
-Com o Mercado Pago ainda em modo de teste e o dinheiro desligado, **não há
-cobrança real**: a tela de Pagamentos da central avisa isso.
+No livro-caixa, o desconto da taxa são dois lançamentos de mesmo valor
+(`quitacao_divida` e `repasse_pago`) com a descrição "Taxa de corrida em
+dinheiro descontada da carteira".
 
 ## Arquitetura
 
@@ -299,8 +305,8 @@ data/            banco, segredo de sessão e uploads privados (criado em runtime
 
 ## Testes da V2 (executados de verdade)
 
-`npm test` roda **70 testes**. Resultado da última execução:
-**70/70 aprovados**. Cobrem, entre outros:
+`npm test` roda **71 testes**. Resultado da última execução:
+**71/71 aprovados**. Cobrem, entre outros:
 
 - **Credenciais**: salvas cifradas (o `.db` não revela o segredo), devolvidas
   mascaradas, valor mascarado reenviado não corrompe o que está salvo, URL

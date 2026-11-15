@@ -10,7 +10,7 @@ import {
 import { notify, notifyAdmins, sseSend, sseSendMany } from './notify.ts';
 import {
   createCharge, getPaymentByRide, capturePayment, refundPayment, syncPayment,
-  isReleasable, availableMethods, isTestMode, providerName, ledger, driverBalance,
+  isReleasable, availableMethods, isTestMode, providerName, ledger, driverBalance, settleDebtFromWallet,
   applyPaymentStatus, splitAvailable, connectedSeller, type Method,
 } from './payments.ts';
 
@@ -336,6 +336,13 @@ export async function finalizeRide(rideId: string, by: string): Promise<void> {
     });
   }
 
+  // Taxa de corrida em dinheiro: sai da carteira agora, se houver saldo; o
+  // que faltar é descontado quando entrar a próxima corrida paga pelo app.
+  const before = driverBalance(r.driver_id).debt_cents;
+  const discounted = payment?.seller_driver_id ? 0 : settleDebtFromWallet(r.driver_id, rideId, test);
+  const stillOwed = Math.max(0, before - discounted);
+  const brl = (c: number) => `R$ ${(c / 100).toFixed(2)}`;
+
   notify(r.passenger_id, 'ride_completed', 'Corrida concluída!',
     { body: 'Obrigado por viajar com a VAIRO. Avalie seu motorista!', rideId });
   notify(r.driver_id, 'ride_completed', 'Corrida concluída',
@@ -343,8 +350,13 @@ export async function finalizeRide(rideId: string, by: string): Promise<void> {
       body: payment?.seller_driver_id
         ? `R$ ${(split.driver_cents / 100).toFixed(2)} caíram direto na sua conta Mercado Pago.`
         : r.payment_method === 'dinheiro'
-          ? `Receba R$ ${(r.price_cents / 100).toFixed(2)} em dinheiro. Comissão de R$ ${(split.commission_cents / 100).toFixed(2)} fica registrada.`
-          : `R$ ${(split.driver_cents / 100).toFixed(2)} entram no seu saldo a receber.`,
+          ? `Receba ${brl(r.price_cents)} em dinheiro. ` + (stillOwed <= 0
+            ? `A taxa de ${brl(split.commission_cents)} já foi descontada da sua carteira.`
+            : discounted > 0
+              ? `Da taxa, ${brl(discounted)} saíram da sua carteira; ${brl(stillOwed)} serão descontados da próxima corrida paga pelo app.`
+              : `A taxa de ${brl(split.commission_cents)} será descontada da próxima corrida paga pelo app.`)
+          : `${brl(split.driver_cents)} entraram na sua carteira.` + (discounted > 0
+            ? ` Descontamos ${brl(discounted)} de taxa de corridas em dinheiro.` : ''),
       rideId,
     });
   sseSend(r.passenger_id, 'ride_update', { id: rideId });

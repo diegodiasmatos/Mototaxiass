@@ -103,7 +103,7 @@ export function availableMethods(): { method: Method; label: string; enabled: bo
     },
     {
       method: 'dinheiro', label: 'Dinheiro', enabled: getSetting('cash_enabled') === '1',
-      note: 'pago direto ao motorista, fora do aplicativo',
+      note: 'pago direto ao motorista',
     },
   ];
 }
@@ -186,10 +186,35 @@ export function driverBalance(driverId: string): DriverBalance {
     pending_cents: earned - paid, debt_cents: debt,
     auto_cents: sum('repasse_automatico'),
     reserved_cents: reserved,
-    // saldo livre: o que a plataforma deve, menos o que ele deve de comissão
+    // saldo livre: o que a plataforma deve, menos o que ele deve de taxa
     // e menos o que já está separado em saques pedidos
     available_cents: Math.max(0, earned - paid - Math.max(0, debt) - reserved),
   };
+}
+
+/**
+ * Desconta da carteira a taxa devida pelas corridas em dinheiro.
+ *
+ * Na corrida em dinheiro o motorista recebe o valor inteiro em mãos e fica
+ * devendo a taxa da plataforma. Sempre que há saldo livre na carteira (ou
+ * quando entra o valor da próxima corrida paga pelo app), a taxa é abatida
+ * sozinha. O que já está reservado num saque pedido não é tocado.
+ *
+ * No livro-caixa o desconto são dois lançamentos de mesmo valor: a taxa é
+ * dada como quitada e o valor sai do saldo a repassar. Ambos levam a
+ * descrição `FEE_DISCOUNT_DESC`, que é como o extrato os reconhece.
+ * Devolve quanto foi descontado agora.
+ */
+export const FEE_DISCOUNT_DESC = 'Taxa de corrida em dinheiro descontada da carteira';
+
+export function settleDebtFromWallet(driverId: string, rideId?: string, testMode = false): number {
+  const bal = driverBalance(driverId);
+  const free = bal.pending_cents - bal.reserved_cents;
+  const amount = Math.min(bal.debt_cents, free);
+  if (amount <= 0) return 0;
+  ledger('quitacao_divida', amount, { driverId, rideId, testMode, description: FEE_DISCOUNT_DESC });
+  ledger('repasse_pago', amount, { driverId, rideId, testMode, description: FEE_DISCOUNT_DESC });
+  return amount;
 }
 
 // ---------------------------------------------------------------

@@ -79,8 +79,6 @@ before(async () => {
   const s = await start({ port: 0, quiet: true, dbPath: path.join(process.env.DATA_DIR!, 'v2.db') });
   base = `http://127.0.0.1:${s.port}`;
   close = s.close;
-  // os testes de corrida em dinheiro precisam da forma ligada (o padrão é só pelo app)
-  setSetting('cash_enabled', '1');
 
   await pax.req('POST', '/api/auth/register', {
     role: 'passenger', name: 'Ana Passageira', phone: '(44) 90000-1111',
@@ -1594,9 +1592,9 @@ test('número de casa: sem chave do Google, o Mapbox responde; "forçar OSM" des
 
 // ================= carteira do motorista e pagamento só pelo app =================
 
-test('pagamento só pelo app: dinheiro vem desligado e a corrida em dinheiro é recusada', async () => {
-  // padrão de instalação nova (os testes religam o dinheiro no início para os cenários antigos)
-  assert.equal((await import('../server/db.ts')).DEFAULT_SETTINGS.cash_enabled, '0');
+test('dinheiro: aceito por padrão; a central pode desligar e aí a corrida em dinheiro é recusada', async () => {
+  assert.equal((await import('../server/db.ts')).DEFAULT_SETTINGS.cash_enabled, '1');
+  assert.equal((await adm.req('GET', '/api/admin/payment-config')).data.cash_enabled, true);
   const liga = (on: boolean) => adm.req('PUT', '/api/admin/payment-config', { cash_enabled: on });
   try {
     assert.equal((await liga(false)).status, 200);
@@ -1735,5 +1733,86 @@ test('carteira: pedido de saque, regras e pagamento pela central', async () => {
     assert.equal((await saque(300)).status, 400);
   } finally {
     await adm.req('PUT', '/api/admin/payment-config', { withdraw_min_cents: 1000 });
+  }
+});
+
+test('corrida em dinheiro: a taxa sai da carteira ou da próxima corrida paga pelo app', async () => {
+  const bal = async () => (await drv.req('GET', '/api/driver/wallet')).data.balance;
+  const corrida = async (method: 'pix' | 'dinheiro') => {
+    const rid = await newRide(method);
+    await driveToCompletion(rid);
+    await pax.req('POST', `/api/rides/${rid}/confirm`);
+    return (await adm.req('GET', `/api/admin/rides/${rid}`)).data.ride;
+  };
+  const ultimoAviso = async () => (await drv.req('GET', '/api/notifications')).data.notifications
+    .find((n: any) => n.title === 'Corrida concluída').body as string;
+
+  // ponto de partida limpo: sem taxa pendente e sem saldo (saca tudo pela central)
+  let b = await bal();
+  if (b.debt_cents > 0) await adm.req('POST', `/api/admin/drivers/${driverId}/settle-debt`, { amount_cents: b.debt_cents });
+  b = await bal();
+  if (b.pending_cents > 0) await adm.req('POST', '/api/admin/payouts', { driver_id: driverId, amount_cents: b.pending_cents });
+  b = await bal();
+  assert.equal(b.pending_cents, 0);
+  assert.equal(b.debt_cents, 0);
+
+  // 1) carteira vazia + corrida em dinheiro: a taxa fica a descontar, e o motorista é avisado
+  const d1 = await corrida('dinheiro');
+  b = await bal();
+  assert.equal(b.debt_cents, d1.commission_cents);
+  assert.equal(b.available_cents, 0);
+  assert.match(await ultimoAviso(), /será descontada da próxima corrida paga pelo app/);
+
+  // 2) próxima corrida paga pelo app: entra o líquido e a taxa pendente sai sozinha
+  const p1 = await corrida('pix');
+  assert.ok(p1.driver_cents > d1.commission_cents);
+  b = await bal();
+  assert.equal(b.debt_cents, 0);
+  assert.equal(b.pending_cents, p1.driver_cents - d1.commission_cents);
+  assert.equal(b.available_cents, p1.driver_cents - d1.commission_cents);
+  assert.match(await ultimoAviso(), /Descontamos R\$ .* de taxa de corridas em dinheiro/);
+
+  // 3) com saldo na carteira, a taxa da corrida em dinheiro sai na hora
+  const saldo = b.pending_cents;
+  const d2 = await corrida('dinheiro');
+  assert.ok(saldo > d2.commission_cents);
+  b = await bal();
+  assert.equal(b.debt_cents, 0);
+  assert.equal(b.pending_cents, saldo - d2.commission_cents);
+  assert.match(await ultimoAviso(), /já foi descontada da sua carteira/);
+
+  // extrato: a taxa aparece como desconto, e "já sacado" não conta taxa
+  const w = (await drv.req('GET', '/api/driver/wallet')).data;
+  const desconto = w.statement.find((t: any) => t.fee_discount);
+  assert.equal(desconto.amount_cents, d2.commission_cents);
+  // o lançamento gêmeo (quitação da taxa) não aparece duplicado no extrato
+  assert.equal(w.statement.filter((t: any) =>
+    t.kind === 'quitacao_divida' && /descontada da carteira/.test(t.description || '')).length, 0);
+  const sacado = (db.prepare(`SELECT COALESCE(SUM(amount_cents),0) v FROM payouts
+    WHERE driver_id = ? AND status = 'pago'`).get(driverId) as any).v;
+  assert.equal(w.withdrawn_cents, sacado);
+
+  // 4) valor já reservado num saque não é usado para pagar taxa
+  await adm.req('PUT', '/api/admin/payment-config', { withdraw_min_cents: 100 });
+  try {
+    const reservado = b.pending_cents;
+    const pedido = await drv.req('POST', '/api/driver/withdrawals', { amount_cents: reservado, pix_key: 'beto@pix.test' });
+    assert.equal(pedido.status, 201, JSON.stringify(pedido.data));
+    const d3 = await corrida('dinheiro');
+    b = await bal();
+    assert.equal(b.reserved_cents, reservado);
+    assert.equal(b.pending_cents, reservado);                 // o saque pedido continua inteiro
+    assert.equal(b.debt_cents, d3.commission_cents);          // a taxa espera a próxima corrida
+    assert.equal((await adm.req('POST', `/api/admin/payouts/${pedido.data.id}/pay`, {})).status, 200);
+
+    // a central enxerga o mesmo: nada a repassar, só a taxa a receber
+    const fin = (await adm.req('GET', '/api/admin/finance')).data.totals;
+    const fimBal = await bal();
+    assert.equal(fin.repasse_devido - fin.repasse_pago, fimBal.pending_cents);
+    assert.equal(fin.divida_motoboys, fimBal.debt_cents);
+  } finally {
+    await adm.req('PUT', '/api/admin/payment-config', { withdraw_min_cents: 1000 });
+    const fim = await bal();
+    if (fim.debt_cents > 0) await adm.req('POST', `/api/admin/drivers/${driverId}/settle-debt`, { amount_cents: fim.debt_cents });
   }
 });

@@ -11,7 +11,7 @@ import {
   rideViewForPassenger, BUSY_STATES, chargeAcceptedRide, ridePaymentOk, chargeAfterAccept,
 } from './rides.ts';
 import { notify, notifyAdmins, sseSend } from './notify.ts';
-import { driverBalance, getPaymentByRide } from './payments.ts';
+import { driverBalance, getPaymentByRide, FEE_DISCOUNT_DESC } from './payments.ts';
 
 // ---------------- armazenamento privado de documentos ----------------
 
@@ -408,17 +408,25 @@ export const driverRoutes: Route[] = [
    */
   route('GET /api/driver/wallet', 'driver', ({ res, user }) => {
     const d = db.prepare('SELECT status, pix_key FROM drivers WHERE user_id = ?').get(user!.id) as any;
-    const statement = db.prepare(`SELECT t.id, t.kind, t.amount_cents, t.description, t.created_at,
+    // o desconto da taxa são dois lançamentos gêmeos: o extrato mostra só a
+    // saída do saldo, marcada como `fee_discount`
+    const statement = (db.prepare(`SELECT t.id, t.kind, t.amount_cents, t.description, t.created_at,
         t.test_mode, r.price_cents, r.commission_cents, r.origin_text, r.dest_text, r.payment_method
       FROM financial_transactions t LEFT JOIN rides r ON r.id = t.ride_id
       WHERE t.driver_id = ? AND t.kind IN
         ('repasse_devido','repasse_pago','repasse_automatico','divida_comissao','quitacao_divida')
-      ORDER BY t.created_at DESC, t.rowid DESC LIMIT 60`).all(user!.id);
+        AND NOT (t.kind = 'quitacao_divida' AND IFNULL(t.description,'') = ?)
+      ORDER BY t.created_at DESC, t.rowid DESC LIMIT 60`).all(user!.id, FEE_DISCOUNT_DESC) as any[])
+      .map(t => ({ ...t, fee_discount: t.kind === 'repasse_pago' && t.description === FEE_DISCOUNT_DESC }));
     const withdrawals = db.prepare(`SELECT id, amount_cents, status, pix_key, reference,
         reject_reason, requested_by_driver, created_at, paid_at
       FROM payouts WHERE driver_id = ? ORDER BY created_at DESC LIMIT 30`).all(user!.id);
+    // "já sacado" são os saques pagos de verdade (não inclui taxa descontada)
+    const withdrawn = (db.prepare(`SELECT COALESCE(SUM(amount_cents),0) v FROM payouts
+      WHERE driver_id = ? AND status = 'pago'`).get(user!.id) as any).v as number;
     json(res, 200, {
       balance: driverBalance(user!.id),
+      withdrawn_cents: withdrawn,
       commission_pct: getSettingNum('commission_pct'),
       min_withdraw_cents: getSettingNum('withdraw_min_cents'),
       pix_key: d?.pix_key || null,
@@ -430,7 +438,7 @@ export const driverRoutes: Route[] = [
 
   /** Pede o saque do saldo para uma chave Pix. A central paga e confirma. */
   route('POST /api/driver/withdrawals', 'driver', async ({ req, res, user, ip }) => {
-    if (!rateLimit(`saque:${ip}`, 10, 10 * 60_000)) throw new ApiError(429, 'Aguarde um instante.');
+    if (!rateLimit(`saque:${ip}`, 30, 10 * 60_000)) throw new ApiError(429, 'Aguarde um instante.');
     requireApprovedDriver(user!.id);
     const b = await readBody(req);
     const pixKey = reqStr(b.pix_key, 'chave Pix', 140);
