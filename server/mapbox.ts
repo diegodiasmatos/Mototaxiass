@@ -83,7 +83,7 @@ function cacheKey(kind: string, parts: unknown): string {
   return `${kind}:${crypto.createHash('sha1').update(JSON.stringify(parts)).digest('hex')}`;
 }
 
-function cacheGet<T>(kind: string, parts: unknown): T | null {
+export function cacheGet<T>(kind: string, parts: unknown): T | null {
   const key = cacheKey(kind, parts);
   const row = db.prepare('SELECT payload, expires_at FROM geo_cache WHERE key = ?').get(key) as any;
   if (!row) return null;
@@ -95,7 +95,7 @@ function cacheGet<T>(kind: string, parts: unknown): T | null {
   try { return JSON.parse(row.payload) as T; } catch { return null; }
 }
 
-function cacheSet(kind: string, parts: unknown, value: unknown, ttlMs: number): void {
+export function cacheSet(kind: string, parts: unknown, value: unknown, ttlMs: number): void {
   if (ttlMs <= 0) return;
   db.prepare(`INSERT INTO geo_cache (key, kind, payload, created_at, expires_at)
     VALUES (?,?,?,?,?)
@@ -227,6 +227,45 @@ export async function mapboxSearch(input: string): Promise<MapboxPlace[] | null>
   return (data?.features ?? [])
     .map(featureToPlace)
     .filter((x: MapboxPlace | null): x is MapboxPlace => !!x);
+}
+
+/**
+ * Posição de um número de casa. Só aceita resultado em nível de endereço,
+ * com o mesmo número pedido — "achei a rua" (precisão `street`) não serve.
+ */
+export async function mapboxAddress(street: string, number: number):
+  Promise<{ lat: number; lng: number } | null> {
+  const token = serverToken();
+  if (!token) return null;
+
+  const cLat = getSettingNum('center_lat'), cLng = getSettingNum('center_lng');
+  const km = Math.min(50, getSettingNum('coverage_radius_km'));
+  const dLat = km / 111.32;
+  const dLng = km / (111.32 * Math.cos(cLat * Math.PI / 180));
+
+  const data = await mbxGet('/search/geocode/v6/forward', {
+    q: `${street} ${number}`.replace(/;/g, ' ').slice(0, 200),
+    country: 'br',
+    language: 'pt',
+    proximity: `${cLng},${cLat}`,
+    bbox: [cLng - dLng, cLat - dLat, cLng + dLng, cLat + dLat].map(n => n.toFixed(5)).join(','),
+    types: 'address',
+    autocomplete: 'false',
+    limit: '3',
+  }, token, 4000);
+
+  for (const f of data?.features ?? []) {
+    const p = f?.properties ?? {};
+    if (p.feature_type !== 'address') continue;
+    const accuracy = String(p.coordinates?.accuracy || '');
+    if (accuracy === 'street' || accuracy === 'approximate') continue;
+    const num = p.context?.address?.address_number;
+    if (parseInt(String(num), 10) !== number) continue;
+    const lat = Number(p.coordinates?.latitude ?? f?.geometry?.coordinates?.[1]);
+    const lng = Number(p.coordinates?.longitude ?? f?.geometry?.coordinates?.[0]);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+  }
+  return null;
 }
 
 /** Endereço de uma coordenada (GPS ou toque no mapa). Nulo quando não há nada perto. */

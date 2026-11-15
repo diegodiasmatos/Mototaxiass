@@ -1382,3 +1382,210 @@ test('base em formato antigo é baixada de novo sozinha; se o OSM falhar, nada s
     db.prepare(`DELETE FROM address_points`).run();
   }
 });
+
+// ================= número de casa (Google / Mapbox) =================
+
+const GOOGLE_KEY = 'AIza-CHAVE-GOOGLE-DE-TESTE';
+/** Centro da avenida na base (onde o pino caía antes) e a casa de verdade. */
+const TUPASSI_CENTRO = { lat: -24.4156, lng: -53.5216 };
+const CASA_6161 = { lat: -24.4302, lng: -53.5391 };
+
+type ExtReply = { status?: number; body: unknown };
+
+/** Simula Google e Mapbox, com a rede de geo ligada, e conta as chamadas a cada um. */
+async function withFakeGeocoders(
+  handlers: { google?: (u: URL) => ExtReply; mapbox?: (u: URL) => ExtReply },
+  fn: (calls: { google: URL[]; mapbox: URL[] }) => Promise<void>): Promise<void> {
+  const realFetch = globalThis.fetch;
+  const calls = { google: [] as URL[], mapbox: [] as URL[] };
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = new URL(typeof input === 'string' ? input : input.url ?? String(input));
+    if (url.hostname === '127.0.0.1') return realFetch(input, init);
+    const which = url.hostname === 'maps.googleapis.com' ? 'google'
+      : url.hostname === 'api.mapbox.com' ? 'mapbox' : null;
+    if (!which || !handlers[which]) return new Response('fora do ar', { status: 503 });
+    calls[which].push(url);
+    const r = handlers[which]!(url);
+    return new Response(JSON.stringify(r.body), {
+      status: r.status ?? 200, headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+  process.env.GEO_OFFLINE = '0';
+  try { await fn(calls); } finally {
+    process.env.GEO_OFFLINE = '1';
+    globalThis.fetch = realFetch;
+  }
+}
+
+/** Resposta do Google Geocoding no formato real. */
+function googleResult(number: string, loc: { lat: number; lng: number },
+  locationType = 'ROOFTOP', types = ['street_address']): ExtReply {
+  return {
+    body: {
+      status: 'OK',
+      results: [{
+        types,
+        formatted_address: `Av. Tupãssi, ${number} - Centro, Assis Chateaubriand - PR`,
+        address_components: [
+          ...(number ? [{ long_name: number, short_name: number, types: ['street_number'] }] : []),
+          { long_name: 'Avenida Tupãssi', short_name: 'Av. Tupãssi', types: ['route'] },
+        ],
+        geometry: { location: loc, location_type: locationType },
+      }],
+    },
+  };
+}
+
+function seedTupassi(): void {
+  db.prepare(`INSERT OR REPLACE INTO local_addresses (kind, name, norm, lat, lng, updated_at)
+    VALUES ('rua', 'Avenida Tupãssi', 'avenida tupassi', ?, ?, ?)`)
+    .run(TUPASSI_CENTRO.lat, TUPASSI_CENTRO.lng, Date.now());
+}
+async function cleanNumberTests(): Promise<void> {
+  db.prepare(`DELETE FROM local_addresses WHERE norm = 'avenida tupassi'`).run();
+  db.prepare(`DELETE FROM address_points`).run();
+  await adm.req('PUT', '/api/admin/maps-config', {
+    credentials: { GOOGLE_GEOCODING_KEY: '', MAPBOX_PUBLIC_TOKEN: '', MAPBOX_SERVER_TOKEN: '' }, provider: 'auto',
+  });
+  await adm.req('POST', '/api/admin/maps-config/clear-cache');
+}
+const buscaTupassi = () => pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('avenida tupassi 6161'));
+
+test('número de casa: sem serviço configurado o pino fica no centro e pede ajuste (como antes)', async () => {
+  seedTupassi();
+  try {
+    await withFakeGeocoders({}, async calls => {
+      const r = await buscaTupassi();
+      const top = r.data.results[0];
+      assert.equal(top.text, 'Avenida Tupãssi, 6161, Assis Chateaubriand');
+      assert.equal(top.number_how, 'centro');
+      assert.equal(top.approx, true);
+      assert.equal(top.lat, TUPASSI_CENTRO.lat);
+      assert.equal(calls.google.length + calls.mapbox.length, 0);
+    });
+  } finally { await cleanNumberTests(); }
+});
+
+test('número de casa: o Google coloca o pino na casa certa, e a chave não vaza', async () => {
+  seedTupassi();
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { GOOGLE_GEOCODING_KEY: GOOGLE_KEY } });
+  try {
+    await withFakeGeocoders({ google: () => googleResult('6161', CASA_6161) }, async calls => {
+      const r = await buscaTupassi();
+      const top = r.data.results[0];
+      assert.equal(top.number_how, 'localizado');
+      assert.equal(top.approx, false);                 // não pede mais o ajuste do pino
+      assert.equal(top.lat, CASA_6161.lat);
+      assert.equal(top.lng, CASA_6161.lng);
+      assert.equal(top.in_coverage, true);
+      assert.equal(top.number, '6161');
+      // a distância ao centro foi recalculada para a casa (≈ 2,4 km), não a do meio da avenida
+      assert.ok(top.distance_m > 2000 && top.distance_m < 3000, `distância ${top.distance_m}`);
+
+      // a pergunta ao Google leva rua, número e cidade, restrita ao Brasil
+      assert.equal(calls.google.length, 1);
+      const u = calls.google[0];
+      assert.equal(u.searchParams.get('address'), 'Avenida Tupãssi, 6161, Assis Chateaubriand - PR, Brasil');
+      assert.equal(u.searchParams.get('components'), 'country:BR');
+      assert.equal(u.searchParams.get('key'), GOOGLE_KEY);
+
+      // mesma busca de novo: sai do cache, sem pagar outra chamada
+      const again = await buscaTupassi();
+      assert.equal(again.data.results[0].lat, CASA_6161.lat);
+      assert.equal(calls.google.length, 1);
+
+      // dá para cotar a corrida até a casa
+      const q = await pax.req('POST', '/api/quotes', {
+        origin: ORIGIN, dest: { lat: top.lat, lng: top.lng, text: top.text },
+      });
+      assert.equal(q.status, 200, JSON.stringify(q.data));
+    });
+
+    // a chave fica só no servidor: mascarada na central, ausente da configuração pública
+    const mc = await adm.req('GET', '/api/admin/maps-config');
+    assert.equal(mc.data.credentials.GOOGLE_GEOCODING_KEY.filled, true);
+    assert.equal(JSON.stringify(mc.data).includes(GOOGLE_KEY), false);
+    assert.equal(JSON.stringify((await pax.req('GET', '/api/config')).data).includes(GOOGLE_KEY), false);
+  } finally { await cleanNumberTests(); }
+});
+
+test('número de casa: resposta vaga ou errada do Google não é aceita como exata', async () => {
+  seedTupassi();
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { GOOGLE_GEOCODING_KEY: GOOGLE_KEY } });
+  const semAcerto = async (reply: ExtReply, porque: string) => {
+    await adm.req('POST', '/api/admin/maps-config/clear-cache');
+    await withFakeGeocoders({ google: () => reply }, async () => {
+      const top = (await buscaTupassi()).data.results[0];
+      assert.equal(top.number_how, 'centro', porque);
+      assert.equal(top.approx, true, porque);
+      assert.equal(top.lat, TUPASSI_CENTRO.lat, porque);
+    });
+  };
+  try {
+    await semAcerto(googleResult('', CASA_6161, 'GEOMETRIC_CENTER', ['route']), 'só achou a rua');
+    await semAcerto(googleResult('6161', CASA_6161, 'APPROXIMATE'), 'posição aproximada');
+    await semAcerto(googleResult('6100', CASA_6161), 'devolveu outro número');
+    await semAcerto(googleResult('6161', { lat: -24.95, lng: -53.46 }), 'mesmo endereço em outra cidade');
+    await semAcerto({ body: { status: 'ZERO_RESULTS', results: [] } }, 'não encontrou');
+    await semAcerto({ body: { status: 'REQUEST_DENIED', error_message: 'API key inválida' } }, 'chave recusada');
+    await semAcerto({ status: 500, body: {} }, 'Google fora do ar');
+  } finally { await cleanNumberTests(); }
+});
+
+test('número de casa: sem chave do Google, o Mapbox responde; "forçar OSM" desliga os dois', async () => {
+  seedTupassi();
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
+  const mapboxAddr = (num: string, accuracy: string): ExtReply => ({
+    body: {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature', geometry: { type: 'Point', coordinates: [CASA_6161.lng, CASA_6161.lat] },
+        properties: {
+          feature_type: 'address', name: `Avenida Tupãssi ${num}`,
+          coordinates: { longitude: CASA_6161.lng, latitude: CASA_6161.lat, accuracy },
+          context: { address: { address_number: num, street_name: 'Avenida Tupãssi' } },
+        },
+      }],
+    },
+  });
+  try {
+    await withFakeGeocoders({ mapbox: () => mapboxAddr('6161', 'rooftop') }, async calls => {
+      const top = (await buscaTupassi()).data.results[0];
+      assert.equal(top.number_how, 'localizado');
+      assert.equal(top.lat, CASA_6161.lat);
+      assert.equal(calls.mapbox.length, 1);
+      assert.equal(calls.mapbox[0].searchParams.get('types'), 'address');
+      assert.equal(calls.mapbox[0].searchParams.get('q'), 'Avenida Tupãssi 6161');
+      // resultado do Mapbox não é guardado (termos do modo temporário)
+      assert.equal((db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c, 0);
+    });
+    // Mapbox só soube a rua, ou devolveu outro número: continua pedindo o ajuste
+    await withFakeGeocoders({ mapbox: () => mapboxAddr('6161', 'street') }, async () => {
+      assert.equal((await buscaTupassi()).data.results[0].number_how, 'centro');
+    });
+    await withFakeGeocoders({ mapbox: () => mapboxAddr('61', 'rooftop') }, async () => {
+      assert.equal((await buscaTupassi()).data.results[0].number_how, 'centro');
+    });
+
+    // ponto já confirmado por um passageiro vale mais que qualquer serviço: nem consulta
+    await pax.req('POST', '/api/geo/learn',
+      { street: 'Avenida Tupãssi', number: 6161, lat: -24.4300, lng: -53.5390 });
+    await withFakeGeocoders({ mapbox: () => mapboxAddr('6161', 'rooftop') }, async calls => {
+      const top = (await buscaTupassi()).data.results[0];
+      assert.equal(top.number_how, 'exato');
+      assert.equal(top.lat, -24.43);
+      assert.equal(calls.mapbox.length, 0);
+    });
+    db.prepare(`DELETE FROM address_points`).run();
+
+    // "Forçar OpenStreetMap": nenhuma chamada paga
+    await adm.req('PUT', '/api/admin/maps-config',
+      { credentials: { GOOGLE_GEOCODING_KEY: GOOGLE_KEY }, provider: 'osm' });
+    await withFakeGeocoders({
+      google: () => googleResult('6161', CASA_6161), mapbox: () => mapboxAddr('6161', 'rooftop'),
+    }, async calls => {
+      assert.equal((await buscaTupassi()).data.results[0].number_how, 'centro');
+      assert.equal(calls.google.length + calls.mapbox.length, 0);
+    });
+  } finally { await cleanNumberTests(); }
+});

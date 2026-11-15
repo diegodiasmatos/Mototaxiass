@@ -2,6 +2,7 @@ import { haversineM, ApiError } from './util.ts';
 import { getSetting, getSettingNum } from './db.ts';
 import { mapboxEnabled, mapboxRoute, mapboxSearch, mapboxReverse } from './mapbox.ts';
 import { searchBase, nearestBase } from './address-base.ts';
+import { locateHouseNumber } from './house-number.ts';
 
 const UA = 'AssisMotoTaxi/1.0 (plataforma de mototaxi; contato: admin local)';
 
@@ -113,9 +114,10 @@ export interface GeoSearchResult {
   /** presentes quando a busca foi "rua + número" na base local */
   street?: string;
   number?: string;
-  /** exato = ponto conhecido; interpolado = entre dois números conhecidos;
+  /** exato = ponto conhecido; localizado = posição do número vinda do
+   *  Google/Mapbox; interpolado = entre dois números conhecidos;
    *  centro = centro da rua (o app pede ajuste do pino) */
-  number_how?: 'exato' | 'interpolado' | 'centro';
+  number_how?: 'exato' | 'localizado' | 'interpolado' | 'centro';
 }
 
 function normalize(s: string): string {
@@ -165,12 +167,29 @@ export async function searchAddress(q: string): Promise<GeoSearchResult[]> {
       item.street = hit.name;
       item.number = hit.number;
       item.number_how = hit.number_how;
-      // só o ponto exato dispensa ajuste; interpolado/centro são aproximados
+      // só o ponto conhecido dispensa ajuste; interpolado/centro são aproximados
       item.approx = hit.number_how !== 'exato';
     }
     results.push(item);
   }
   const baseHits = results.length;
+
+  // 1a) Número de casa sem ponto confirmado: pergunta a quem conhece
+  //     numeração (Google, depois Mapbox). Só para a rua mais provável — a
+  //     primeira da lista dentro da área — para não multiplicar chamadas.
+  if (!offline()) {
+    const alvo = results.find(x => x.number && x.street && x.in_coverage && x.number_how !== 'exato');
+    if (alvo) {
+      const loc = await locateHouseNumber(alvo.street!, Number(alvo.number), alvo);
+      if (loc) {
+        const exato = decorate(alvo.text, loc.lat, loc.lng, 'local');
+        Object.assign(alvo, {
+          lat: exato.lat, lng: exato.lng, distance_m: exato.distance_m,
+          in_coverage: exato.in_coverage, number_how: 'localizado', approx: false,
+        });
+      }
+    }
+  }
 
   // 1b) pontos de referência embutidos (úteis enquanto a base não foi baixada)
   for (const p of LOCAL_PLACES) {

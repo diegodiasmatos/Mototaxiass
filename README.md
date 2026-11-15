@@ -159,6 +159,25 @@ Qualquer resultado da base responde na hora, sem chamada externa — é o que
 mantém a busca em milissegundos. A busca no Mapbox é limitada à caixa da área
 de cobertura, então a rua de mesmo nome do município vizinho não aparece.
 
+### Números de casa ("Avenida Tupãssi 6161")
+
+O OpenStreetMap quase não tem numeração de casas em cidades pequenas. Quando o
+passageiro digita rua + número, a posição vem, nesta ordem:
+
+1. **ponto confirmado** na base (OSM ou ajustado por um passageiro);
+2. **Google Geocoding API** — opcional, a melhor cobertura de numeração no
+   Brasil. Cole a chave em central → 🗺️ Mapas ("Chave do Google para números
+   de casa") ou em `GOOGLE_GEOCODING_KEY`. Exige faturamento ativo no Google
+   Cloud e só a **Geocoding API** ativada; a chave nunca vai ao navegador;
+3. **Mapbox Geocoding**, com o token já configurado;
+4. interpolação entre números conhecidos ou centro da rua — e aí o app **pede
+   o toque no ponto exato**, que fica gravado para as próximas buscas.
+
+Os serviços externos só valem quando respondem em nível de endereço, com o
+mesmo número pedido e perto da rua da base; "achei só a rua" é recusado.
+Respostas do Google ficam em cache por até 30 dias (limite dos termos); as do
+Mapbox não são guardadas. Implementação em `server/house-number.ts`.
+
 ### Rotas (e quando não dá)
 
 O Mapbox **não tem perfil de motocicleta**: a rota usa o perfil `driving`, que
@@ -259,8 +278,8 @@ data/            banco, segredo de sessão e uploads privados (criado em runtime
 
 ## Testes da V2 (executados de verdade)
 
-`npm test` roda **63 testes**. Resultado da última execução:
-**63/63 aprovados**. Cobrem, entre outros:
+`npm test` roda **67 testes**. Resultado da última execução:
+**67/67 aprovados**. Cobrem, entre outros:
 
 - **Credenciais**: salvas cifradas (o `.db` não revela o segredo), devolvidas
   mascaradas, valor mascarado reenviado não corrompe o que está salvo, URL

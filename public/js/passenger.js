@@ -568,6 +568,7 @@ function setupAutocomplete(input, list, onPick, onEdit) {
         }
         list.innerHTML = results.map((r, i) => {
           const num = r.number_how === 'exato' ? ' · nº confirmado ✅'
+            : r.number_how === 'localizado' ? ' · nº localizado ✅'
             : r.number_how === 'interpolado' ? ' · nº estimado'
               : r.number_how === 'centro' ? ' · ajuste o ponto no mapa' : '';
           const detalhe = `<span class="muted small">· ${fmt.dist(r.distance_m)} do centro${num}${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>`;

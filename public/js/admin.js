@@ -767,6 +767,8 @@ async function secMaps() {
     'Desenha o mapa nos aplicativos — vai para o navegador, é público por natureza. Sem token de servidor, também calcula rotas e busca endereços.')}
       ${cred('MAPBOX_SERVER_TOKEN', 'Token de servidor (opcional)',
     'Só é necessário se o token público tiver restrição de URL. Usado apenas pelo backend; <b>nunca</b> vai para o navegador.')}
+      ${cred('GOOGLE_GEOCODING_KEY', 'Chave do Google para números de casa (opcional)',
+    'Faz "rua + número" cair na casa certa. Crie em console.cloud.google.com uma chave com a <b>Geocoding API</b> ativada (exige faturamento ativo no Google Cloud). Usada só pelo backend; <b>nunca</b> vai para o navegador.')}
       <div class="field">
         <label>Provedor de mapas</label>
         <select class="input" id="mp-provider">
@@ -887,8 +889,11 @@ async function secMaps() {
   $$('[data-mk-clear]').forEach(btn => {
     btn.onclick = async () => {
       const k = btn.dataset.mkClear;
-      const nome = k.includes('PUBLIC') ? 'token público' : 'token de servidor';
-      if (!await confirmModal('Remover token', `Remover o ${nome} salvo? Sem token, o sistema volta a usar o OpenStreetMap.`)) return;
+      const nome = k.includes('GOOGLE') ? 'chave do Google' : k.includes('PUBLIC') ? 'token público' : 'token de servidor';
+      const efeito = k.includes('GOOGLE')
+        ? 'Os números de casa voltam a depender do Mapbox ou do ajuste do pino.'
+        : 'Sem token, o sistema volta a usar o OpenStreetMap.';
+      if (!await confirmModal('Remover credencial', `Remover ${k.includes('GOOGLE') ? 'a' : 'o'} ${nome} salv${k.includes('GOOGLE') ? 'a' : 'o'}? ${efeito}`)) return;
       await api('/api/admin/maps-config', { method: 'PUT', body: { credentials: { [k]: '' } } });
       toast('Token removido.', 'ok');
       secMaps();

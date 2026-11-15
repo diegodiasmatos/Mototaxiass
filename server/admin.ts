@@ -19,7 +19,7 @@ const CREDENTIAL_KEYS = [
   'MP_CLIENT_ID', 'MP_CLIENT_SECRET', 'PUBLIC_URL',
 ] as const;
 
-const MAPS_CREDENTIAL_KEYS = ['MAPBOX_PUBLIC_TOKEN', 'MAPBOX_SERVER_TOKEN'] as const;
+const MAPS_CREDENTIAL_KEYS = ['MAPBOX_PUBLIC_TOKEN', 'MAPBOX_SERVER_TOKEN', 'GOOGLE_GEOCODING_KEY'] as const;
 
 function dayKey(ts: number): string {
   const d = new Date(ts);
@@ -594,7 +594,8 @@ export const adminRoutes: Route[] = [
   /** Chama as APIs do Mapbox de verdade e relata o que funciona. */
   route('POST /api/admin/maps-config/test', 'admin', async ({ res }) => {
     const { testMapboxToken } = await import('./mapbox.ts');
-    json(res, 200, { checks: await testMapboxToken() });
+    const { testGoogleGeocoding } = await import('./house-number.ts');
+    json(res, 200, { checks: [...await testMapboxToken(), await testGoogleGeocoding()] });
   }),
 
   // ---------- estabelecimentos cadastrados à mão ----------
