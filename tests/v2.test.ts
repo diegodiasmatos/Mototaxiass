@@ -1237,3 +1237,148 @@ test('permissões: cada perfil só faz o que lhe cabe', async () => {
   const act = await pax.req('GET', '/api/rides/active');
   if (act.data.ride) await pax.req('POST', `/api/rides/${act.data.ride.id}/cancel`, {});
 });
+
+// ================= base de endereços: ruas de mesmo nome =================
+
+/** Resposta do Overpass simulada: a cidade e um distrito a ~13 km, com ruas de mesmo nome. */
+function fakeOverpass(): unknown {
+  const way = (name: string, lat: number, lon: number) =>
+    ({ type: 'way', center: { lat, lon }, tags: { highway: 'residential', name } });
+  const filler = Array.from({ length: 12 }, (_, i) =>
+    way(`Rua Projetada ${String.fromCharCode(65 + i)}`, -24.41 - i * 0.001, -53.52));
+  return {
+    elements: [
+      // Rua Argentina NA CIDADE: três trechos seguidos, perto do centro
+      way('Rua Argentina', -24.4200, -53.5300),
+      way('Rua Argentina', -24.4200, -53.5270),
+      way('Rua Argentina', -24.4200, -53.5240),
+      // Rua Argentina NO DISTRITO, ~13 km a oeste do centro
+      way('Rua Argentina', -24.4200, -53.6500),
+      way('Rua Argentina', -24.4200, -53.6480),
+      { type: 'node', lat: -24.4190, lon: -53.6490, tags: { place: 'village', name: 'Bragantina' } },
+      way('Rua 7 de Setembro', -24.4100, -53.5200),
+      // o mesmo número existe nas duas ruas Argentina
+      { type: 'node', lat: -24.4201, lon: -53.5268, tags: { 'addr:street': 'Rua Argentina', 'addr:housenumber': '100' } },
+      { type: 'node', lat: -24.4201, lon: -53.6491, tags: { 'addr:street': 'Rua Argentina', 'addr:housenumber': '100' } },
+      ...filler,
+    ],
+  };
+}
+
+/** Troca o `fetch` para responder pelo Overpass; o servidor de teste continua real. */
+async function withFakeOverpass(fn: (calls: { n: number }) => Promise<void>, ok = true): Promise<void> {
+  const realFetch = globalThis.fetch;
+  const calls = { n: 0 };
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = new URL(typeof input === 'string' ? input : input.url ?? String(input));
+    if (url.hostname === '127.0.0.1') return realFetch(input, init);
+    calls.n++;
+    return ok
+      ? new Response(JSON.stringify(fakeOverpass()), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      : new Response('fora do ar', { status: 503 });
+  }) as typeof fetch;
+  try { await fn(calls); } finally { globalThis.fetch = realFetch; }
+}
+
+test('base: rua de mesmo nome na cidade e no distrito não vira um ponto no meio do caminho', async () => {
+  try {
+    await withFakeOverpass(async () => {
+      const imp = await adm.req('POST', '/api/admin/maps-config/import-base');
+      assert.equal(imp.status, 200, JSON.stringify(imp.data));
+    });
+
+    // duas entradas: a da cidade (nome simples) e a do distrito (com a localidade)
+    const rows = db.prepare(
+      `SELECT norm, detail, lat, lng FROM local_addresses WHERE name = 'Rua Argentina' ORDER BY norm`).all() as any[];
+    assert.equal(rows.length, 2, JSON.stringify(rows));
+    assert.equal(rows[0].norm, 'rua argentina');
+    assert.equal(rows[0].detail, null);
+    // o ponto é um trecho de verdade da rua da cidade — antes era a média com o
+    // distrito (lng ≈ -53.58), a quilômetros de qualquer rua
+    assert.equal(rows[0].lat, -24.42);
+    assert.equal(rows[0].lng, -53.527);
+    assert.equal(rows[1].norm, 'rua argentina · bragantina');
+    assert.equal(rows[1].detail, 'Bragantina');
+    assert.ok(rows[1].lng < -53.64);
+
+    // a busca traz primeiro a rua da cidade, dentro da área e escolhível
+    const r = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua argentina'));
+    const [cidade, distrito] = r.data.results;
+    assert.equal(cidade.text, 'Rua Argentina, Assis Chateaubriand');
+    assert.equal(cidade.in_coverage, true);
+    assert.ok(cidade.distance_m < 1500, `distância ${cidade.distance_m}`);
+    // a do distrito continua visível, identificada e marcada como fora de área
+    assert.equal(distrito.text, 'Rua Argentina, Bragantina, Assis Chateaubriand');
+    assert.equal(distrito.in_coverage, false);
+    assert.ok(distrito.distance_m > 12000);
+
+    // e dá para cotar uma corrida até ela (antes: "fora da área de cobertura")
+    const q = await pax.req('POST', '/api/quotes', {
+      origin: ORIGIN, dest: { lat: cidade.lat, lng: cidade.lng, text: cidade.text },
+    });
+    assert.equal(q.status, 200, JSON.stringify(q.data));
+
+    // número de casa: cada rua fica com o seu, sem misturar cidade e distrito
+    const n = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua argentina 100'));
+    assert.equal(n.data.results[0].number_how, 'exato');
+    assert.equal(n.data.results[0].lng, -53.5268);
+    assert.equal(n.data.results[0].in_coverage, true);
+    assert.equal(n.data.results[1].lng, -53.6491);
+
+    // "7" faz parte do nome da rua, não é número de casa
+    const sete = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua 7 de setembro'));
+    assert.equal(sete.data.results[0].text, 'Rua 7 de Setembro, Assis Chateaubriand');
+    assert.equal(sete.data.results[0].number, undefined);
+    const sete250 = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua 7 de setembro 250'));
+    assert.equal(sete250.data.results[0].number, '250');
+
+    // ponto ajustado pelo passageiro vai para a rua mais próxima dele
+    const learn = await pax.req('POST', '/api/geo/learn',
+      { street: 'Rua Argentina', number: 321, lat: -24.4201, lng: -53.5245 });
+    assert.equal(learn.status, 200, JSON.stringify(learn.data));
+    const pt = db.prepare(`SELECT street_norm FROM address_points WHERE number = 321`).get() as any;
+    assert.equal(pt.street_norm, 'rua argentina');
+  } finally {
+    db.prepare(`DELETE FROM local_addresses WHERE source = 'osm'`).run();
+    db.prepare(`DELETE FROM address_points`).run();
+  }
+});
+
+test('base em formato antigo é baixada de novo sozinha; se o OSM falhar, nada se perde', async () => {
+  const { refreshOutdatedBase, BASE_VERSION } = await import('../server/address-base.ts');
+  try {
+    // sem base nenhuma: não há o que atualizar (e nada é baixado)
+    db.prepare(`DELETE FROM local_addresses`).run();
+    await withFakeOverpass(async calls => {
+      assert.equal(await refreshOutdatedBase(), 'vazia');
+      assert.equal(calls.n, 0);
+    });
+
+    // base antiga, com a rua no ponto médio errado (como estava em produção)
+    db.prepare(`INSERT INTO local_addresses (kind, name, norm, lat, lng, updated_at)
+      VALUES ('rua', 'Rua Argentina', 'rua argentina', -24.42, -53.5758, ?)`).run(Date.now());
+    setSetting('address_base_version', '1');
+
+    // OpenStreetMap fora do ar: a base antiga continua lá
+    await withFakeOverpass(async () => {
+      assert.equal(await refreshOutdatedBase(), 'falhou');
+    }, false);
+    assert.equal((db.prepare(`SELECT lng FROM local_addresses WHERE norm = 'rua argentina'`).get() as any).lng, -53.5758);
+
+    // OpenStreetMap respondendo: baixa de novo e a rua vai para o lugar certo
+    await withFakeOverpass(async () => {
+      assert.equal(await refreshOutdatedBase(), 'atualizada');
+    });
+    assert.equal((db.prepare(`SELECT lng FROM local_addresses WHERE norm = 'rua argentina'`).get() as any).lng, -53.527);
+    assert.equal(dbMod.getSetting('address_base_version'), BASE_VERSION);
+
+    // já no formato atual: não baixa outra vez
+    await withFakeOverpass(async calls => {
+      assert.equal(await refreshOutdatedBase(), 'atual');
+      assert.equal(calls.n, 0);
+    });
+  } finally {
+    db.prepare(`DELETE FROM local_addresses WHERE source = 'osm'`).run();
+    db.prepare(`DELETE FROM address_points`).run();
+  }
+});

@@ -259,8 +259,8 @@ data/            banco, segredo de sessão e uploads privados (criado em runtime
 
 ## Testes da V2 (executados de verdade)
 
-`npm test` roda **61 testes**. Resultado da última execução:
-**61/61 aprovados**. Cobrem, entre outros:
+`npm test` roda **63 testes**. Resultado da última execução:
+**63/63 aprovados**. Cobrem, entre outros:
 
 - **Credenciais**: salvas cifradas (o `.db` não revela o segredo), devolvidas
   mascaradas, valor mascarado reenviado não corrompe o que está salvo, URL

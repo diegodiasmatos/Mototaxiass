@@ -19,6 +19,19 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass.kumi.systems/api/interpreter',
 ];
 
+/**
+ * Versão do formato da base. Sobe quando a importação muda de um jeito que
+ * exige baixar de novo (ver `refreshOutdatedBase`).
+ *  2 — ruas de mesmo nome em localidades diferentes viram entradas separadas.
+ */
+export const BASE_VERSION = '2';
+
+/** Separa o nome da rua da localidade nas entradas repetidas ("rua x · distrito"). */
+const SAME_NAME_SEP = ' · ';
+
+/** Trechos da mesma rua ficam a menos disso um do outro; acima, é outra rua. */
+const SAME_STREET_LINK_M = 1500;
+
 export function normalize(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 }
@@ -90,16 +103,21 @@ export function resolveHouseNumber(streetNorm: string, n: number):
  */
 export function learnHouseNumber(street: string, number: number, lat: number, lng: number):
   { ok: boolean; reason?: string } {
-  const streetNorm = normalize(street);
-  const rua = db.prepare(`SELECT name, lat, lng FROM local_addresses
-    WHERE kind = 'rua' AND norm = ?`).get(streetNorm) as any;
-  if (!rua) return { ok: false, reason: 'rua desconhecida' };
+  const key = normalize(street);
+  // pode haver mais de uma rua com esse nome (cidade e distritos): vale a
+  // mais próxima do ponto confirmado
+  const ruas = db.prepare(`SELECT name, norm, lat, lng FROM local_addresses
+    WHERE kind = 'rua' AND (norm = ? OR norm LIKE ? || '${SAME_NAME_SEP}%')`).all(key, key) as any[];
+  if (!ruas.length) return { ok: false, reason: 'rua desconhecida' };
   if (!Number.isInteger(number) || number <= 0 || number > 99999) {
     return { ok: false, reason: 'número inválido' };
   }
+  const rua = ruas
+    .map(r => ({ r, d: haversineM(lat, lng, r.lat, r.lng) }))
+    .sort((a, b) => a.d - b.d)[0];
   // o ponto confirmado precisa estar perto da rua (tolerante: ruas longas
   // têm centro distante das pontas), senão é toque errado ou abuso
-  if (haversineM(lat, lng, rua.lat, rua.lng) > 4000) {
+  if (rua.d > 4000) {
     return { ok: false, reason: 'ponto longe demais da rua' };
   }
   db.prepare(`INSERT INTO address_points
@@ -108,7 +126,7 @@ export function learnHouseNumber(street: string, number: number, lat: number, ln
     ON CONFLICT(street_norm, number) DO UPDATE SET
       lat = excluded.lat, lng = excluded.lng, source = 'passageiro',
       hits = hits + 1, updated_at = excluded.updated_at`)
-    .run(streetNorm, rua.name, number, lat, lng, Date.now());
+    .run(rua.r.norm, rua.r.name, number, lat, lng, Date.now());
   return { ok: true };
 }
 
@@ -230,13 +248,19 @@ export function searchBase(q: string, limit = 8): BaseHit[] {
   if (!baseCount()) return [];
   let qn = normalize(q).replace(/[.,;]/g, ' ');
 
-  // extrai número de casa (fim ou meio: "rua x 123" / "rua x, 123 centro")
+  // extrai número de casa (fim ou meio: "rua x 123" / "rua x, 123 centro").
+  // Número seguido de "de" faz parte do nome ("Rua 7 de Setembro"), e o
+  // número da casa é o último que sobrar ("rua 7 de setembro 250" → 250).
   let houseNumber: string | undefined;
-  const numMatch = qn.match(/(?:^|\s)(\d{1,5})(?:\s|$)/);
-  if (numMatch) {
-    houseNumber = numMatch[1];
-    qn = qn.replace(numMatch[0], ' ');
+  const words = qn.split(/\s+/).filter(Boolean);
+  for (let i = words.length - 1; i >= 0; i--) {
+    if (/^\d{1,5}$/.test(words[i]) && words[i + 1] !== 'de') {
+      houseNumber = words[i];
+      words.splice(i, 1);
+      break;
+    }
   }
+  qn = words.join(' ');
 
   const STOP = new Set(['de', 'da', 'do', 'das', 'dos', 'e']);
   const tokens = qn.split(/\s+/).filter(t => t && !STOP.has(t))
@@ -271,7 +295,7 @@ export function searchBase(q: string, limit = 8): BaseHit[] {
   const typeTokens = tokens.filter(t => TYPE_WORDS.has(t));
   const scored = rows.map(r => {
     let score = 0;
-    if (r.norm === qn.trim()) score += 100;                 // nome exato
+    if (r.norm.split(SAME_NAME_SEP)[0] === qn.trim()) score += 100; // nome exato
     if (r.norm.startsWith(first)) score += 30;              // começa pelo termo
     if (effective.every(t => r.norm.includes(t))) score += 15; // termo no nome > só na categoria
     for (const t of typeTokens) if (r.norm.includes(t)) score += 10;
@@ -340,6 +364,70 @@ export function removeManualPlace(id: number): boolean {
   return r.changes > 0;
 }
 
+interface StreetRow {
+  /** nome normalizado da rua (igual para todas as de mesmo nome) */
+  key: string;
+  /** chave única na tabela: `key`, ou `key · localidade` para as repetidas */
+  norm: string;
+  name: string;
+  /** localidade, preenchida só quando o nome se repete no município */
+  detail: string | null;
+  lat: number;
+  lng: number;
+}
+
+/**
+ * Separa os trechos de um mesmo nome em ruas distintas: trechos a menos de
+ * `SAME_STREET_LINK_M` um do outro são a mesma rua; grupos mais distantes
+ * são ruas diferentes que só compartilham o nome. O ponto de cada rua é um
+ * trecho de verdade (o mais central do grupo), nunca uma média no vazio.
+ * A mais próxima do centro da cidade fica com o nome simples; as outras
+ * levam a localidade ("Rua Argentina", "Bragantina").
+ */
+export function splitStreet(key: string, name: string, pts: [number, number][],
+  center: { lat: number; lng: number },
+  places: { name: string; lat: number; lng: number }[]): StreetRow[] {
+  // agrupamento por ligação simples (união de conjuntos)
+  const parent = pts.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + 1; j < pts.length; j++) {
+      if (haversineM(pts[i][0], pts[i][1], pts[j][0], pts[j][1]) <= SAME_STREET_LINK_M) {
+        parent[find(i)] = find(j);
+      }
+    }
+  }
+  const groups = new Map<number, [number, number][]>();
+  pts.forEach((p, i) => {
+    const g = find(i);
+    groups.set(g, [...(groups.get(g) || []), p]);
+  });
+
+  const clusters = [...groups.values()].map(g => {
+    const mLat = g.reduce((s, p) => s + p[0], 0) / g.length;
+    const mLng = g.reduce((s, p) => s + p[1], 0) / g.length;
+    // o trecho mais perto da média: um ponto que está em cima da rua
+    const rep = g.map(p => ({ p, d: haversineM(p[0], p[1], mLat, mLng) }))
+      .sort((a, b) => a.d - b.d)[0].p;
+    return { lat: rep[0], lng: rep[1], dist: haversineM(rep[0], rep[1], center.lat, center.lng) };
+  }).sort((a, b) => a.dist - b.dist);
+
+  const used = new Set<string>();
+  return clusters.map((c, i) => {
+    if (i === 0) return { key, norm: key, name, detail: null, lat: c.lat, lng: c.lng };
+    // as repetidas levam a localidade mais próxima (distrito, vila, bairro)
+    const near = places.map(p => ({ p, d: haversineM(c.lat, c.lng, p.lat, p.lng) }))
+      .filter(x => x.d <= 4000).sort((a, b) => a.d - b.d)[0];
+    let label = near ? near.p.name : `a ${(c.dist / 1000).toFixed(0)} km do centro`;
+    for (let n = 2; used.has(normalize(label)); n++) label = `${label.replace(/ \(\d+\)$/, '')} (${n})`;
+    used.add(normalize(label));
+    return {
+      key, norm: `${key}${SAME_NAME_SEP}${normalize(label)}`, name, detail: label,
+      lat: c.lat, lng: c.lng,
+    };
+  });
+}
+
 interface OverpassElement {
   type: string;
   lat?: number; lon?: number;
@@ -404,8 +492,9 @@ out center tags;`;
       'Tente novamente em alguns minutos.');
   }
 
-  // agrupa segmentos de rua pelo nome; deduplica POIs e bairros
-  const streets = new Map<string, { name: string; sumLat: number; sumLng: number; n: number }>();
+  // junta os segmentos de rua pelo nome (separados depois por proximidade);
+  // deduplica POIs e bairros
+  const streets = new Map<string, { name: string; pts: [number, number][] }>();
   const suburbs = new Map<string, { name: string; lat: number; lng: number }>();
   const pois = new Map<string, { name: string; detail: string | null; tags: string | null; lat: number; lng: number }>();
 
@@ -434,8 +523,8 @@ out center tags;`;
 
     if (tags.highway) {
       const s = streets.get(key);
-      if (s) { s.sumLat += lat!; s.sumLng += lng!; s.n++; }
-      else streets.set(key, { name, sumLat: lat!, sumLng: lng!, n: 1 });
+      if (s) s.pts.push([lat!, lng!]);
+      else streets.set(key, { name, pts: [[lat!, lng!]] });
     } else if (tags.place) {
       if (!suburbs.has(key)) suburbs.set(key, { name, lat: lat!, lng: lng! });
     } else {
@@ -451,6 +540,23 @@ out center tags;`;
     throw new Error('O OpenStreetMap devolveu quase nada para a cidade — base mantida como estava.');
   }
 
+  // Uma rua por localidade. O mesmo nome se repete na cidade e nos distritos
+  // do município: tirar a média de tudo jogava o ponto no meio do caminho,
+  // a quilômetros de qualquer rua (e para fora da área de atendimento).
+  const places = [...suburbs.values()];
+  const streetRows: StreetRow[] = [];
+  for (const [key, s] of streets) {
+    streetRows.push(...splitStreet(key, s.name, s.pts, { lat: cLat, lng: cLng }, places));
+  }
+
+  // cada número de casa vai para a rua (daquele nome) mais próxima dele
+  for (const p of addrPts) {
+    const same = streetRows.filter(r => r.key === p.streetNorm)
+      .map(r => ({ r, d: haversineM(p.lat, p.lng, r.lat, r.lng) }))
+      .sort((a, b) => a.d - b.d)[0];
+    if (same) { p.streetNorm = same.r.norm; p.street = same.r.name; }
+  }
+
   const t = Date.now();
   db.exec('BEGIN');
   try {
@@ -459,9 +565,7 @@ out center tags;`;
     const ins = db.prepare(`INSERT OR IGNORE INTO local_addresses
       (kind, name, norm, detail, tags, lat, lng, updated_at, source)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'osm')`);
-    for (const [key, s] of streets) {
-      ins.run('rua', s.name, key, null, null, s.sumLat / s.n, s.sumLng / s.n, t);
-    }
+    for (const r of streetRows) ins.run('rua', r.name, r.norm, r.detail, null, r.lat, r.lng, t);
     for (const [key, b] of suburbs) ins.run('bairro', b.name, key, null, null, b.lat, b.lng, t);
     for (const [key, p] of pois) ins.run('local', p.name, key, p.detail, p.tags, p.lat, p.lng, t);
 
@@ -478,7 +582,28 @@ out center tags;`;
     throw e;
   }
   setSetting('address_base_updated_at', String(t));
+  setSetting('address_base_version', BASE_VERSION);
 
-  return { ruas: streets.size, bairros: suburbs.size, locais: pois.size,
-    total: streets.size + suburbs.size + pois.size };
+  return { ruas: streetRows.length, bairros: suburbs.size, locais: pois.size,
+    total: streetRows.length + suburbs.size + pois.size };
+}
+
+/**
+ * Bases baixadas antes de uma correção da importação continuam com os dados
+ * antigos. Na subida do servidor, se a base existe e é de versão anterior,
+ * baixa de novo em segundo plano. Se o OpenStreetMap não responder, a base
+ * atual fica como está e a próxima subida tenta outra vez.
+ */
+export async function refreshOutdatedBase(): Promise<'atual' | 'vazia' | 'atualizada' | 'falhou'> {
+  if (!baseCount()) return 'vazia';
+  if (getSetting('address_base_version') === BASE_VERSION) return 'atual';
+  try {
+    const r = await importAddressBase();
+    console.log(`[base de endereços] atualizada para o formato ${BASE_VERSION}: ` +
+      `${r.ruas} rua(s), ${r.bairros} bairro(s), ${r.locais} local(is).`);
+    return 'atualizada';
+  } catch (e: any) {
+    console.error(`[base de endereços] não foi possível atualizar agora: ${e?.message || e}`);
+    return 'falhou';
+  }
 }

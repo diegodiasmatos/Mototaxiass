@@ -183,7 +183,12 @@ export async function searchAddress(q: string): Promise<GeoSearchResult[]> {
 
   // A base achou algo: devolve NA HORA. Esperar serviço externo aqui é o que
   // deixava a busca lenta — e o Nominatim ainda podia chutar outra cidade.
-  if (baseHits >= 1) return results.slice(0, 8);
+  // O que está dentro da área atendida vem primeiro (a rua de mesmo nome de
+  // um distrito distante não pode esconder a da cidade).
+  if (baseHits >= 1) {
+    return [...results.filter(x => x.in_coverage), ...results.filter(x => !x.in_coverage)]
+      .slice(0, 8);
+  }
 
   // 2) Mapbox Geocoding: ruas, números e bairros, já com a coordenada e
   //    limitado à caixa da área atendida.

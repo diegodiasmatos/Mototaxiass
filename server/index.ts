@@ -155,6 +155,12 @@ export async function start(opts: StartOptions = {}): Promise<{ server: http.Ser
   // confirma automaticamente as corridas cujo prazo de 5 s expirou (no servidor)
   startAutoConfirmSweeper();
 
+  // base de endereços baixada num formato antigo: baixa de novo, em segundo
+  // plano, sem atrasar a subida (não roda nos testes / modo sem rede)
+  if (process.env.GEO_OFFLINE !== '1') {
+    import('./address-base.ts').then(m => m.refreshOutdatedBase()).catch(() => { });
+  }
+
   // limpeza periódica: sessões e cotações expiradas
   const cleanup = setInterval(() => {
     try {
