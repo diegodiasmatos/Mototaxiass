@@ -26,9 +26,12 @@ const MIME: Record<string, string> = {
 };
 
 function serveStatic(res: http.ServerResponse, urlPath: string): boolean {
-  let rel = urlPath === '/' ? '/index.html' : urlPath;
+  let rel = urlPath;
   // páginas amigáveis
+  if (rel === '/' || rel === '/visao-geral') rel = '/visao-geral.html';
+  if (rel === '/passageiro') rel = '/index.html';
   if (rel === '/motorista' || rel === '/mototaxista') rel = '/motorista.html';
+  if (rel === '/empresa') rel = '/empresa.html';
   if (rel === '/admin') rel = '/admin.html';
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR)) return false; // path traversal
@@ -119,6 +122,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
     if (pathname.startsWith('/api/')) { json(res, 404, { error: 'Rota não encontrada.' }); return; }
 
+    // Entrada do site: quem já tem sessão cai direto no seu aplicativo (links
+    // de notificação e de retorno do pagamento apontam para "/"); visitante
+    // vê a Visão Geral do ecossistema.
+    if (req.method === 'GET' && pathname === '/' && user) {
+      if (user.role === 'passenger') { serveStatic(res, '/passageiro'); return; }
+      res.writeHead(302, { Location: user.role === 'admin' ? '/admin' : '/motorista' });
+      res.end();
+      return;
+    }
+
     if (req.method === 'GET' && serveStatic(res, pathname)) return;
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('404 — página não encontrada');
@@ -142,6 +155,12 @@ export async function start(opts: StartOptions = {}): Promise<{ server: http.Ser
   // confirma automaticamente as corridas cujo prazo de 5 s expirou (no servidor)
   startAutoConfirmSweeper();
 
+  // base de endereços baixada num formato antigo: baixa de novo, em segundo
+  // plano, sem atrasar a subida (não roda nos testes / modo sem rede)
+  if (process.env.GEO_OFFLINE !== '1') {
+    import('./address-base.ts').then(m => m.refreshOutdatedBase()).catch(() => { });
+  }
+
   // limpeza periódica: sessões e cotações expiradas
   const cleanup = setInterval(() => {
     try {
@@ -160,9 +179,11 @@ export async function start(opts: StartOptions = {}): Promise<{ server: http.Ser
   const actual = (server.address() as any).port;
   if (!opts.quiet) {
     console.log(`\n🏍️  VAIRO rodando em http://localhost:${actual}`);
-    console.log(`   Passageiro:  http://localhost:${actual}/`);
-    console.log(`   Mototaxista: http://localhost:${actual}/motorista`);
-    console.log(`   Admin:       http://localhost:${actual}/admin`);
+    console.log(`   Visão geral: http://localhost:${actual}/`);
+    console.log(`   Passageiro:  http://localhost:${actual}/passageiro`);
+    console.log(`   Motorista:   http://localhost:${actual}/motorista`);
+    console.log(`   Empresa:     http://localhost:${actual}/empresa`);
+    console.log(`   Central:     http://localhost:${actual}/admin`);
     console.log(`   (acesse do celular na mesma rede pelo IP desta máquina)\n`);
   }
   return {

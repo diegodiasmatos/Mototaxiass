@@ -338,6 +338,126 @@ test('reverse geocode informa quando o endereço não é exato', async () => {
   assert.equal(fora.data.in_coverage, false);
 });
 
+test('base local de endereços: busca instantânea com número e abreviação', async () => {
+  const t = Date.now();
+  const ins = db.prepare(`INSERT INTO local_addresses
+    (kind, name, norm, detail, lat, lng, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  ins.run('rua', 'Rua Curitiba', 'rua curitiba', null, -24.4170, -53.5230, t);
+  ins.run('rua', 'Avenida Brasil', 'avenida brasil', null, -24.4140, -53.5200, t);
+  ins.run('bairro', 'Jardim Universitário', 'jardim universitario', null, -24.4100, -53.5100, t);
+  ins.run('local', 'Mercado Central', 'mercado central', 'Avenida Brasil, 100', -24.4155, -53.5210, t);
+
+  // rua simples, direto da base (sem serviço externo — estamos offline)
+  const r1 = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua curitiba'));
+  assert.equal(r1.status, 200);
+  assert.ok(r1.data.results.length > 0);
+  assert.ok(r1.data.results[0].text.startsWith('Rua Curitiba'));
+  assert.equal(r1.data.results[0].source, 'local');
+  assert.equal(r1.data.results[0].in_coverage, true);
+
+  // abreviação "av" + número de casa: acha a avenida e marca como aproximado
+  const r2 = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('av brasil 123'));
+  const hit = r2.data.results.find((x: any) => x.text.startsWith('Avenida Brasil, 123'));
+  assert.ok(hit, 'deveria achar "Avenida Brasil, 123"');
+  assert.equal(hit.approx, true);          // coordenada = centro da rua, nunca inventada
+
+  // estabelecimento com endereço no detalhe
+  const r3 = await pax.req('GET', '/api/geo/search?q=mercado');
+  assert.ok(r3.data.results.some((x: any) => x.text.includes('Mercado Central')));
+
+  // estatísticas aparecem para o administrador
+  const cfg = await adm.req('GET', '/api/admin/maps-config');
+  assert.ok(cfg.data.address_base.total >= 4);
+  assert.ok(cfg.data.address_base.ruas >= 2);
+});
+
+test('base: erro de digitação não derruba a busca (tupanssi → Tupassi)', async () => {
+  const t = Date.now();
+  db.prepare(`INSERT INTO local_addresses (kind, name, norm, detail, lat, lng, updated_at)
+    VALUES ('rua', 'Avenida Tupassi', 'avenida tupassi', NULL, -24.4160, -53.5190, ?)`).run(t);
+  const r = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('av tupanssi 450'));
+  assert.ok(r.data.results.length > 0, 'fuzzy deveria achar a Avenida Tupassi');
+  assert.ok(r.data.results[0].text.startsWith('Avenida Tupassi, 450'));
+  assert.equal(r.data.results[0].approx, true);
+});
+
+test('base: busca por categoria acha estabelecimento sem a palavra no nome', async () => {
+  const t = Date.now();
+  db.prepare(`INSERT INTO local_addresses (kind, name, norm, detail, tags, lat, lng, updated_at)
+    VALUES ('local', 'Lorena Alimentos', 'lorena alimentos', NULL,
+      'mercado supermercado mercadinho', -24.4150, -53.5220, ?)`).run(t);
+  const r = await pax.req('GET', '/api/geo/search?q=mercado');
+  assert.ok(r.data.results.some((x: any) => x.text.includes('Lorena Alimentos')),
+    '"mercado" deveria listar o Lorena Alimentos pelas palavras-chave');
+});
+
+test('números de casa: o app aprende com o passageiro e passa a acertar', async () => {
+  // rua que não existe na base é recusada (ninguém ensina endereço inventado)
+  assert.equal((await pax.req('POST', '/api/geo/learn',
+    { street: 'Rua Inexistente Xyz', number: 10, lat: -24.4161, lng: -53.5191 })).status, 422);
+  // fora da área de cobertura é recusado
+  assert.equal((await pax.req('POST', '/api/geo/learn',
+    { street: 'Avenida Tupassi', number: 10, lat: -25.5, lng: -54.5 })).status, 422);
+
+  // passageiros confirmam o nº 400 e o nº 800 da Avenida Tupassi
+  assert.equal((await pax.req('POST', '/api/geo/learn',
+    { street: 'Avenida Tupassi', number: 400, lat: -24.4100, lng: -53.5190 })).status, 200);
+  assert.equal((await pax.req('POST', '/api/geo/learn',
+    { street: 'Avenida Tupassi', number: 800, lat: -24.4200, lng: -53.5190 })).status, 200);
+
+  // nº 400 de novo: ponto EXATO, sem pedir ajuste
+  const r1 = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('avenida tupassi 400'));
+  const h1 = r1.data.results[0];
+  assert.equal(h1.number_how, 'exato');
+  assert.ok(!h1.approx, 'ponto confirmado não é aproximado');
+  assert.ok(Math.abs(h1.lat - (-24.4100)) < 1e-6, 'usa a coordenada aprendida');
+
+  // nº 600 (entre 400 e 800): interpolado no meio do caminho
+  const r2 = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('avenida tupassi 600'));
+  const h2 = r2.data.results[0];
+  assert.equal(h2.number_how, 'interpolado');
+  assert.equal(h2.approx, true);
+  assert.ok(Math.abs(h2.lat - (-24.4150)) < 1e-4, 'posição proporcional entre os dois números');
+
+  // rua sem nenhum número conhecido: centro da rua, marcado para ajuste
+  const r3 = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('avenida brasil 500'));
+  const h3 = r3.data.results.find((x: any) => x.text.startsWith('Avenida Brasil'));
+  assert.equal(h3.number_how, 'centro');
+  assert.equal(h3.approx, true);
+});
+
+test('estabelecimento manual: cadastrar, aparecer na busca e remover', async () => {
+  // fora da área de cobertura é recusado
+  assert.equal((await adm.req('POST', '/api/admin/places',
+    { name: 'Longe Demais', lat: -25.5, lng: -54.5 })).status, 422);
+
+  const add = await adm.req('POST', '/api/admin/places', {
+    name: 'Mecânica do João', tags: 'mecanica oficina borracharia',
+    detail: 'Avenida Brasil, 900', lat: -24.4145, lng: -53.5205,
+  });
+  assert.equal(add.status, 200);
+
+  const r = await pax.req('GET', '/api/geo/search?q=mecanica');
+  assert.ok(r.data.results.some((x: any) => x.text.includes('Mecânica do João')));
+
+  // sobrevive como 'manual' e só manual pode ser removido
+  const list = await adm.req('GET', '/api/admin/places');
+  assert.equal(list.data.places.length, 1);
+  const del = await adm.req('DELETE', `/api/admin/places/${add.data.id}`);
+  assert.equal(del.status, 200);
+  assert.equal((await adm.req('GET', '/api/admin/places')).data.places.length, 0);
+  // passageiro não cadastra local
+  assert.equal((await pax.req('POST', '/api/admin/places',
+    { name: 'X', lat: -24.41, lng: -53.52 })).status, 403);
+});
+
+test('reverse geocode offline usa a rua mais próxima da base, marcada como aproximada', async () => {
+  const r = await pax.req('GET', '/api/geo/reverse?lat=-24.4170&lng=-53.5230');
+  assert.equal(r.status, 200);
+  assert.equal(r.data.exact, false);                 // nunca finge precisão
+  assert.ok(String(r.data.text).includes('Perto de Rua Curitiba'));
+});
+
 // ================= financeiro do administrador =================
 
 test('financeiro consolida caixa, saldos e repasses com dados reais', async () => {
@@ -560,23 +680,126 @@ test('cobrança após o aceite: corrida inicia só com pagamento confirmado', as
   }
 });
 
-// ================= Google Maps =================
+// ================= Mapas (Mapbox) =================
 
-test('polyline do Google é decodificado corretamente', async () => {
-  const { decodePolyline } = await import('../server/google-maps.ts');
-  // exemplo da documentação do Google: (38.5,-120.2) (40.7,-120.95) (43.252,-126.453)
-  const pts = decodePolyline('_p~iF~ps|U_ulLnnqC_mqNvxq`@');
-  assert.equal(pts.length, 3);
-  const round = (n: number) => Math.round(n * 1e4) / 1e4;
-  assert.deepEqual(pts.map(([lng, lat]) => [round(lat), round(lng)]), [
-    [38.5, -120.2], [40.7, -120.95], [43.252, -126.453],
-  ]);
-  assert.deepEqual(decodePolyline(''), []);
-});
+const MBX_PUBLIC = 'pk.TOKEN-PUBLICO-NAVEGADOR';
+const MBX_SECRET = 'sk.TOKEN-SECRETO-SERVIDOR';
 
-test('sem chave do Google o sistema usa OSM/estimativa e diz qual foi', async () => {
+/** Limpa tokens, provedor e cache de rotas ao fim de cada teste de mapas. */
+async function resetMaps(): Promise<void> {
+  await adm.req('PUT', '/api/admin/maps-config', {
+    credentials: { MAPBOX_PUBLIC_TOKEN: '', MAPBOX_SERVER_TOKEN: '' }, provider: 'auto',
+  });
+  await adm.req('POST', '/api/admin/maps-config/clear-cache');
+}
+
+type FakeReply = { status?: number; body: unknown };
+
+/**
+ * Troca o `fetch` por uma API do Mapbox simulada e liga a rede de geo
+ * (GEO_OFFLINE=0) durante `fn`. Qualquer outro serviço externo (OSRM,
+ * Nominatim) responde 503: nenhum teste toca a internet de verdade.
+ * Devolve as URLs do Mapbox que foram chamadas.
+ */
+async function withFakeMapbox(handler: (url: URL) => FakeReply,
+  fn: (calls: URL[]) => Promise<void>): Promise<void> {
+  const realFetch = globalThis.fetch;
+  const calls: URL[] = [];
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = new URL(typeof input === 'string' ? input : input.url ?? String(input));
+    if (url.hostname === '127.0.0.1') return realFetch(input, init);
+    if (url.hostname !== 'api.mapbox.com') return new Response('fora do ar', { status: 503 });
+    calls.push(url);
+    const r = handler(url);
+    return new Response(JSON.stringify(r.body), {
+      status: r.status ?? 200, headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+  process.env.GEO_OFFLINE = '0';
+  try {
+    await fn(calls);
+  } finally {
+    process.env.GEO_OFFLINE = '1';
+    globalThis.fetch = realFetch;
+  }
+}
+
+/** Respostas no formato real das APIs do Mapbox (Directions v5 e Geocoding v6). */
+function fakeMapboxOk(url: URL): FakeReply {
+  if (url.pathname.startsWith('/directions/v5/mapbox/driving/')) {
+    return {
+      body: {
+        code: 'Ok',
+        routes: [{
+          distance: 4321.4, duration: 612.7,
+          geometry: {
+            type: 'LineString',
+            coordinates: [[ORIGIN.lng, ORIGIN.lat], [-53.53, -24.43], [DEST.lng, DEST.lat]],
+          },
+        }],
+      },
+    };
+  }
+  if (url.pathname === '/search/geocode/v6/forward') {
+    return {
+      body: {
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature', geometry: { type: 'Point', coordinates: [-53.5301, -24.4212] },
+            properties: {
+              feature_type: 'address', name: 'Rua das Hortênsias 77',
+              coordinates: { longitude: -53.5301, latitude: -24.4212, accuracy: 'rooftop' },
+              context: {
+                neighborhood: { name: 'Jardim Tropical' },
+                place: { name: 'Assis Chateaubriand' },
+              },
+            },
+          },
+          {
+            // dentro da caixa de busca, mas fora do raio de cobertura (canto do quadrado)
+            type: 'Feature', geometry: { type: 'Point', coordinates: [-53.6300, -24.5100] },
+            properties: {
+              feature_type: 'street', name: 'Rua das Hortênsias',
+              coordinates: { longitude: -53.6300, latitude: -24.5100 },
+              context: { place: { name: 'Assis Chateaubriand' } },
+            },
+          },
+        ],
+      },
+    };
+  }
+  if (url.pathname === '/search/geocode/v6/reverse') {
+    return {
+      body: {
+        type: 'FeatureCollection',
+        features: [
+          // a ordem vem do mais amplo para o mais específico de propósito:
+          // o sistema tem de escolher o endereço, não a cidade
+          {
+            type: 'Feature', geometry: { type: 'Point', coordinates: [-53.52, -24.41] },
+            properties: { feature_type: 'place', name: 'Assis Chateaubriand', context: {} },
+          },
+          {
+            type: 'Feature', geometry: { type: 'Point', coordinates: [-53.5216, -24.4156] },
+            properties: {
+              feature_type: 'address', name: 'Avenida Tupãssi 1200',
+              context: { neighborhood: { name: 'Centro' }, place: { name: 'Assis Chateaubriand' } },
+            },
+          },
+        ],
+      },
+    };
+  }
+  if (url.pathname === '/tokens/v2') {
+    return { body: { code: 'TokenValid', token: { usage: 'pk', user: 'conta-teste' } } };
+  }
+  return { status: 404, body: { message: 'Not Found' } };
+}
+
+test('sem token do Mapbox o sistema usa OSM/estimativa e diz qual foi', async () => {
   const cfg = await pax.req('GET', '/api/config');
-  assert.equal(cfg.data.maps.browser_key, null);
+  assert.equal(cfg.data.maps.mapbox_token, null);
   assert.equal(cfg.data.maps.provider, 'osm');
   assert.equal(cfg.data.maps.server_routing, 'osrm');
 
@@ -585,7 +808,6 @@ test('sem chave do Google o sistema usa OSM/estimativa e diz qual foi', async ()
   assert.equal(q.data.route.provider, 'estimativa');
   assert.equal(q.data.route.mode, 'estimativa');
   assert.equal(q.data.route.estimated, true);
-  assert.equal(q.data.route.mode_fallback, false);
 });
 
 test('procedência da rota é gravada na cotação e na corrida', async () => {
@@ -603,56 +825,271 @@ test('procedência da rota é gravada na cotação e na corrida', async () => {
   await pax.req('POST', `/api/rides/${rid}/cancel`, { reason: 'fim do teste' });
 });
 
-test('chave de servidor do Google nunca vaza para o frontend', async () => {
+test('token de servidor do Mapbox nunca vaza para o frontend', async () => {
   await adm.req('PUT', '/api/admin/maps-config', {
-    credentials: {
-      GOOGLE_MAPS_SERVER_KEY: 'CHAVE-SERVIDOR-SECRETA',
-      GOOGLE_MAPS_BROWSER_KEY: 'CHAVE-NAVEGADOR-PUBLICA',
-    },
+    credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC, MAPBOX_SERVER_TOKEN: MBX_SECRET },
   });
   try {
-    // /api/config só entrega a chave do NAVEGADOR
+    // /api/config só entrega o token PÚBLICO
     const cfg = await pax.req('GET', '/api/config');
-    assert.equal(cfg.data.maps.browser_key, 'CHAVE-NAVEGADOR-PUBLICA');
-    assert.equal(JSON.stringify(cfg.data).includes('CHAVE-SERVIDOR-SECRETA'), false);
-    assert.equal(cfg.data.maps.provider, 'google');
+    assert.equal(cfg.data.maps.mapbox_token, MBX_PUBLIC);
+    assert.equal(JSON.stringify(cfg.data).includes(MBX_SECRET), false);
+    assert.equal(cfg.data.maps.provider, 'mapbox');
+    assert.equal(cfg.data.maps.server_routing, 'mapbox');
+    assert.equal(cfg.data.maps.style, 'mapbox://styles/mapbox/streets-v12');
 
-    // na central a chave de servidor volta mascarada
+    // na central o token de servidor volta mascarado
     const mc = await adm.req('GET', '/api/admin/maps-config');
-    assert.equal(mc.data.credentials.GOOGLE_MAPS_SERVER_KEY.value, '••••••RETA');
-    assert.equal(mc.data.active_routing, 'google');
+    assert.equal(mc.data.credentials.MAPBOX_SERVER_TOKEN.value, '••••••IDOR');
+    assert.equal(JSON.stringify(mc.data).includes(MBX_SECRET), false);
+    assert.equal(mc.data.active_routing, 'mapbox');
+    assert.equal(mc.data.active_visual, 'mapbox');
 
-    // no banco está cifrada
+    // no banco está cifrado
     const row = db.prepare(
-      `SELECT value_enc FROM provider_credentials WHERE key = 'GOOGLE_MAPS_SERVER_KEY'`).get() as any;
-    assert.ok(!row.value_enc.includes('CHAVE-SERVIDOR-SECRETA'));
+      `SELECT value_enc FROM provider_credentials WHERE key = 'MAPBOX_SERVER_TOKEN'`).get() as any;
+    assert.ok(!row.value_enc.includes(MBX_SECRET));
 
     // passageiro e motoboy não acessam a configuração de mapas
     assert.equal((await pax.req('GET', '/api/admin/maps-config')).status, 403);
     assert.equal((await drv.req('PUT', '/api/admin/maps-config', { credentials: {} })).status, 403);
   } finally {
-    await adm.req('PUT', '/api/admin/maps-config', {
-      credentials: { GOOGLE_MAPS_SERVER_KEY: '', GOOGLE_MAPS_BROWSER_KEY: '' },
-    });
+    await resetMaps();
   }
 });
 
-test('forçar OpenStreetMap ignora a chave do Google', async () => {
-  await adm.req('PUT', '/api/admin/maps-config', {
-    credentials: { GOOGLE_MAPS_SERVER_KEY: 'CHAVE-QUALQUER' }, provider: 'osm',
-  });
+test('token secreto (sk.) nunca é aceito como token público', async () => {
+  try {
+    // pela central: recusado, com explicação, e nada é gravado
+    const sk = await adm.req('PUT', '/api/admin/maps-config',
+      { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_SECRET }, provider: 'osm' });
+    assert.equal(sk.status, 400);
+    assert.match(sk.data.error, /SECRETO/);
+    const lixo = await adm.req('PUT', '/api/admin/maps-config',
+      { credentials: { MAPBOX_PUBLIC_TOKEN: 'colei-errado' } });
+    assert.equal(lixo.status, 400);
+    const mc = await adm.req('GET', '/api/admin/maps-config');
+    assert.equal(mc.data.credentials.MAPBOX_PUBLIC_TOKEN.filled, false);
+    assert.equal(mc.data.provider, 'auto');          // a requisição inválida não mudou nada
+
+    // pelo .env: um sk. em MAPBOX_PUBLIC_TOKEN é ignorado, não vai ao navegador
+    process.env.MAPBOX_PUBLIC_TOKEN = MBX_SECRET;
+    const cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.mapbox_token, null);
+    assert.equal(cfg.data.maps.provider, 'osm');
+    assert.equal(JSON.stringify(cfg.data).includes(MBX_SECRET), false);
+  } finally {
+    delete process.env.MAPBOX_PUBLIC_TOKEN;
+    await resetMaps();
+  }
+});
+
+test('só o token público basta: o backend usa o mesmo para rotas e busca', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
   try {
     const mc = await adm.req('GET', '/api/admin/maps-config');
-    assert.equal(mc.data.has_server_key, true);
-    assert.equal(mc.data.active_routing, 'osrm');   // provedor forçado
-  } finally {
-    await adm.req('PUT', '/api/admin/maps-config', {
-      credentials: { GOOGLE_MAPS_SERVER_KEY: '' }, provider: 'auto',
+    assert.equal(mc.data.has_server_token, true);
+    assert.equal(mc.data.active_routing, 'mapbox');
+
+    await withFakeMapbox(fakeMapboxOk, async calls => {
+      const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q.status, 200);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].searchParams.get('access_token'), MBX_PUBLIC);
     });
+  } finally {
+    await resetMaps();
   }
 });
 
-test('cache de geo: validade é validada e a limpeza funciona', async () => {
+test('Mapbox: rota real define distância, preço e procedência — e usa o cache', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', {
+    credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC, MAPBOX_SERVER_TOKEN: MBX_SECRET },
+  });
+  try {
+    await withFakeMapbox(fakeMapboxOk, async calls => {
+      const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q.status, 200, JSON.stringify(q.data));
+      assert.equal(q.data.route.provider, 'mapbox');
+      assert.equal(q.data.route.mode, 'drive');
+      assert.equal(q.data.route.estimated, false);
+      assert.equal(q.data.route.geometry.length, 3);
+      const eco = q.data.quotes.find((x: any) => x.category === 'economica');
+      assert.equal(eco.distance_m, 4321);
+      assert.equal(eco.duration_s, 613);
+      // preço sobre a distância da rota do Mapbox: 5,50 + 2,321 km × 2,00
+      assert.equal(eco.price_cents, 550 + Math.round((4321 - 2000) * 200 / 1000));
+
+      // a chamada foi feita com o token de SERVIDOR, origem/destino em lng,lat
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].searchParams.get('access_token'), MBX_SECRET);
+      assert.equal(calls[0].searchParams.get('geometries'), 'geojson');
+      assert.ok(calls[0].pathname.endsWith(
+        `/${ORIGIN.lng},${ORIGIN.lat};${DEST.lng},${DEST.lat}`), calls[0].pathname);
+
+      // mesma rota de novo: sai do cache, sem nova chamada ao Mapbox
+      const q2 = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q2.data.route.provider, 'mapbox');
+      assert.equal(calls.length, 1);
+    });
+  } finally {
+    await resetMaps();
+  }
+});
+
+test('Mapbox: busca de endereços fica na área atendida e não guarda resultado', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
+  try {
+    await withFakeMapbox(fakeMapboxOk, async calls => {
+      const r = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua das hortensias 77'));
+      assert.equal(r.status, 200);
+      assert.equal(calls.length, 1);
+      const u = calls[0];
+      assert.equal(u.pathname, '/search/geocode/v6/forward');
+      assert.equal(u.searchParams.get('country'), 'br');
+      assert.equal(u.searchParams.get('language'), 'pt');
+      assert.equal(u.searchParams.get('proximity'), '-53.5216,-24.4156');
+      // a caixa cobre o raio de 12 km em volta do centro, e nada além
+      const [w, s, e, n] = u.searchParams.get('bbox')!.split(',').map(Number);
+      assert.ok(w < -53.63 && w > -53.65 && e > -53.41 && e < -53.39, `bbox lng ${w}..${e}`);
+      assert.ok(s < -24.52 && s > -24.53 && n > -24.31 && n < -24.30, `bbox lat ${s}..${n}`);
+
+      const [first, second] = r.data.results;
+      assert.equal(first.text, 'Rua das Hortênsias 77, Jardim Tropical, Assis Chateaubriand');
+      assert.equal(first.source, 'mapbox');
+      assert.equal(first.lat, -24.4212);
+      assert.equal(first.lng, -53.5301);
+      assert.equal(first.in_coverage, true);
+      // o canto da caixa fica fora do círculo de cobertura: vai para o fim, marcado
+      assert.equal(second.in_coverage, false);
+
+      // geocodificação não é guardada (termos do Mapbox): repetir chama de novo
+      await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua das hortensias 77'));
+      assert.equal(calls.length, 2);
+      assert.equal((db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c, 0);
+    });
+  } finally {
+    await resetMaps();
+  }
+});
+
+test('Mapbox: a base local responde primeiro e poupa a chamada externa', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
+  db.prepare(`INSERT INTO local_addresses (kind, name, norm, lat, lng, updated_at)
+    VALUES ('rua', 'Rua do Teste Mapbox', 'rua do teste mapbox', -24.4160, -53.5220, ?)`).run(Date.now());
+  try {
+    await withFakeMapbox(fakeMapboxOk, async calls => {
+      const r = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua do teste mapbox'));
+      assert.ok(r.data.results.length >= 1);
+      assert.equal(r.data.results[0].source, 'local');
+      assert.equal(calls.length, 0);
+    });
+  } finally {
+    db.prepare(`DELETE FROM local_addresses WHERE norm = 'rua do teste mapbox'`).run();
+    await resetMaps();
+  }
+});
+
+test('Mapbox: endereço do GPS escolhe o item mais específico', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
+  try {
+    await withFakeMapbox(fakeMapboxOk, async calls => {
+      const r = await pax.req('GET', `/api/geo/reverse?lat=${ORIGIN.lat}&lng=${ORIGIN.lng}`);
+      assert.equal(r.status, 200);
+      assert.equal(r.data.text, 'Avenida Tupãssi 1200, Centro, Assis Chateaubriand');
+      assert.equal(r.data.exact, true);
+      assert.equal(r.data.in_coverage, true);
+      assert.equal(calls[0].pathname, '/search/geocode/v6/reverse');
+      assert.equal(calls[0].searchParams.get('longitude'), String(ORIGIN.lng));
+      assert.equal(calls[0].searchParams.get('latitude'), String(ORIGIN.lat));
+    });
+  } finally {
+    await resetMaps();
+  }
+});
+
+test('Mapbox fora do ar ou sem rota: o sistema continua e marca a estimativa', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
+  try {
+    // token revogado: 401 em tudo
+    await withFakeMapbox(() => ({ status: 401, body: { message: 'Not Authorized - Invalid Token' } }),
+      async () => {
+        const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+        assert.equal(q.status, 200);
+        assert.equal(q.data.route.provider, 'estimativa');
+        assert.equal(q.data.route.estimated, true);
+
+        const s = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua inexistente xyz'));
+        assert.equal(s.status, 200);
+        assert.deepEqual(s.data.results, []);
+
+        const rev = await pax.req('GET', `/api/geo/reverse?lat=${ORIGIN.lat}&lng=${ORIGIN.lng}`);
+        assert.equal(rev.status, 200);
+        assert.equal(rev.data.exact, false);       // nunca um endereço inventado
+      });
+
+    // API no ar, mas sem rota entre os pontos
+    await withFakeMapbox(() => ({ body: { code: 'NoRoute', routes: [] } }), async () => {
+      const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q.data.route.provider, 'estimativa');
+    });
+    // falha não vai para o cache
+    assert.equal((db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c, 0);
+  } finally {
+    await resetMaps();
+  }
+});
+
+test('forçar OpenStreetMap ignora o token do Mapbox no backend e no navegador', async () => {
+  // token salvo + provedor forçado em OSM: o token NÃO pode ir ao frontend,
+  // senão o app tenta carregar um Mapbox com problema em vez do OSM que funciona
+  await adm.req('PUT', '/api/admin/maps-config',
+    { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC }, provider: 'osm' });
+  try {
+    const mc = await adm.req('GET', '/api/admin/maps-config');
+    assert.equal(mc.data.has_server_token, true);
+    assert.equal(mc.data.active_routing, 'osrm');   // provedor forçado
+    assert.equal(mc.data.active_visual, 'osm');
+    let cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.mapbox_token, null);
+    assert.equal(cfg.data.maps.provider, 'osm');
+
+    await withFakeMapbox(fakeMapboxOk, async calls => {
+      const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q.data.route.provider, 'estimativa');
+      assert.equal(calls.length, 0);                // nenhuma chamada ao Mapbox
+    });
+
+    // em "auto", o token volta a ser enviado
+    await adm.req('PUT', '/api/admin/maps-config', { provider: 'auto' });
+    cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.mapbox_token, MBX_PUBLIC);
+    assert.equal(cfg.data.maps.provider, 'mapbox');
+
+    // remover o token pela API (botão "Remover" da central) limpa de verdade
+    await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: '' } });
+    cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.mapbox_token, null);
+  } finally {
+    await resetMaps();
+  }
+});
+
+test('estilo do mapa: só os da lista são aceitos', async () => {
+  try {
+    assert.equal((await adm.req('PUT', '/api/admin/maps-config',
+      { style: 'https://site-malicioso.example/estilo.json' })).status, 400);
+    const ok = await adm.req('PUT', '/api/admin/maps-config',
+      { style: 'mapbox://styles/mapbox/satellite-streets-v12' });
+    assert.equal(ok.status, 200);
+    const cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.style, 'mapbox://styles/mapbox/satellite-streets-v12');
+  } finally {
+    await adm.req('PUT', '/api/admin/maps-config', { style: 'mapbox://styles/mapbox/streets-v12' });
+  }
+});
+
+test('cache de rotas: validade é validada e a limpeza funciona', async () => {
   assert.equal((await adm.req('PUT', '/api/admin/maps-config',
     { cache_hours: { route: 99999 } })).status, 400);
   assert.equal((await adm.req('PUT', '/api/admin/maps-config',
@@ -660,26 +1097,125 @@ test('cache de geo: validade é validada e a limpeza funciona', async () => {
 
   const ok = await adm.req('PUT', '/api/admin/maps-config', { cache_hours: { route: 48 } });
   assert.equal(ok.status, 200);
+  assert.equal((await adm.req('GET', '/api/admin/maps-config')).data.cache_hours.route, 48);
 
   db.prepare(`INSERT INTO geo_cache (key, kind, payload, created_at, expires_at)
-    VALUES ('x','route','{}',?,?)`).run(Date.now(), Date.now() + 60000);
+    VALUES ('x','rota_mapbox','{}',?,?)`).run(Date.now(), Date.now() + 60000);
   const limpa = await adm.req('POST', '/api/admin/maps-config/clear-cache');
   assert.equal(limpa.status, 200);
   assert.ok(limpa.data.removed >= 1);
   assert.equal((db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c, 0);
 });
 
-test('diagnóstico de mapas avisa quando não há chave', async () => {
+test('diagnóstico de mapas avisa quando não há token', async () => {
   const r = await adm.req('POST', '/api/admin/maps-config/test');
   assert.equal(r.status, 200);
-  assert.equal(r.data.checks[0].item, 'Chave de servidor');
+  assert.equal(r.data.checks[0].item, 'Token do Mapbox');
   assert.equal(r.data.checks[0].ok, false);
   assert.match(r.data.checks[0].detail, /OpenStreetMap/i);
 });
 
-test('busca de lugar exige place_id e respeita permissão', async () => {
-  assert.equal((await pax.req('GET', '/api/geo/place')).status, 400);
-  assert.equal((await actor().req('GET', '/api/geo/place?place_id=abc')).status, 401);
+test('diagnóstico de mapas: tudo certo, e token público restrito por URL é explicado', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
+  try {
+    await withFakeMapbox(fakeMapboxOk, async () => {
+      const r = await adm.req('POST', '/api/admin/maps-config/test');
+      const byItem = Object.fromEntries(r.data.checks.map((c: any) => [c.item, c]));
+      assert.equal(byItem['Token público (mapa nos aplicativos)'].ok, true);
+      assert.match(byItem['Token público (mapa nos aplicativos)'].detail, /conta-teste/);
+      assert.equal(byItem['Rotas (Directions API)'].ok, true);
+      assert.match(byItem['Rotas (Directions API)'].detail, /4\.3 km/);
+      assert.equal(byItem['Busca de endereços (Geocoding API)'].ok, true);
+      assert.equal(byItem['Endereço do GPS (geocodificação reversa)'].ok, true);
+      // o token nunca aparece no relatório
+      assert.equal(JSON.stringify(r.data).includes(MBX_PUBLIC), false);
+    });
+
+    // token público com restrição de URL: o servidor leva 403 nas APIs
+    await withFakeMapbox(url => url.pathname === '/tokens/v2'
+      ? fakeMapboxOk(url) : { status: 403, body: { message: 'Forbidden' } }, async () => {
+      const r = await adm.req('POST', '/api/admin/maps-config/test');
+      const rota = r.data.checks.find((c: any) => c.item === 'Rotas (Directions API)');
+      assert.equal(rota.ok, false);
+      assert.match(rota.detail, /Token de servidor/);
+      assert.equal(JSON.stringify(r.data).includes(MBX_PUBLIC), false);
+    });
+  } finally {
+    await resetMaps();
+  }
+});
+
+// ================= páginas (VAIRO) =================
+
+/** Faz login e devolve o cookie de sessão, para pedir páginas como aquele usuário. */
+async function sessionCookie(email: string, password: string): Promise<string> {
+  const r = await fetch(base + '/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  assert.equal(r.status, 200);
+  return /amt_session=[^;]*/.exec(r.headers.getSetCookie()[0])![0];
+}
+
+test('páginas: cada área tem seu endereço e a entrada mostra a Visão Geral', async () => {
+  const page = async (p: string) => {
+    const r = await fetch(base + p, { redirect: 'manual' });
+    return { status: r.status, html: await r.text(), type: r.headers.get('content-type') || '' };
+  };
+
+  // visitante sem sessão: "/" é a Visão Geral do ecossistema
+  const home = await page('/');
+  assert.equal(home.status, 200);
+  assert.match(home.html, /data-area="visao"/);
+  assert.match(home.html, /Mobilidade, Entregas &amp; Lojas/);
+  assert.equal((await page('/visao-geral')).html, home.html);
+
+  // cada área abre a própria página, sem misturar as opções das outras
+  const pax = await page('/passageiro');
+  assert.match(pax.html, /data-area="passageiro"/);
+  assert.match(pax.html, /Entrar como Passageiro/);
+  assert.doesNotMatch(pax.html, /Login Motorista/);
+  const drv = await page('/motorista');
+  assert.match(drv.html, /data-area="motorista"/);
+  assert.match(drv.html, /Login Motorista VAIRO/);
+  assert.doesNotMatch(drv.html, /Entrar como Passageiro/);
+  const emp = await page('/empresa');
+  assert.match(emp.html, /data-area="empresa"/);
+  // a área Empresa ainda não existe: a página avisa, sem formulário de login falso
+  assert.match(emp.html, /ainda não está disponível/);
+  assert.doesNotMatch(emp.html, /<form|<input/);
+  assert.match((await page('/admin')).html, /data-area="central"/);
+
+  // a marca antiga não aparece em nenhuma página
+  for (const h of [home, pax, drv, emp]) assert.doesNotMatch(h.html, /Assis MotoTáxi/);
+
+  // a fonte e os ícones são servidos pelo próprio app (funciona offline, sem CDN)
+  const font = await fetch(base + '/fonts/inter-latin-var.woff2');
+  assert.equal(font.status, 200);
+  assert.equal(font.headers.get('content-type'), 'font/woff2');
+  assert.equal((await fetch(base + '/js/icons.js')).status, 200);
+});
+
+test('páginas: "/" leva quem já entrou direto ao seu aplicativo', async () => {
+  // notificações e retorno do pagamento apontam para "/": o passageiro cai no app
+  const paxCookie = await sessionCookie('ana@v2.test', 'senha12345');
+  const asPax = await fetch(base + '/', { headers: { Cookie: paxCookie }, redirect: 'manual' });
+  assert.equal(asPax.status, 200);
+  assert.match(await asPax.text(), /data-area="passageiro"/);
+
+  const drvCookie = await sessionCookie('beto@v2.test', 'senha12345');
+  const asDrv = await fetch(base + '/', { headers: { Cookie: drvCookie }, redirect: 'manual' });
+  assert.equal(asDrv.status, 302);
+  assert.equal(asDrv.headers.get('location'), '/motorista');
+
+  const admCookie = await sessionCookie('dono2@teste.com', 'senha-admin-v2-teste');
+  const asAdm = await fetch(base + '/', { headers: { Cookie: admCookie }, redirect: 'manual' });
+  assert.equal(asAdm.status, 302);
+  assert.equal(asAdm.headers.get('location'), '/admin');
+
+  // a Visão Geral continua acessível para quem está conectado
+  const visao = await fetch(base + '/visao-geral', { headers: { Cookie: paxCookie } });
+  assert.match(await visao.text(), /data-area="visao"/);
 });
 
 // ================= permissões =================
@@ -700,4 +1236,356 @@ test('permissões: cada perfil só faz o que lhe cabe', async () => {
   await drv.req('POST', `/api/driver/rides/${rid}/cancel`, { reason: 'fim do teste' });
   const act = await pax.req('GET', '/api/rides/active');
   if (act.data.ride) await pax.req('POST', `/api/rides/${act.data.ride.id}/cancel`, {});
+});
+
+// ================= base de endereços: ruas de mesmo nome =================
+
+/** Resposta do Overpass simulada: a cidade e um distrito a ~13 km, com ruas de mesmo nome. */
+function fakeOverpass(): unknown {
+  const way = (name: string, lat: number, lon: number) =>
+    ({ type: 'way', center: { lat, lon }, tags: { highway: 'residential', name } });
+  const filler = Array.from({ length: 12 }, (_, i) =>
+    way(`Rua Projetada ${String.fromCharCode(65 + i)}`, -24.41 - i * 0.001, -53.52));
+  return {
+    elements: [
+      // Rua Argentina NA CIDADE: três trechos seguidos, perto do centro
+      way('Rua Argentina', -24.4200, -53.5300),
+      way('Rua Argentina', -24.4200, -53.5270),
+      way('Rua Argentina', -24.4200, -53.5240),
+      // Rua Argentina NO DISTRITO, ~13 km a oeste do centro
+      way('Rua Argentina', -24.4200, -53.6500),
+      way('Rua Argentina', -24.4200, -53.6480),
+      { type: 'node', lat: -24.4190, lon: -53.6490, tags: { place: 'village', name: 'Bragantina' } },
+      way('Rua 7 de Setembro', -24.4100, -53.5200),
+      // o mesmo número existe nas duas ruas Argentina
+      { type: 'node', lat: -24.4201, lon: -53.5268, tags: { 'addr:street': 'Rua Argentina', 'addr:housenumber': '100' } },
+      { type: 'node', lat: -24.4201, lon: -53.6491, tags: { 'addr:street': 'Rua Argentina', 'addr:housenumber': '100' } },
+      ...filler,
+    ],
+  };
+}
+
+/** Troca o `fetch` para responder pelo Overpass; o servidor de teste continua real. */
+async function withFakeOverpass(fn: (calls: { n: number }) => Promise<void>, ok = true): Promise<void> {
+  const realFetch = globalThis.fetch;
+  const calls = { n: 0 };
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = new URL(typeof input === 'string' ? input : input.url ?? String(input));
+    if (url.hostname === '127.0.0.1') return realFetch(input, init);
+    calls.n++;
+    return ok
+      ? new Response(JSON.stringify(fakeOverpass()), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      : new Response('fora do ar', { status: 503 });
+  }) as typeof fetch;
+  try { await fn(calls); } finally { globalThis.fetch = realFetch; }
+}
+
+test('base: rua de mesmo nome na cidade e no distrito não vira um ponto no meio do caminho', async () => {
+  try {
+    await withFakeOverpass(async () => {
+      const imp = await adm.req('POST', '/api/admin/maps-config/import-base');
+      assert.equal(imp.status, 200, JSON.stringify(imp.data));
+    });
+
+    // duas entradas: a da cidade (nome simples) e a do distrito (com a localidade)
+    const rows = db.prepare(
+      `SELECT norm, detail, lat, lng FROM local_addresses WHERE name = 'Rua Argentina' ORDER BY norm`).all() as any[];
+    assert.equal(rows.length, 2, JSON.stringify(rows));
+    assert.equal(rows[0].norm, 'rua argentina');
+    assert.equal(rows[0].detail, null);
+    // o ponto é um trecho de verdade da rua da cidade — antes era a média com o
+    // distrito (lng ≈ -53.58), a quilômetros de qualquer rua
+    assert.equal(rows[0].lat, -24.42);
+    assert.equal(rows[0].lng, -53.527);
+    assert.equal(rows[1].norm, 'rua argentina · bragantina');
+    assert.equal(rows[1].detail, 'Bragantina');
+    assert.ok(rows[1].lng < -53.64);
+
+    // a busca traz primeiro a rua da cidade, dentro da área e escolhível
+    const r = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua argentina'));
+    const [cidade, distrito] = r.data.results;
+    assert.equal(cidade.text, 'Rua Argentina, Assis Chateaubriand');
+    assert.equal(cidade.in_coverage, true);
+    assert.ok(cidade.distance_m < 1500, `distância ${cidade.distance_m}`);
+    // a do distrito continua visível, identificada e marcada como fora de área
+    assert.equal(distrito.text, 'Rua Argentina, Bragantina, Assis Chateaubriand');
+    assert.equal(distrito.in_coverage, false);
+    assert.ok(distrito.distance_m > 12000);
+
+    // e dá para cotar uma corrida até ela (antes: "fora da área de cobertura")
+    const q = await pax.req('POST', '/api/quotes', {
+      origin: ORIGIN, dest: { lat: cidade.lat, lng: cidade.lng, text: cidade.text },
+    });
+    assert.equal(q.status, 200, JSON.stringify(q.data));
+
+    // número de casa: cada rua fica com o seu, sem misturar cidade e distrito
+    const n = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua argentina 100'));
+    assert.equal(n.data.results[0].number_how, 'exato');
+    assert.equal(n.data.results[0].lng, -53.5268);
+    assert.equal(n.data.results[0].in_coverage, true);
+    assert.equal(n.data.results[1].lng, -53.6491);
+
+    // "7" faz parte do nome da rua, não é número de casa
+    const sete = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua 7 de setembro'));
+    assert.equal(sete.data.results[0].text, 'Rua 7 de Setembro, Assis Chateaubriand');
+    assert.equal(sete.data.results[0].number, undefined);
+    const sete250 = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua 7 de setembro 250'));
+    assert.equal(sete250.data.results[0].number, '250');
+
+    // ponto ajustado pelo passageiro vai para a rua mais próxima dele
+    const learn = await pax.req('POST', '/api/geo/learn',
+      { street: 'Rua Argentina', number: 321, lat: -24.4201, lng: -53.5245 });
+    assert.equal(learn.status, 200, JSON.stringify(learn.data));
+    const pt = db.prepare(`SELECT street_norm FROM address_points WHERE number = 321`).get() as any;
+    assert.equal(pt.street_norm, 'rua argentina');
+  } finally {
+    db.prepare(`DELETE FROM local_addresses WHERE source = 'osm'`).run();
+    db.prepare(`DELETE FROM address_points`).run();
+  }
+});
+
+test('base em formato antigo é baixada de novo sozinha; se o OSM falhar, nada se perde', async () => {
+  const { refreshOutdatedBase, BASE_VERSION } = await import('../server/address-base.ts');
+  try {
+    // sem base nenhuma: não há o que atualizar (e nada é baixado)
+    db.prepare(`DELETE FROM local_addresses`).run();
+    await withFakeOverpass(async calls => {
+      assert.equal(await refreshOutdatedBase(), 'vazia');
+      assert.equal(calls.n, 0);
+    });
+
+    // base antiga, com a rua no ponto médio errado (como estava em produção)
+    db.prepare(`INSERT INTO local_addresses (kind, name, norm, lat, lng, updated_at)
+      VALUES ('rua', 'Rua Argentina', 'rua argentina', -24.42, -53.5758, ?)`).run(Date.now());
+    setSetting('address_base_version', '1');
+
+    // OpenStreetMap fora do ar: a base antiga continua lá
+    await withFakeOverpass(async () => {
+      assert.equal(await refreshOutdatedBase(), 'falhou');
+    }, false);
+    assert.equal((db.prepare(`SELECT lng FROM local_addresses WHERE norm = 'rua argentina'`).get() as any).lng, -53.5758);
+
+    // OpenStreetMap respondendo: baixa de novo e a rua vai para o lugar certo
+    await withFakeOverpass(async () => {
+      assert.equal(await refreshOutdatedBase(), 'atualizada');
+    });
+    assert.equal((db.prepare(`SELECT lng FROM local_addresses WHERE norm = 'rua argentina'`).get() as any).lng, -53.527);
+    assert.equal(dbMod.getSetting('address_base_version'), BASE_VERSION);
+
+    // já no formato atual: não baixa outra vez
+    await withFakeOverpass(async calls => {
+      assert.equal(await refreshOutdatedBase(), 'atual');
+      assert.equal(calls.n, 0);
+    });
+  } finally {
+    db.prepare(`DELETE FROM local_addresses WHERE source = 'osm'`).run();
+    db.prepare(`DELETE FROM address_points`).run();
+  }
+});
+
+// ================= número de casa (Google / Mapbox) =================
+
+const GOOGLE_KEY = 'AIza-CHAVE-GOOGLE-DE-TESTE';
+/** Centro da avenida na base (onde o pino caía antes) e a casa de verdade. */
+const TUPASSI_CENTRO = { lat: -24.4156, lng: -53.5216 };
+const CASA_6161 = { lat: -24.4302, lng: -53.5391 };
+
+type ExtReply = { status?: number; body: unknown };
+
+/** Simula Google e Mapbox, com a rede de geo ligada, e conta as chamadas a cada um. */
+async function withFakeGeocoders(
+  handlers: { google?: (u: URL) => ExtReply; mapbox?: (u: URL) => ExtReply },
+  fn: (calls: { google: URL[]; mapbox: URL[] }) => Promise<void>): Promise<void> {
+  const realFetch = globalThis.fetch;
+  const calls = { google: [] as URL[], mapbox: [] as URL[] };
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = new URL(typeof input === 'string' ? input : input.url ?? String(input));
+    if (url.hostname === '127.0.0.1') return realFetch(input, init);
+    const which = url.hostname === 'maps.googleapis.com' ? 'google'
+      : url.hostname === 'api.mapbox.com' ? 'mapbox' : null;
+    if (!which || !handlers[which]) return new Response('fora do ar', { status: 503 });
+    calls[which].push(url);
+    const r = handlers[which]!(url);
+    return new Response(JSON.stringify(r.body), {
+      status: r.status ?? 200, headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+  process.env.GEO_OFFLINE = '0';
+  try { await fn(calls); } finally {
+    process.env.GEO_OFFLINE = '1';
+    globalThis.fetch = realFetch;
+  }
+}
+
+/** Resposta do Google Geocoding no formato real. */
+function googleResult(number: string, loc: { lat: number; lng: number },
+  locationType = 'ROOFTOP', types = ['street_address']): ExtReply {
+  return {
+    body: {
+      status: 'OK',
+      results: [{
+        types,
+        formatted_address: `Av. Tupãssi, ${number} - Centro, Assis Chateaubriand - PR`,
+        address_components: [
+          ...(number ? [{ long_name: number, short_name: number, types: ['street_number'] }] : []),
+          { long_name: 'Avenida Tupãssi', short_name: 'Av. Tupãssi', types: ['route'] },
+        ],
+        geometry: { location: loc, location_type: locationType },
+      }],
+    },
+  };
+}
+
+function seedTupassi(): void {
+  db.prepare(`INSERT OR REPLACE INTO local_addresses (kind, name, norm, lat, lng, updated_at)
+    VALUES ('rua', 'Avenida Tupãssi', 'avenida tupassi', ?, ?, ?)`)
+    .run(TUPASSI_CENTRO.lat, TUPASSI_CENTRO.lng, Date.now());
+}
+async function cleanNumberTests(): Promise<void> {
+  db.prepare(`DELETE FROM local_addresses WHERE norm = 'avenida tupassi'`).run();
+  db.prepare(`DELETE FROM address_points`).run();
+  await adm.req('PUT', '/api/admin/maps-config', {
+    credentials: { GOOGLE_GEOCODING_KEY: '', MAPBOX_PUBLIC_TOKEN: '', MAPBOX_SERVER_TOKEN: '' }, provider: 'auto',
+  });
+  await adm.req('POST', '/api/admin/maps-config/clear-cache');
+}
+const buscaTupassi = () => pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('avenida tupassi 6161'));
+
+test('número de casa: sem serviço configurado o pino fica no centro e pede ajuste (como antes)', async () => {
+  seedTupassi();
+  try {
+    await withFakeGeocoders({}, async calls => {
+      const r = await buscaTupassi();
+      const top = r.data.results[0];
+      assert.equal(top.text, 'Avenida Tupãssi, 6161, Assis Chateaubriand');
+      assert.equal(top.number_how, 'centro');
+      assert.equal(top.approx, true);
+      assert.equal(top.lat, TUPASSI_CENTRO.lat);
+      assert.equal(calls.google.length + calls.mapbox.length, 0);
+    });
+  } finally { await cleanNumberTests(); }
+});
+
+test('número de casa: o Google coloca o pino na casa certa, e a chave não vaza', async () => {
+  seedTupassi();
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { GOOGLE_GEOCODING_KEY: GOOGLE_KEY } });
+  try {
+    await withFakeGeocoders({ google: () => googleResult('6161', CASA_6161) }, async calls => {
+      const r = await buscaTupassi();
+      const top = r.data.results[0];
+      assert.equal(top.number_how, 'localizado');
+      assert.equal(top.approx, false);                 // não pede mais o ajuste do pino
+      assert.equal(top.lat, CASA_6161.lat);
+      assert.equal(top.lng, CASA_6161.lng);
+      assert.equal(top.in_coverage, true);
+      assert.equal(top.number, '6161');
+      // a distância ao centro foi recalculada para a casa (≈ 2,4 km), não a do meio da avenida
+      assert.ok(top.distance_m > 2000 && top.distance_m < 3000, `distância ${top.distance_m}`);
+
+      // a pergunta ao Google leva rua, número e cidade, restrita ao Brasil
+      assert.equal(calls.google.length, 1);
+      const u = calls.google[0];
+      assert.equal(u.searchParams.get('address'), 'Avenida Tupãssi, 6161, Assis Chateaubriand - PR, Brasil');
+      assert.equal(u.searchParams.get('components'), 'country:BR');
+      assert.equal(u.searchParams.get('key'), GOOGLE_KEY);
+
+      // mesma busca de novo: sai do cache, sem pagar outra chamada
+      const again = await buscaTupassi();
+      assert.equal(again.data.results[0].lat, CASA_6161.lat);
+      assert.equal(calls.google.length, 1);
+
+      // dá para cotar a corrida até a casa
+      const q = await pax.req('POST', '/api/quotes', {
+        origin: ORIGIN, dest: { lat: top.lat, lng: top.lng, text: top.text },
+      });
+      assert.equal(q.status, 200, JSON.stringify(q.data));
+    });
+
+    // a chave fica só no servidor: mascarada na central, ausente da configuração pública
+    const mc = await adm.req('GET', '/api/admin/maps-config');
+    assert.equal(mc.data.credentials.GOOGLE_GEOCODING_KEY.filled, true);
+    assert.equal(JSON.stringify(mc.data).includes(GOOGLE_KEY), false);
+    assert.equal(JSON.stringify((await pax.req('GET', '/api/config')).data).includes(GOOGLE_KEY), false);
+  } finally { await cleanNumberTests(); }
+});
+
+test('número de casa: resposta vaga ou errada do Google não é aceita como exata', async () => {
+  seedTupassi();
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { GOOGLE_GEOCODING_KEY: GOOGLE_KEY } });
+  const semAcerto = async (reply: ExtReply, porque: string) => {
+    await adm.req('POST', '/api/admin/maps-config/clear-cache');
+    await withFakeGeocoders({ google: () => reply }, async () => {
+      const top = (await buscaTupassi()).data.results[0];
+      assert.equal(top.number_how, 'centro', porque);
+      assert.equal(top.approx, true, porque);
+      assert.equal(top.lat, TUPASSI_CENTRO.lat, porque);
+    });
+  };
+  try {
+    await semAcerto(googleResult('', CASA_6161, 'GEOMETRIC_CENTER', ['route']), 'só achou a rua');
+    await semAcerto(googleResult('6161', CASA_6161, 'APPROXIMATE'), 'posição aproximada');
+    await semAcerto(googleResult('6100', CASA_6161), 'devolveu outro número');
+    await semAcerto(googleResult('6161', { lat: -24.95, lng: -53.46 }), 'mesmo endereço em outra cidade');
+    await semAcerto({ body: { status: 'ZERO_RESULTS', results: [] } }, 'não encontrou');
+    await semAcerto({ body: { status: 'REQUEST_DENIED', error_message: 'API key inválida' } }, 'chave recusada');
+    await semAcerto({ status: 500, body: {} }, 'Google fora do ar');
+  } finally { await cleanNumberTests(); }
+});
+
+test('número de casa: sem chave do Google, o Mapbox responde; "forçar OSM" desliga os dois', async () => {
+  seedTupassi();
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC } });
+  const mapboxAddr = (num: string, accuracy: string): ExtReply => ({
+    body: {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature', geometry: { type: 'Point', coordinates: [CASA_6161.lng, CASA_6161.lat] },
+        properties: {
+          feature_type: 'address', name: `Avenida Tupãssi ${num}`,
+          coordinates: { longitude: CASA_6161.lng, latitude: CASA_6161.lat, accuracy },
+          context: { address: { address_number: num, street_name: 'Avenida Tupãssi' } },
+        },
+      }],
+    },
+  });
+  try {
+    await withFakeGeocoders({ mapbox: () => mapboxAddr('6161', 'rooftop') }, async calls => {
+      const top = (await buscaTupassi()).data.results[0];
+      assert.equal(top.number_how, 'localizado');
+      assert.equal(top.lat, CASA_6161.lat);
+      assert.equal(calls.mapbox.length, 1);
+      assert.equal(calls.mapbox[0].searchParams.get('types'), 'address');
+      assert.equal(calls.mapbox[0].searchParams.get('q'), 'Avenida Tupãssi 6161');
+      // resultado do Mapbox não é guardado (termos do modo temporário)
+      assert.equal((db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c, 0);
+    });
+    // Mapbox só soube a rua, ou devolveu outro número: continua pedindo o ajuste
+    await withFakeGeocoders({ mapbox: () => mapboxAddr('6161', 'street') }, async () => {
+      assert.equal((await buscaTupassi()).data.results[0].number_how, 'centro');
+    });
+    await withFakeGeocoders({ mapbox: () => mapboxAddr('61', 'rooftop') }, async () => {
+      assert.equal((await buscaTupassi()).data.results[0].number_how, 'centro');
+    });
+
+    // ponto já confirmado por um passageiro vale mais que qualquer serviço: nem consulta
+    await pax.req('POST', '/api/geo/learn',
+      { street: 'Avenida Tupãssi', number: 6161, lat: -24.4300, lng: -53.5390 });
+    await withFakeGeocoders({ mapbox: () => mapboxAddr('6161', 'rooftop') }, async calls => {
+      const top = (await buscaTupassi()).data.results[0];
+      assert.equal(top.number_how, 'exato');
+      assert.equal(top.lat, -24.43);
+      assert.equal(calls.mapbox.length, 0);
+    });
+    db.prepare(`DELETE FROM address_points`).run();
+
+    // "Forçar OpenStreetMap": nenhuma chamada paga
+    await adm.req('PUT', '/api/admin/maps-config',
+      { credentials: { GOOGLE_GEOCODING_KEY: GOOGLE_KEY }, provider: 'osm' });
+    await withFakeGeocoders({
+      google: () => googleResult('6161', CASA_6161), mapbox: () => mapboxAddr('6161', 'rooftop'),
+    }, async calls => {
+      assert.equal((await buscaTupassi()).data.results[0].number_how, 'centro');
+      assert.equal(calls.google.length + calls.mapbox.length, 0);
+    });
+  } finally { await cleanNumberTests(); }
 });

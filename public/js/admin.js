@@ -1,4 +1,4 @@
-/* VAIRO — central administrativa (V2) */
+/* VAIRO — central administrativa */
 'use strict';
 
 const S = { user: null, section: 'dashboard', testMode: false };
@@ -659,16 +659,20 @@ async function secPayments() {
   });
 }
 
-/* ============ mapas (Google Maps Platform) ============ */
+/* ============ mapas (Mapbox) ============ */
 async function secMaps() {
   const m = await api('/api/admin/maps-config');
+  const { places } = await api('/api/admin/places');
   const cred = (k, label, help) => {
     const v = m.credentials[k];
     const origem = v.source === 'banco' ? '<span class="pill green">salva aqui</span>'
       : v.source === 'ambiente' ? '<span class="pill blue">vem do .env</span>'
         : '<span class="pill gray">não configurada</span>';
+    const remover = v.source === 'banco'
+      ? ` <button class="btn btn-outline btn-sm" data-mk-clear="${k}" type="button"
+            style="padding:2px 8px;font-size:.75rem">Remover</button>` : '';
     return `<div class="field">
-      <label>${label} ${origem}</label>
+      <label>${label} ${origem}${remover}</label>
       <input class="input" data-mk="${k}" type="password" autocomplete="off"
         placeholder="${v.filled ? escapeHtml(v.value) : 'cole aqui'}">
       <p class="muted small" style="margin-top:4px">${help}</p>
@@ -676,7 +680,7 @@ async function secMaps() {
   };
   const cacheRows = m.cache.length
     ? m.cache.map(c => `<tr>
-        <td data-l="Tipo">${escapeHtml(c.kind)}</td>
+        <td data-l="Tipo">${c.kind === 'rota_mapbox' ? 'Rotas (Mapbox)' : escapeHtml(c.kind)}</td>
         <td data-l="Entradas">${c.entradas}</td>
         <td data-l="Chamadas evitadas"><b style="color:var(--green)">${c.acertos}</b></td>
       </tr>`).join('')
@@ -685,67 +689,117 @@ async function secMaps() {
   main().innerHTML = `
     <h2 class="mb">🗺️ Mapas</h2>
     <div class="fin-grid mb">
-      <div class="fin-card ${m.active_routing === 'google' ? 'in' : 'warn'}">
-        <div class="fv">${m.active_routing === 'google' ? 'Google' : 'OSRM'}</div>
+      <div class="fin-card ${m.active_routing === 'mapbox' ? 'in' : 'warn'}">
+        <div class="fv">${m.active_routing === 'mapbox' ? 'Mapbox' : 'OSRM'}</div>
         <div class="fl">Rotas e distâncias (backend)</div></div>
-      <div class="fin-card ${m.active_visual === 'google' ? 'in' : 'warn'}">
-        <div class="fv">${m.active_visual === 'google' ? 'Google' : 'OpenStreetMap'}</div>
+      <div class="fin-card ${m.active_visual === 'mapbox' ? 'in' : 'warn'}">
+        <div class="fv">${m.active_visual === 'mapbox' ? 'Mapbox' : 'OpenStreetMap'}</div>
         <div class="fl">Mapa visual (aplicativos)</div></div>
     </div>
-    ${m.active_routing !== 'google' ? `<div class="testbar">
-      🗺️ Sem chave do Google: o sistema usa OpenStreetMap/OSRM — mapa real e gratuito,
-      porém com endereços menos completos e sem modo de motocicleta.</div>` : ''}
+    ${m.active_routing !== 'mapbox' ? `<div class="testbar">
+      🗺️ ${m.provider === 'osm' && m.has_server_token
+      ? 'OpenStreetMap forçado: o token do Mapbox está salvo, mas não é usado.'
+      : 'Sem token do Mapbox: o sistema usa OpenStreetMap/OSRM — mapa real e gratuito.'}
+      Baixe a base local de endereços abaixo para a busca ficar completa e instantânea.</div>` : ''}
 
     <div class="card">
-      <h3>Passo 1 · Criar as chaves no Google Cloud</h3>
+      <h3>📍 Base local de endereços <span class="pill ${m.address_base.total ? 'green' : 'gray'}">
+        ${m.address_base.total ? m.address_base.total + ' endereços' : 'não baixada'}</span></h3>
+      <p class="muted small mb">Baixa <b>todas as ruas, bairros e estabelecimentos</b> da cidade
+        do OpenStreetMap e guarda no banco. A busca de endereços passa a ser instantânea e
+        completa, <b>sem chave de API e sem custo</b>. Refaça de vez em quando (ex.: a cada
+        6 meses) para pegar ruas novas.</p>
+      ${m.address_base.total ? `<div class="fin-grid mb">
+        <div class="fin-card in"><div class="fv">${m.address_base.ruas}</div><div class="fl">Ruas</div></div>
+        <div class="fin-card in"><div class="fv">${m.address_base.bairros}</div><div class="fl">Bairros</div></div>
+        <div class="fin-card in"><div class="fv">${m.address_base.locais}</div><div class="fl">Locais</div></div>
+      </div>
+      <p class="muted small mb">Última atualização: ${m.address_base.updated_at
+      ? new Date(m.address_base.updated_at).toLocaleString('pt-BR') : '—'}</p>` : ''}
+      <button class="btn btn-primary" id="mp-import-base">
+        ${m.address_base.total ? 'Atualizar base de endereços' : 'Baixar base de endereços agora'}</button>
+      <div id="mp-base-result" class="mt"></div>
+    </div>
+
+    <div class="card">
+      <h3>🏪 Estabelecimentos cadastrados à mão
+        <span class="pill ${places.length ? 'green' : 'gray'}">${places.length}</span></h3>
+      <p class="muted small mb">O OpenStreetMap não conhece todo comércio da cidade. Cadastre aqui
+        o que faltar — <b>Mercado Lorena, Advocacia Fulano, Mecânica do João…</b> — e o local
+        aparece na busca dos passageiros na mesma hora. Sobrevive às atualizações da base.</p>
+      ${places.length ? places.map(p => `
+        <div class="list-item">
+          <span style="font-size:1.1rem">📌</span>
+          <div class="li-main"><div class="li-title">${escapeHtml(p.name)}</div>
+            <div class="li-sub">${escapeHtml(p.tags || '')}${p.detail ? ' · ' + escapeHtml(p.detail) : ''}</div></div>
+          <button class="btn btn-outline btn-sm" data-pl-del="${p.id}">Remover</button>
+        </div>`).join('') : ''}
+      <h3 class="mt">Adicionar local</h3>
+      <div class="field"><label>Nome do estabelecimento</label>
+        <input class="input" id="pl-name" placeholder="ex.: Mercado Lorena"></div>
+      <div class="field"><label>Palavras-chave (como as pessoas procuram)</label>
+        <input class="input" id="pl-tags" placeholder="ex.: mercado supermercado mercadinho"></div>
+      <div class="field"><label>Onde fica (endereço, ou cole coordenadas "lat, lng")</label>
+        <input class="input" id="pl-ref" placeholder="ex.: Avenida Tupassi 450 — ou -24.4156, -53.5216"></div>
+      <button class="btn btn-navy btn-sm" id="pl-locate">1 · Localizar no mapa</button>
+      <div id="pl-options" class="mt"></div>
+      <button class="btn btn-primary mt" id="pl-save" disabled>2 · Salvar local</button>
+    </div>
+
+    <div class="card">
+      <h3>Passo 1 · Criar a conta e o token no Mapbox</h3>
       <ol class="muted small" style="padding-left:18px;line-height:1.9">
-        <li>Acesse <a href="https://console.cloud.google.com/google/maps-apis/credentials" target="_blank" rel="noopener">console.cloud.google.com</a>, crie um projeto e <b>ative o faturamento</b> (o Google exige cartão; há US$ 200/mês de crédito gratuito).</li>
-        <li>Em <b>APIs e serviços</b>, ative: <b>Maps JavaScript API</b>, <b>Places API (New)</b>, <b>Geocoding API</b> e <b>Routes API</b>.</li>
-        <li>Crie <b>duas</b> chaves em Credenciais:
-          <ul>
-            <li><b>Chave do navegador</b> → restrição <i>Referenciadores HTTP</i> com o seu domínio, e restrita à <i>Maps JavaScript API</i>.</li>
-            <li><b>Chave de servidor</b> → restrição por <i>endereço IP</i> (o do servidor), restrita a <i>Places (New)</i>, <i>Geocoding</i> e <i>Routes</i>.</li>
-          </ul>
-        </li>
-        <li>Em <b>Cotas</b>, defina um teto diário por API e crie um <b>alerta de orçamento</b> para não ter surpresa na fatura.</li>
+        <li>Crie a conta em <a href="https://account.mapbox.com/" target="_blank" rel="noopener">account.mapbox.com</a>
+          (há franquia gratuita mensal de mapas, rotas e buscas — confira os limites atuais na página de preços).</li>
+        <li>Na página <b>Tokens</b>, copie o <b>Default public token</b> ou crie um novo. Ele começa com <b>pk.</b></li>
+        <li>Recomendado: em <b>URL restrictions</b> do token, informe o endereço do seu site
+          (ex.: <i>https://seudominio.com.br</i>). Assim ninguém usa o seu token em outro site.</li>
+        <li>Se você restringir por URL, crie um <b>segundo token sem restrição</b> para o servidor
+          (rotas e busca de endereços são chamadas pelo backend, que não tem URL) e cole-o no campo
+          "Token de servidor" abaixo.</li>
       </ol>
     </div>
 
     <div class="card">
-      <h3>Passo 2 · Colar as chaves</h3>
-      <p class="muted small mb">Ficam cifradas no banco. Campos em branco não alteram o que já está salvo.</p>
-      ${cred('GOOGLE_MAPS_SERVER_KEY', 'Chave de servidor',
-    'Usada só pelo backend (Routes, Places, Geocoding). <b>Nunca</b> vai para o navegador.')}
-      ${cred('GOOGLE_MAPS_BROWSER_KEY', 'Chave do navegador',
-    'Vai para o aplicativo (é pública por natureza) — por isso restrinja por domínio no Google Cloud.')}
+      <h3>Passo 2 · Colar o token</h3>
+      <p class="muted small mb">Fica cifrado no banco. Campos em branco não alteram o que já está salvo.</p>
+      ${cred('MAPBOX_PUBLIC_TOKEN', 'Token público (pk.)',
+    'Desenha o mapa nos aplicativos — vai para o navegador, é público por natureza. Sem token de servidor, também calcula rotas e busca endereços.')}
+      ${cred('MAPBOX_SERVER_TOKEN', 'Token de servidor (opcional)',
+    'Só é necessário se o token público tiver restrição de URL. Usado apenas pelo backend; <b>nunca</b> vai para o navegador.')}
+      ${cred('GOOGLE_GEOCODING_KEY', 'Chave do Google para números de casa (opcional)',
+    'Faz "rua + número" cair na casa certa. Crie em console.cloud.google.com uma chave com a <b>Geocoding API</b> ativada (exige faturamento ativo no Google Cloud). Usada só pelo backend; <b>nunca</b> vai para o navegador.')}
       <div class="field">
         <label>Provedor de mapas</label>
         <select class="input" id="mp-provider">
-          <option value="auto" ${m.provider === 'auto' ? 'selected' : ''}>Automático — Google quando houver chave</option>
+          <option value="auto" ${m.provider === 'auto' ? 'selected' : ''}>Automático — Mapbox quando houver token</option>
           <option value="osm" ${m.provider === 'osm' ? 'selected' : ''}>Forçar OpenStreetMap (sem custo)</option>
         </select>
       </div>
-      <h3 class="mt">Validade do cache (corta chamadas pagas)</h3>
-      <div class="grid2">
-        <div class="field"><label>Rotas (horas)</label>
-          <input class="input" id="ch-route" type="number" min="0" max="8760" value="${m.cache_hours.route}"></div>
-        <div class="field"><label>Endereços/Places (horas)</label>
-          <input class="input" id="ch-places" type="number" min="0" max="8760" value="${m.cache_hours.places}"></div>
-        <div class="field"><label>Geocodificação (horas)</label>
-          <input class="input" id="ch-geo" type="number" min="0" max="8760" value="${m.cache_hours.geocode}"></div>
+      <div class="field">
+        <label>Estilo do mapa (Mapbox)</label>
+        <select class="input" id="mp-style">
+          ${Object.entries(m.styles).map(([url, nome]) =>
+    `<option value="${escapeHtml(url)}" ${m.style === url ? 'selected' : ''}>${escapeHtml(nome)}</option>`).join('')}
+        </select>
       </div>
+      <div class="field"><label>Validade do cache de rotas (horas)</label>
+        <input class="input" id="ch-route" type="number" min="0" max="8760" value="${m.cache_hours.route}">
+        <p class="muted small" style="margin-top:4px">A mesma rota não é pedida duas vezes ao Mapbox
+          dentro desse prazo. Use 0 para desligar.</p></div>
       <button class="btn btn-primary" id="mp-save">Salvar configuração de mapas</button>
     </div>
 
     <div class="card">
-      <h3>Passo 3 · Testar as APIs</h3>
-      <p class="muted small mb">Faz uma chamada real a cada API, usando Assis Chateaubriand como referência.</p>
+      <h3>Passo 3 · Testar em ${escapeHtml(m.city_name)}</h3>
+      <p class="muted small mb">Confere o token e faz uma chamada real de rota, de busca de endereço e de
+        endereço por GPS, usando o centro da cidade como referência. Faça antes de divulgar o app.</p>
       <button class="btn btn-navy btn-sm" id="mp-test">Testar agora</button>
       <div id="mp-result" class="mt"></div>
     </div>
 
     <div class="card">
-      <h3>Economia por cache</h3>
+      <h3>Economia por cache de rotas</h3>
       <table class="tbl"><thead><tr><th>Tipo</th><th>Entradas</th><th>Chamadas evitadas</th></tr></thead>
         <tbody>${cacheRows}</tbody></table>
       <button class="btn btn-outline btn-sm mt" id="mp-clear">Limpar cache</button>
@@ -757,7 +811,7 @@ async function secMaps() {
       ${m.usage.length ? m.usage.map(u => `<tr>
         <td data-l="Provedor">${escapeHtml(u.provider)}</td>
         <td data-l="Modo">${u.mode === 'two_wheeler' ? '🏍️ motocicleta'
-      : u.mode === 'drive' ? '🚗 carro' : '📏 estimativa'}</td>
+      : u.mode === 'drive' ? '🛣️ por ruas' : '📏 estimativa'}</td>
         <td data-l="Corridas">${u.qtd}</td></tr>`).join('')
       : '<tr><td class="muted center">Nenhuma corrida registrada ainda.</td></tr>'}
       </tbody></table>
@@ -769,14 +823,95 @@ async function secMaps() {
     await api('/api/admin/maps-config', {
       method: 'PUT',
       body: {
-        credentials, provider: $('#mp-provider').value,
-        cache_hours: {
-          route: $('#ch-route').value, places: $('#ch-places').value, geocode: $('#ch-geo').value,
-        },
+        credentials, provider: $('#mp-provider').value, style: $('#mp-style').value,
+        cache_hours: { route: $('#ch-route').value },
       },
     });
     secMaps();
   }, { okMsg: 'Configuração de mapas salva.' }).catch(() => { });
+
+  // -------- estabelecimentos manuais --------
+  let plCoord = null;
+  $('#pl-locate').onclick = () => withLoading($('#pl-locate'), async () => {
+    const ref = $('#pl-ref').value.trim();
+    if (!ref) { toast('Informe o endereço ou as coordenadas.', 'err'); return; }
+    const coordMatch = ref.match(/^(-?\d{1,2}[.,]\d+)\s*[,;]\s*(-?\d{1,3}[.,]\d+)$/);
+    const box = $('#pl-options');
+    if (coordMatch) {
+      plCoord = { lat: Number(coordMatch[1].replace(',', '.')), lng: Number(coordMatch[2].replace(',', '.')) };
+      box.innerHTML = `<div class="testbar">📍 Coordenada definida: ${plCoord.lat.toFixed(5)}, ${plCoord.lng.toFixed(5)}</div>`;
+      $('#pl-save').disabled = false;
+      return;
+    }
+    const r = await api('/api/geo/search?q=' + encodeURIComponent(ref));
+    if (!r.results.length) {
+      box.innerHTML = '<div class="testbar">Nada encontrado — tente outro endereço ou cole as coordenadas (no Google Maps do celular: toque e segure no ponto → os números aparecem em cima).</div>';
+      $('#pl-save').disabled = true; plCoord = null;
+      return;
+    }
+    box.innerHTML = '<p class="muted small">Escolha o ponto de referência:</p>' +
+      r.results.slice(0, 5).map((x, i) => `
+      <label class="list-item" style="cursor:pointer">
+        <input type="radio" name="pl-opt" value="${i}">
+        <div class="li-main"><div class="li-title">${escapeHtml(x.text)}</div>
+          <div class="li-sub">${(x.distance_m / 1000).toFixed(1)} km do centro</div></div>
+      </label>`).join('');
+    box.querySelectorAll('input[name="pl-opt"]').forEach(inp => {
+      inp.onchange = () => {
+        const x = r.results[Number(inp.value)];
+        plCoord = { lat: x.lat, lng: x.lng };
+        $('#pl-save').disabled = false;
+      };
+    });
+  }).catch(() => { });
+
+  $('#pl-save').onclick = () => withLoading($('#pl-save'), async () => {
+    const name = $('#pl-name').value.trim();
+    if (!name) { toast('Informe o nome do estabelecimento.', 'err'); return; }
+    if (!plCoord) { toast('Localize o ponto primeiro.', 'err'); return; }
+    await api('/api/admin/places', {
+      method: 'POST',
+      body: { name, tags: $('#pl-tags').value.trim() || null, detail: $('#pl-ref').value.trim() || null,
+        lat: plCoord.lat, lng: plCoord.lng },
+    });
+    secMaps();
+  }, { okMsg: 'Local cadastrado! Já aparece na busca dos passageiros.' }).catch(() => { });
+
+  $$('[data-pl-del]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!await confirmModal('Remover local', 'Remover este estabelecimento da busca?')) return;
+      await api('/api/admin/places/' + btn.dataset.plDel, { method: 'DELETE' });
+      toast('Local removido.', 'ok');
+      secMaps();
+    };
+  });
+
+  $$('[data-mk-clear]').forEach(btn => {
+    btn.onclick = async () => {
+      const k = btn.dataset.mkClear;
+      const nome = k.includes('GOOGLE') ? 'chave do Google' : k.includes('PUBLIC') ? 'token público' : 'token de servidor';
+      const efeito = k.includes('GOOGLE')
+        ? 'Os números de casa voltam a depender do Mapbox ou do ajuste do pino.'
+        : 'Sem token, o sistema volta a usar o OpenStreetMap.';
+      if (!await confirmModal('Remover credencial', `Remover ${k.includes('GOOGLE') ? 'a' : 'o'} ${nome} salv${k.includes('GOOGLE') ? 'a' : 'o'}? ${efeito}`)) return;
+      await api('/api/admin/maps-config', { method: 'PUT', body: { credentials: { [k]: '' } } });
+      toast('Token removido.', 'ok');
+      secMaps();
+    };
+  });
+
+  $('#mp-import-base').onclick = () => withLoading($('#mp-import-base'), async () => {
+    $('#mp-base-result').innerHTML =
+      '<p class="muted small">Baixando do OpenStreetMap… pode levar até 2 minutos.</p>';
+    try {
+      const r = await api('/api/admin/maps-config/import-base', { method: 'POST' });
+      toast(`Base baixada: ${r.ruas} ruas, ${r.bairros} bairros, ${r.locais} locais.`, 'ok');
+      secMaps();
+    } catch (e) {
+      $('#mp-base-result').innerHTML = '';
+      throw e;
+    }
+  }).catch(() => { });
 
   $('#mp-test').onclick = () => withLoading($('#mp-test'), async () => {
     const r = await api('/api/admin/maps-config/test', { method: 'POST' });

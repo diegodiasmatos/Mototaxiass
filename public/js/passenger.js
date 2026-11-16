@@ -1,4 +1,4 @@
-/* VAIRO — aplicativo do passageiro (V2) */
+/* VAIRO — aplicativo do passageiro */
 'use strict';
 
 const S = {
@@ -9,7 +9,7 @@ const S = {
   payment: null, payMethods: [], testMode: false,
   activeRide: null,
   maps: { home: null, quote: null, ride: null },
-  rideLayers: [], driverMarker: null, meMarker: null, accCircle: null,
+  rideLayers: [], quoteLayers: [], driverMarker: null, meMarker: null, accCircle: null,
   statsTimer: null, payTimer: null, confirmTimer: null,
   gps: { lat: null, lng: null, accuracy: null, at: 0, watchId: null, state: 'off' },
   moveAlertShown: false, pickingOnMap: null,
@@ -25,10 +25,10 @@ async function init() {
     welcome_message: 'Olá! Para onde vamos?',
   }));
   await initMaps(S.config);
-  $('#auth-hero').innerHTML = `${LOGO_SVG}<h1>VAIRO</h1>
-    <p>Transporte rápido e seguro em ${escapeHtml(S.config.city_name)}</p>`;
+  $('#auth-logo').innerHTML = LOGO_MARK;
 
   bindAuth(); bindHome(); bindQuote(); bindRide(); bindProfile(); bindNav();
+  bindScreenMenu();
 
   navigator.serviceWorker?.addEventListener('message', e => {
     if (e.data?.type === 'notification-click') refreshActiveRide();
@@ -44,18 +44,9 @@ async function init() {
     setNotifBadge(me.unread);
     enterApp();
   } catch {
+    showScreen('screen-auth');
     setupGoogleButton();
-    routeVisitor();
-    addEventListener('hashchange', routeVisitor);
   }
-}
-
-/* visitante: Visão Geral em "/" e login do passageiro em "/#entrar" */
-function routeVisitor() {
-  if (S.user) return;
-  const auth = location.hash === '#entrar';
-  showScreen(auth ? 'screen-auth' : 'screen-overview');
-  setTopnav(auth ? 'passenger' : 'overview');
 }
 
 /* ================= autenticação ================= */
@@ -89,10 +80,81 @@ function bindAuth() {
   };
 }
 function authTab(login) {
-  $('#tab-login').classList.toggle('active', login);
-  $('#tab-register').classList.toggle('active', !login);
   $('#form-login').hidden = !login;
   $('#form-register').hidden = login;
+  $('#auth-title').textContent = login ? 'Entrar como Passageiro' : 'Cadastro de Passageiro';
+  syncScreenMenu();
+}
+
+/* ================= submenu de telas (referência VAIRO) ================= */
+function bindScreenMenu() {
+  const ride = () => S.activeRide;
+  const onRide = (...st) => currentScreen() === 'screen-ride' && !!ride() && st.includes(ride().status);
+  const needLogin = 'Entre na sua conta para continuar.';
+  const openRide = () => { showScreen('screen-ride'); };
+
+  setupScreenMenu([
+    {
+      label: 'Login',
+      match: () => currentScreen() === 'screen-auth' && !$('#form-login').hidden,
+      go: () => {
+        if (S.user) return 'Você já entrou na sua conta.';
+        showScreen('screen-auth'); authTab(true);
+      },
+    },
+    {
+      label: 'Cadastro & Termos',
+      match: () => currentScreen() === 'screen-auth' && $('#form-login').hidden,
+      go: () => {
+        if (S.user) return 'Você já tem uma conta e está conectado(a).';
+        showScreen('screen-auth'); authTab(false);
+      },
+    },
+    {
+      label: 'Início & Mapa com Preferências',
+      match: () => ['screen-home', 'screen-quote'].includes(currentScreen()),
+      go: () => {
+        if (!S.user) return needLogin;
+        if (ride()) { openRide(); return 'Você tem uma corrida em andamento — ela fica no lugar da tela inicial.'; }
+        showScreen('screen-home');
+      },
+    },
+    { label: 'Vitrine de Lojas (Compre de Empresas)', soon: true },
+    { label: 'Cardápio & Carrinho de Produtos', soon: true },
+    { label: 'Central de Segurança & SOS', soon: true },
+    {
+      label: 'Busca de Motociclista',
+      match: () => onRide('pending_payment', 'requested'),
+      go: () => {
+        if (!S.user) return needLogin;
+        if (!ride() || !['pending_payment', 'requested'].includes(ride().status)) {
+          return 'Nenhuma busca em andamento. Peça uma corrida na tela Início.';
+        }
+        openRide();
+      },
+    },
+    {
+      label: 'Viagem Ativa & Chat',
+      match: () => onRide('accepted', 'in_progress'),
+      go: () => {
+        if (!S.user) return needLogin;
+        if (!ride() || !['accepted', 'in_progress'].includes(ride().status)) {
+          return 'Você não tem uma viagem em andamento agora.';
+        }
+        openRide();
+      },
+    },
+    {
+      label: 'Avaliação & Pagamento',
+      match: () => onRide('awaiting_confirmation', 'disputed') || currentScreen() === 'screen-history',
+      go: () => {
+        if (!S.user) return needLogin;
+        if (ride() && ['awaiting_confirmation', 'disputed'].includes(ride().status)) { openRide(); return; }
+        // corridas já feitas: é onde ficam o pagamento e a avaliação de cada uma
+        showScreen('screen-history'); loadHistory();
+      },
+    },
+  ], () => ({ 'screen-profile': 'Perfil' })[currentScreen()] || '');
 }
 function setupGoogleButton() {
   if (!S.config.google_client_id) return;
@@ -118,8 +180,6 @@ function setupGoogleButton() {
 
 /* ================= entrada no app ================= */
 async function enterApp() {
-  setTopnav(null);
-  if (location.hash === '#entrar') history.replaceState(null, '', '/');
   $('#bottomnav').hidden = false;
   $('#btn-notifs').hidden = false;
   $('#btn-notifs').onclick = openNotifications;
@@ -304,15 +364,19 @@ function initHomeMap() {
   addMapTools('map-home', S.maps.home, true);
 }
 
-// Se o Google for recusado em tempo de execução, refaz os mapas no OpenStreetMap
+// Se o Mapbox for recusado em tempo de execução, refaz os mapas no OpenStreetMap
 document.addEventListener('maps-provider-changed', () => {
   for (const k of ['home', 'quote', 'ride']) {
+    try { S.maps[k]?.remove(); } catch { /* já destruído */ }
     const el = document.getElementById(`map-${k}`);
     if (el) el.innerHTML = '';
     S.maps[k] = null;
   }
-  homeMarkers = []; S.rideLayers = []; S.driverMarker = null;
+  homeMarkers = []; S.rideLayers = []; S.quoteLayers = []; S.driverMarker = null;
+  delete homePins.origin; delete homePins.dest;
   initHomeMap();
+  if (S.origin) placeHomePin(S.origin, 'origin');
+  if (S.dest) placeHomePin(S.dest, 'dest');
   if (S.activeRide) renderRideMap();
   if (S.gps.lat != null) drawMeOnMaps(S.gps.lat, S.gps.lng, S.gps.accuracy || 30);
 });
@@ -364,6 +428,54 @@ function startMapPick(map, host) {
   map.on('click', onClick);
 }
 
+/**
+ * O número digitado não está mapeado: o pino foi para o centro da rua.
+ * Pede ao passageiro o toque no ponto exato — e GRAVA a posição no servidor,
+ * para a próxima busca desse endereço (de qualquer pessoa) acertar direto.
+ */
+function startNumberAdjust(which, p) {
+  initHomeMap();
+  const map = S.maps.home, host = document.getElementById('map-home');
+  const finish = (lat, lng, adjusted) => {
+    const point = { lat, lng, text: p.text };
+    if (which === 'origin') { S.origin = point; S.originConfirmed = true; $('#in-origin').value = p.text; }
+    else { S.dest = point; S.destConfirmed = true; $('#in-dest').value = p.text; }
+    placeHomePin(point, which);
+    if (adjusted && p.street && p.number) {
+      api('/api/geo/learn', {
+        method: 'POST',
+        body: { street: p.street, number: Number(p.number), lat, lng },
+      }).then(() => toast('Ponto exato salvo — a próxima busca desse endereço já acerta. 🎯', 'ok'))
+        .catch(() => { });
+    }
+  };
+  if (!map || !host) { finish(p.lat, p.lng, false); return; }
+
+  // remove ajuste anterior pendente, se houver
+  host.querySelector('.map-hint')?.remove();
+  placeHomePin(p, which);
+  map.setView([p.lat, p.lng], 17);
+  host.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  const hint = document.createElement('div');
+  hint.className = 'map-hint';
+  hint.innerHTML = `O nº ${escapeHtml(String(p.number))} não está no mapa ainda —
+    toque no PONTO EXATO (portão/fachada)
+    <button type="button" data-asis style="margin-left:6px;padding:2px 10px;border-radius:8px;
+      border:1px solid rgba(255,255,255,.5);background:transparent;color:inherit;cursor:pointer">
+      Usar assim mesmo</button>`;
+  host.appendChild(hint);
+
+  const done = (lat, lng, adjusted) => {
+    map.off('click', onClick);
+    hint.remove();
+    finish(lat, lng, adjusted);
+  };
+  const onClick = e => done(e.latlng.lat, e.latlng.lng, true);
+  map.on('click', onClick);
+  hint.querySelector('[data-asis]').onclick = () => done(p.lat, p.lng, false);
+}
+
 async function refreshStats() {
   try {
     const st = await api('/api/public/stats');
@@ -378,12 +490,18 @@ async function refreshStats() {
 }
 
 function bindHome() {
+  const pick = which => p => {
+    // "rua + número" sem posição conhecida: o pino cai no centro da rua —
+    // em vez de aceitar um ponto errado, pedimos o ajuste no mapa
+    if (p.approx && p.number) { startNumberAdjust(which, p); return; }
+    if (which === 'origin') { S.origin = p; S.originConfirmed = true; }
+    else { S.dest = p; S.destConfirmed = true; }
+    placeHomePin(p, which);
+  };
   setupAutocomplete($('#in-origin'), $('#ac-origin'),
-    p => { S.origin = p; S.originConfirmed = true; placeHomePin(p, 'origin'); },
-    () => { S.originConfirmed = false; });
+    pick('origin'), () => { S.originConfirmed = false; });
   setupAutocomplete($('#in-dest'), $('#ac-dest'),
-    p => { S.dest = p; S.destConfirmed = true; placeHomePin(p, 'dest'); },
-    () => { S.destConfirmed = false; });
+    pick('dest'), () => { S.destConfirmed = false; });
 
   $('#btn-mylocation').onclick = () => withLoading($('#btn-mylocation'), async () => {
     const pos = S.gps.lat != null && Date.now() - S.gps.at < 30000
@@ -423,22 +541,12 @@ function placeHomePin(p, kind) {
 }
 
 /**
- * Autocomplete de endereços. Diferente da V1, digitar sem escolher da lista
- * invalida a seleção anterior — assim o texto nunca fica diferente do ponto
- * realmente usado no cálculo.
- */
-/**
- * Autocomplete de endereços.
- *
- * Com o Google Places, a coordenada só é buscada quando o usuário ESCOLHE
- * um item (Place Details) — digitar não gera chamada cara, e o `session`
- * agrupa a digitação + a escolha numa única cobrança.
- * Digitar depois de escolher invalida a seleção: o texto nunca fica
- * diferente do ponto realmente usado no cálculo.
+ * Autocomplete de endereços. Toda sugestão já vem com a coordenada (base
+ * local, Mapbox ou OpenStreetMap). Digitar depois de escolher invalida a
+ * seleção: o texto nunca fica diferente do ponto realmente usado no cálculo.
  */
 function setupAutocomplete(input, list, onPick, onEdit) {
-  let timer = null, lastQuery = '', session = null;
-  const newSession = () => (session = (crypto.randomUUID?.() || String(Math.random()).slice(2)));
+  let timer = null, lastQuery = '';
 
   input.addEventListener('input', () => {
     onEdit?.();
@@ -447,37 +555,28 @@ function setupAutocomplete(input, list, onPick, onEdit) {
     if (q.length < 2) { list.hidden = true; return; }
     if (q === lastQuery) return;
     lastQuery = q;
-    if (!session) newSession();
     list.innerHTML = '<button type="button" disabled>Buscando…</button>';
     list.hidden = false;
     // espera o usuário parar de digitar: menos chamadas, menos custo
     timer = setTimeout(async () => {
       try {
-        const { results } = await api(
-          `/api/geo/search?q=${encodeURIComponent(q)}&session=${encodeURIComponent(session)}`);
+        const { results } = await api(`/api/geo/search?q=${encodeURIComponent(q)}`);
         if (!results.length) {
           list.innerHTML = `<button type="button" disabled>
             Nada encontrado. Tente a rua + bairro, ou use 📌 para marcar no mapa.</button>`;
           return;
         }
         list.innerHTML = results.map((r, i) => {
-          const detalhe = r.needs_details
-            ? (r.secondary ? `<span class="muted small">${escapeHtml(r.secondary)}</span>` : '')
-            : `<span class="muted small">· ${fmt.dist(r.distance_m)} do centro${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>`;
+          const num = r.number_how === 'exato' ? ' · nº confirmado ✅'
+            : r.number_how === 'localizado' ? ' · nº localizado ✅'
+            : r.number_how === 'interpolado' ? ' · nº estimado'
+              : r.number_how === 'centro' ? ' · ajuste o ponto no mapa' : '';
+          const detalhe = `<span class="muted small">· ${fmt.dist(r.distance_m)} do centro${num}${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>`;
           return `<button type="button" data-i="${i}">${escapeHtml(r.text)}<br>${detalhe}</button>`;
         }).join('');
 
-        $$('button[data-i]', list).forEach(b => b.onclick = async () => {
-          let r = results[Number(b.dataset.i)];
-          // sugestão do Google: resolve a coordenada agora
-          if (r.needs_details && r.place_id) {
-            b.textContent = 'Localizando…';
-            try {
-              const { place } = await api(
-                `/api/geo/place?place_id=${encodeURIComponent(r.place_id)}&session=${encodeURIComponent(session)}`);
-              r = place;
-            } catch (e) { toast(e.message, 'err'); list.hidden = true; return; }
-          }
+        $$('button[data-i]', list).forEach(b => b.onclick = () => {
+          const r = results[Number(b.dataset.i)];
           if (!r.in_coverage) {
             toast(`"${r.text}" está fora da área de atendimento (${fmt.dist(r.distance_m)} do centro).`, 'err');
             list.hidden = true;
@@ -485,8 +584,11 @@ function setupAutocomplete(input, list, onPick, onEdit) {
           }
           input.value = r.text;
           list.hidden = true;
-          session = null;                     // sessão encerrada na escolha
-          onPick({ lat: r.lat, lng: r.lng, text: r.text });
+          onPick({
+            lat: r.lat, lng: r.lng, text: r.text,
+            approx: !!r.approx, street: r.street, number: r.number,
+            number_how: r.number_how,
+          });
         });
       } catch (e) {
         list.innerHTML = `<button type="button" disabled>${escapeHtml(e.message)}</button>`;
@@ -533,19 +635,15 @@ function renderQuotes(r) {
   const q0 = S.quotes[0];
   // procedência da rota: o passageiro vê se é rota de moto, de carro ou estimativa
   const PROC = {
-    two_wheeler: '<span class="pill green">rota de motocicleta</span>',
-    drive: '<span class="pill blue">rota de carro</span>',
+    drive: '<span class="pill blue">rota por ruas</span>',
     estimativa: '<span class="pill yellow">distância estimada</span>',
   };
   const procedencia = PROC[r.route.mode] || '';
-  const aviso = r.route.mode_fallback
-    ? '<br><span class="muted small">⚠️ Rota de motocicleta indisponível neste trajeto; usamos a rota de carro.</span>'
-    : '';
 
   $('#quote-summary').innerHTML =
     `📍 ${escapeHtml(S.origin.text)}<br>🏁 ${escapeHtml(S.dest.text)}<br>` +
     `Distância: <b>${fmt.dist(q0.distance_m)}</b> · Tempo estimado: <b>${fmt.dur(q0.duration_s)}</b>` +
-    ` · ${procedencia}${aviso}` +
+    ` · ${procedencia}` +
     `<br>🏍️ ${r.online_drivers} mototaxista(s) próximos disponíveis`;
 
   const DESC = {
@@ -594,14 +692,20 @@ function renderQuotes(r) {
   updateRequestButton();
 
   setTimeout(() => {
-    if (S.maps.quote) { S.maps.quote.remove(); S.maps.quote = null; }
-    S.maps.quote = makeMap('map-quote', S.origin, 14);
-    if (S.maps.quote) {
-      emojiMarker(S.maps.quote, S.origin.lat, S.origin.lng, '📍');
-      emojiMarker(S.maps.quote, S.dest.lat, S.dest.lng, '🏁');
-      const line = drawRoute(S.maps.quote, r.route.geometry);
-      S.maps.quote.fitBounds(line.getBounds(), { padding: [30, 30] });
-    }
+    // o mapa é reaproveitado entre cotações: no Mapbox, cada mapa criado
+    // conta como um carregamento na franquia mensal
+    if (!S.maps.quote) S.maps.quote = makeMap('map-quote', S.origin, 14);
+    const map = S.maps.quote;
+    if (!map) return;
+    S.quoteLayers.forEach(l => l.remove());
+    const line = drawRoute(map, r.route.geometry);
+    S.quoteLayers = [
+      emojiMarker(map, S.origin.lat, S.origin.lng, '📍'),
+      emojiMarker(map, S.dest.lat, S.dest.lng, '🏁'),
+      line,
+    ];
+    map.invalidateSize();        // a tela acabou de aparecer: mede antes de enquadrar
+    map.fitBounds(line.getBounds(), { padding: [30, 30] });
   }, 60);
 }
 
@@ -670,6 +774,7 @@ async function refreshActiveRide() {
       showScreen('screen-home');
       refreshStats();
     }
+    syncScreenMenu();          // o status da corrida muda a tela do submenu
   } catch { /* mantém estado */ }
 }
 function currentScreen() { return $$('.screen').find(s => !s.hidden)?.id; }
@@ -879,6 +984,7 @@ function renderRideMap() {
     const map = S.maps.ride;
     if (!map) return;
     S.rideLayers.forEach(l => l.remove()); S.rideLayers = [];
+    map.invalidateSize();        // a tela acabou de aparecer: mede antes de enquadrar
     S.rideLayers.push(emojiMarker(map, r.origin.lat, r.origin.lng, '📍'));
     S.rideLayers.push(emojiMarker(map, r.dest.lat, r.dest.lng, '🏁'));
     if (r.route_geojson) {
@@ -891,7 +997,6 @@ function renderRideMap() {
       S.rideLayers.push(S.driverMarker);
     } else S.driverMarker = null;
     if (S.gps.lat != null) drawMeOnMaps(S.gps.lat, S.gps.lng, S.gps.accuracy || 30);
-    map.invalidateSize();
   }, 80);
 }
 

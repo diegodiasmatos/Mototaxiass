@@ -5,7 +5,7 @@ import {
 import { route, type Route, type SessionUser } from './router.ts';
 import { getFare, allFares, computePriceCents, splitCommission } from './fares.ts';
 import {
-  route as computeRoute, searchAddress, reverseGeocode, assertInCoverage, resolvePlace,
+  route as computeRoute, searchAddress, reverseGeocode, assertInCoverage,
 } from './geo.ts';
 import { notify, notifyAdmins, sseSend, sseSendMany } from './notify.ts';
 import {
@@ -337,7 +337,7 @@ export async function finalizeRide(rideId: string, by: string): Promise<void> {
   }
 
   notify(r.passenger_id, 'ride_completed', 'Corrida concluída!',
-    { body: 'Obrigado por viajar com o VAIRO. Avalie seu mototaxista!', rideId });
+    { body: 'Obrigado por viajar com a VAIRO. Avalie seu motorista!', rideId });
   notify(r.driver_id, 'ride_completed', 'Corrida concluída',
     {
       body: payment?.seller_driver_id
@@ -452,17 +452,24 @@ export const rideRoutes: Route[] = [
     if (!rateLimit(`geo:${ip}`, 90, 60_000)) throw new ApiError(429, 'Aguarde um instante.');
     const q = (query.get('q') || '').trim();
     if (q.length < 2) { json(res, 200, { results: [] }); return; }
-    // o token de sessão agrupa digitação + escolha numa só cobrança do Google
-    const session = (query.get('session') || '').slice(0, 64) || undefined;
-    json(res, 200, { results: await searchAddress(q, session) });
+    json(res, 200, { results: await searchAddress(q) });
   }),
 
-  /** Converte a sugestão escolhida em coordenada (Place Details). */
-  route('GET /api/geo/place', 'any', async ({ res, query, ip }) => {
-    if (!rateLimit(`place:${ip}`, 60, 60_000)) throw new ApiError(429, 'Aguarde um instante.');
-    const placeId = reqStr(query.get('place_id'), 'lugar', 300);
-    const session = (query.get('session') || '').slice(0, 64) || undefined;
-    json(res, 200, { place: await resolvePlace(placeId, session) });
+  /**
+   * O passageiro ajustou o pino de um "rua + número": grava a posição real.
+   * Na próxima busca desse endereço (por qualquer pessoa), o ponto é exato.
+   */
+  route('POST /api/geo/learn', 'any', async ({ req, res, ip }) => {
+    if (!rateLimit(`learn:${ip}`, 20, 60_000)) throw new ApiError(429, 'Aguarde um instante.');
+    const { learnHouseNumber } = await import('./address-base.ts');
+    const b = await readBody(req);
+    const street = reqStr(b.street, 'rua', 120);
+    const number = reqNum(b.number, 'número');
+    const lat = reqNum(b.lat, 'lat'), lng = reqNum(b.lng, 'lng');
+    assertInCoverage({ lat, lng }, 'ajuste');
+    const r = learnHouseNumber(street, Math.round(number), lat, lng);
+    if (!r.ok) throw new ApiError(422, `Não foi possível salvar o ponto (${r.reason}).`);
+    json(res, 200, { ok: true });
   }),
 
   route('GET /api/geo/reverse', 'any', async ({ res, query }) => {
@@ -521,7 +528,7 @@ export const rideRoutes: Route[] = [
       quotes,
       route: {
         geometry: rt.geometry, estimated: rt.estimated,
-        provider: rt.provider, mode: rt.mode, mode_fallback: !!rt.mode_fallback,
+        provider: rt.provider, mode: rt.mode,
       },
       online_drivers: eligibleDrivers(origin.lat, origin.lng).length,
       payment_methods: availableMethods(),

@@ -4,19 +4,21 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#101014">
-  <title>VAIRO — Central Administrativa</title>
+  <title>VAIRO Street — Central Administrativa</title>
   <link rel="icon" href="/img/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
+  <link rel="preload" href="/fonts/inter-latin-var.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/css/app.css">
+  <script>try{if(localStorage.getItem('vairo-theme')==='light')document.documentElement.dataset.theme='light'}catch(e){}</script>
 </head>
-<body>
+<body data-area="central">
 
 <header class="topbar">
-  <div class="brand" id="brand"></div>
+  <a class="brand" id="brand" href="/visao-geral" title="Visão geral da VAIRO"></a>
   <div class="spacer"></div>
-  <button class="iconbtn" id="btn-notifs" title="Notificações" aria-label="Notificações" hidden><span data-ico="bell"></span></button>
-  <button class="iconbtn" id="btn-logout" title="Sair" hidden><span data-ico="logout"></span></button>
+  <button class="iconbtn" id="btn-notifs" title="Notificações" aria-label="Notificações" hidden><i data-icon="bell"></i></button>
+  <button class="iconbtn" id="btn-logout" title="Sair" aria-label="Sair" hidden><i data-icon="right-from-bracket"></i></button>
 </header>
 
 <!-- login -->
@@ -29,7 +31,7 @@
       <form id="form-login">
         <div class="field"><label>E-mail</label><input class="input" name="email" type="email" required></div>
         <div class="field"><label>Senha</label><input class="input" name="password" type="password" required></div>
-        <button class="btn btn-navy" type="submit">Entrar na central</button>
+        <button class="btn btn-primary" type="submit">Entrar na central</button>
       </form>
     </div>
   </section>
@@ -38,23 +40,24 @@
 <!-- painel -->
 <div class="admin-layout" id="admin-wrap" hidden>
   <aside class="sidebar">
-    <button data-sec="dashboard" class="active"><span class="nico" data-ico="dashboard"></span>Dashboard</button>
-    <button data-sec="drivers"><span class="nico" data-ico="bike"></span>Mototaxistas</button>
-    <button data-sec="passengers"><span class="nico" data-ico="users"></span>Passageiros</button>
-    <button data-sec="rides"><span class="nico" data-ico="route"></span>Corridas</button>
-    <button data-sec="finance"><span class="nico" data-ico="coins"></span>Financeiro</button>
-    <button data-sec="issues"><span class="nico" data-ico="alert"></span>Ocorrências</button>
-    <button data-sec="payments"><span class="nico" data-ico="card"></span>Pagamentos</button>
-    <button data-sec="maps"><span class="nico" data-ico="map"></span>Mapas</button>
-    <button data-sec="settings"><span class="nico" data-ico="settings"></span>Configurações</button>
-    <button data-sec="audit"><span class="nico" data-ico="scroll"></span>Auditoria</button>
-    <button data-sec="support"><span class="nico" data-ico="lifebuoy"></span>Suporte</button>
+    <button data-sec="dashboard" class="active">📊 Dashboard</button>
+    <button data-sec="drivers">🏍️ Mototaxistas</button>
+    <button data-sec="passengers">👥 Passageiros</button>
+    <button data-sec="rides">🛣️ Corridas</button>
+    <button data-sec="finance">💰 Financeiro</button>
+    <button data-sec="issues">⚠️ Ocorrências</button>
+    <button data-sec="payments">💳 Pagamentos</button>
+    <button data-sec="maps">🗺️ Mapas</button>
+    <button data-sec="settings">⚙️ Configurações</button>
+    <button data-sec="audit">📜 Auditoria</button>
+    <button data-sec="support">🛟 Suporte</button>
   </aside>
   <main class="admin-main" id="admin-main">
     <div class="spinner"></div>
   </main>
 </div>
 
+<script src="/js/icons.js"></script>
 <script src="/js/common.js"></script>
 <script src="/js/admin.js"></script>
 </body>

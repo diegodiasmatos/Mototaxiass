@@ -19,7 +19,7 @@ const CREDENTIAL_KEYS = [
   'MP_CLIENT_ID', 'MP_CLIENT_SECRET', 'PUBLIC_URL',
 ] as const;
 
-const MAPS_CREDENTIAL_KEYS = ['GOOGLE_MAPS_SERVER_KEY', 'GOOGLE_MAPS_BROWSER_KEY'] as const;
+const MAPS_CREDENTIAL_KEYS = ['MAPBOX_PUBLIC_TOKEN', 'MAPBOX_SERVER_TOKEN', 'GOOGLE_GEOCODING_KEY'] as const;
 
 function dayKey(ts: number): string {
   const d = new Date(ts);
@@ -509,9 +509,11 @@ export const adminRoutes: Route[] = [
     json(res, 200, { drivers: rows, split_available: splitAvailable() });
   }),
 
-  // ---------- Google Maps ----------
+  // ---------- Mapas (Mapbox) ----------
   route('GET /api/admin/maps-config', 'admin', async ({ res }) => {
-    const { googleEnabled, cacheStats, browserKey, serverKey } = await import('./google-maps.ts');
+    const { mapboxEnabled, cacheStats, publicToken, serverToken, mapStyle, MAP_STYLES } =
+      await import('./mapbox.ts');
+    const { baseStats } = await import('./address-base.ts');
     const usage = db.prepare(`SELECT route_provider provider, route_mode mode, COUNT(*) qtd
       FROM rides WHERE route_provider IS NOT NULL
       GROUP BY route_provider, route_mode`).all();
@@ -521,53 +523,128 @@ export const adminRoutes: Route[] = [
         return [k, { value: maskSecret(v), filled: !!v, source: credentialSource(k) }];
       })),
       provider: getSetting('maps_provider'),
-      active_routing: googleEnabled() ? 'google' : 'osrm',
-      active_visual: browserKey() ? 'google' : 'osm',
-      has_server_key: !!serverKey(),
+      city_name: getSetting('city_name'),
+      active_routing: mapboxEnabled() ? 'mapbox' : 'osrm',
+      active_visual: (getSetting('maps_provider') !== 'osm' && publicToken()) ? 'mapbox' : 'osm',
+      has_server_token: !!serverToken(),
+      style: mapStyle(),
+      styles: MAP_STYLES,
+      address_base: baseStats(),
       cache: cacheStats(),
       usage,
-      cache_hours: {
-        route: getSettingNum('cache_route_hours'),
-        places: getSettingNum('cache_places_hours'),
-        geocode: getSettingNum('cache_geocode_hours'),
-      },
+      cache_hours: { route: getSettingNum('cache_route_hours') },
     });
   }),
 
   route('PUT /api/admin/maps-config', 'admin', async ({ req, res, user }) => {
+    const { MAP_STYLES } = await import('./mapbox.ts');
     const b = await readBody(req);
-    const changed: string[] = [];
+
+    // valida tudo antes de gravar qualquer coisa
+    const tokens: [string, string][] = [];
     for (const k of MAPS_CREDENTIAL_KEYS) {
       const v = b.credentials?.[k];
       if (v === undefined || v === null) continue;
       const value = String(v).trim();
       if (value.startsWith('••••')) continue;
+      if (value && k === 'MAPBOX_PUBLIC_TOKEN' && !value.startsWith('pk.')) {
+        // este token vai ao navegador de todo mundo: um secreto (sk.) jamais pode entrar aqui
+        throw new ApiError(400, value.startsWith('sk.')
+          ? 'Esse é um token SECRETO (sk.). No campo do token público use o que começa com "pk.".'
+          : 'O token público do Mapbox começa com "pk." — copie-o inteiro de account.mapbox.com.');
+      }
+      if (value && k === 'MAPBOX_SERVER_TOKEN' && !/^(pk|sk)\./.test(value)) {
+        throw new ApiError(400, 'O token de servidor do Mapbox começa com "pk." ou "sk.".');
+      }
+      tokens.push([k, value]);
+    }
+    if (b.style !== undefined && !MAP_STYLES[String(b.style)]) {
+      throw new ApiError(400, 'Estilo de mapa desconhecido.');
+    }
+    let cacheRoute: number | null = null;
+    if (b.cache_hours?.route !== undefined) {
+      const n = Number(b.cache_hours.route);
+      if (!Number.isFinite(n) || n < 0 || n > 8760) {
+        throw new ApiError(400, 'Validade de cache deve estar entre 0 e 8760 horas.');
+      }
+      cacheRoute = Math.round(n);
+    }
+
+    const changed: string[] = [];
+    for (const [k, value] of tokens) {
       setCredential(k, value, user!.id);
-      changed.push(value ? `${k} definida` : `${k} removida`);
+      changed.push(value ? `${k} definido` : `${k} removido`);
     }
     if (b.provider === 'auto' || b.provider === 'osm') {
       setSetting('maps_provider', b.provider);
       changed.push(`provedor: ${b.provider}`);
     }
-    for (const [key, setting] of [['route', 'cache_route_hours'],
-    ['places', 'cache_places_hours'], ['geocode', 'cache_geocode_hours']] as const) {
-      const v = b.cache_hours?.[key];
-      if (v === undefined) continue;
-      const n = Number(v);
-      if (!Number.isFinite(n) || n < 0 || n > 8760) {
-        throw new ApiError(400, 'Validade de cache deve estar entre 0 e 8760 horas.');
-      }
-      setSetting(setting, String(Math.round(n)));
-      changed.push(`cache ${key}: ${Math.round(n)}h`);
+    if (b.style !== undefined) {
+      setSetting('mapbox_style', String(b.style));
+      changed.push(`estilo: ${b.style}`);
+    }
+    if (cacheRoute !== null) {
+      setSetting('cache_route_hours', String(cacheRoute));
+      changed.push(`cache de rotas: ${cacheRoute}h`);
     }
     if (changed.length) audit(user!.id, 'maps_config', 'settings', undefined, changed.join('; '));
     json(res, 200, { ok: true, changed });
   }),
 
-  /** Chama as três APIs de verdade e relata o que funciona. */
+  /** Chama as APIs do Mapbox de verdade e relata o que funciona. */
   route('POST /api/admin/maps-config/test', 'admin', async ({ res }) => {
-    const { testGoogleKeys } = await import('./google-maps.ts');
-    json(res, 200, { checks: await testGoogleKeys() });
+    const { testMapboxToken } = await import('./mapbox.ts');
+    const { testGoogleGeocoding } = await import('./house-number.ts');
+    json(res, 200, { checks: [...await testMapboxToken(), await testGoogleGeocoding()] });
+  }),
+
+  // ---------- estabelecimentos cadastrados à mão ----------
+  route('GET /api/admin/places', 'admin', async ({ res }) => {
+    const { manualPlaces } = await import('./address-base.ts');
+    json(res, 200, { places: manualPlaces() });
+  }),
+
+  /**
+   * Cadastra um estabelecimento que o OSM não tem ("Mercado Lorena",
+   * "Advocacia Fulano"...). Entra na base local e aparece na busca na hora.
+   */
+  route('POST /api/admin/places', 'admin', async ({ req, res, user }) => {
+    const { addManualPlace } = await import('./address-base.ts');
+    const b = await readBody(req);
+    const name = reqStr(b.name, 'nome', 120);
+    const tags = b.tags ? String(b.tags).slice(0, 200) : null;
+    const detail = b.detail ? String(b.detail).slice(0, 200) : null;
+    const lat = reqNum(b.lat, 'lat'), lng = reqNum(b.lng, 'lng');
+    const cLat = getSettingNum('center_lat'), cLng = getSettingNum('center_lng');
+    const radius = getSettingNum('coverage_radius_km') * 1000;
+    const { haversineM } = await import('./util.ts');
+    if (haversineM(lat, lng, cLat, cLng) > radius) {
+      throw new ApiError(422, 'O ponto está fora da área de cobertura.');
+    }
+    const id = addManualPlace(name, tags, detail, lat, lng);
+    audit(user!.id, 'place_add', 'settings', undefined, name);
+    json(res, 200, { ok: true, id });
+  }),
+
+  route('DELETE /api/admin/places/:id', 'admin', async ({ res, user, params }) => {
+    const { removeManualPlace } = await import('./address-base.ts');
+    if (!removeManualPlace(Number(params.id))) {
+      throw new ApiError(404, 'Local não encontrado (só cadastros manuais podem ser removidos).');
+    }
+    audit(user!.id, 'place_remove', 'settings', params.id);
+    json(res, 200, { ok: true });
+  }),
+
+  /**
+   * Baixa do OpenStreetMap todas as ruas, bairros e locais da cidade e
+   * regrava a base local de endereços (busca instantânea, sem serviço externo).
+   */
+  route('POST /api/admin/maps-config/import-base', 'admin', async ({ res, user }) => {
+    const { importAddressBase } = await import('./address-base.ts');
+    const r = await importAddressBase();
+    audit(user!.id, 'address_base_import', 'settings', undefined,
+      `${r.ruas} rua(s), ${r.bairros} bairro(s), ${r.locais} local(is)`);
+    json(res, 200, { ok: true, ...r });
   }),
 
   route('POST /api/admin/maps-config/clear-cache', 'admin', async ({ res, user }) => {

@@ -542,7 +542,7 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
   },
 
   // ----------------------------------------------------------------
-  // V2.2 — Google Maps Platform: cache de respostas (corta custo) e
+  // V2.2 — Provedor de mapas pago: cache de respostas (corta custo) e
   // procedência da rota gravada em cada cotação/corrida.
   // ----------------------------------------------------------------
   {
@@ -559,11 +559,75 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     CREATE INDEX idx_geo_cache_exp ON geo_cache(expires_at);
     CREATE INDEX idx_geo_cache_kind ON geo_cache(kind);
 
-    -- de onde veio a rota e em que modo (two_wheeler / drive / estimativa)
+    -- de onde veio a rota e em que modo (drive / estimativa; two_wheeler em corridas antigas)
     ALTER TABLE ride_quotes ADD COLUMN route_provider TEXT;
     ALTER TABLE ride_quotes ADD COLUMN route_mode TEXT;
     ALTER TABLE rides ADD COLUMN route_provider TEXT;
     ALTER TABLE rides ADD COLUMN route_mode TEXT;
+    `,
+  },
+
+  // ----------------------------------------------------------------
+  // V2.3 — Base local de endereços: todas as ruas/bairros/locais da
+  // cidade importados do OpenStreetMap (Overpass) para busca instantânea
+  // e completa, sem depender do Nominatim online nem de token pago.
+  // ----------------------------------------------------------------
+  {
+    version: 5,
+    sql: `
+    CREATE TABLE local_addresses (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind       TEXT NOT NULL CHECK (kind IN ('rua','bairro','local')),
+      name       TEXT NOT NULL,
+      norm       TEXT NOT NULL,
+      detail     TEXT,
+      lat        REAL NOT NULL,
+      lng        REAL NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE (kind, norm)
+    );
+    CREATE INDEX idx_local_addr_norm ON local_addresses(norm);
+    `,
+  },
+
+  // ----------------------------------------------------------------
+  // V2.3.1 — busca por categoria e locais cadastrados à mão:
+  //  - tags: palavras-chave em português ("hospital saude", "mercado
+  //    supermercado") derivadas das categorias do OSM, pesquisáveis;
+  //  - source: 'osm' (reimportável) ou 'manual' (cadastrado pelo admin,
+  //    sobrevive à reimportação).
+  // ----------------------------------------------------------------
+  {
+    version: 6,
+    sql: `
+    ALTER TABLE local_addresses ADD COLUMN tags TEXT;
+    ALTER TABLE local_addresses ADD COLUMN source TEXT NOT NULL DEFAULT 'osm';
+    `,
+  },
+
+  // ----------------------------------------------------------------
+  // V2.3.2 — números de casa: o OSM da cidade tem só ~11 números
+  // mapeados, então "rua + número" caía no centro da rua (longe do
+  // ponto real). Esta tabela guarda posições de números: as poucas do
+  // OSM + as confirmadas pelos próprios passageiros ao ajustar o pino.
+  // Entre dois números conhecidos, a posição é interpolada.
+  // ----------------------------------------------------------------
+  {
+    version: 7,
+    sql: `
+    CREATE TABLE address_points (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      street_norm TEXT NOT NULL,
+      street_name TEXT NOT NULL,
+      number      INTEGER NOT NULL,
+      lat         REAL NOT NULL,
+      lng         REAL NOT NULL,
+      source      TEXT NOT NULL DEFAULT 'passageiro',
+      hits        INTEGER NOT NULL DEFAULT 1,
+      updated_at  INTEGER NOT NULL,
+      UNIQUE (street_norm, number)
+    );
+    CREATE INDEX idx_addr_pts_street ON address_points(street_norm);
     `,
   },
 ];
@@ -584,11 +648,10 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   // automático direto na conta do mototaxista.
   charge_timing: 'antes',
   payment_deadline_min: '10',      // prazo para pagar depois do aceite (modo split)
-  // Mapas: 'auto' usa Google quando há chave de servidor; 'osm' força OpenStreetMap
+  // Mapas: 'auto' usa Mapbox quando há token; 'osm' força OpenStreetMap
   maps_provider: 'auto',
+  mapbox_style: 'mapbox://styles/mapbox/streets-v12',
   cache_route_hours: '72',         // rota entre dois pontos muda pouco
-  cache_places_hours: '168',       // endereços mudam muito pouco
-  cache_geocode_hours: '168',
 
   city_name: 'Assis Chateaubriand - PR',
   center_lat: '-24.4156',
