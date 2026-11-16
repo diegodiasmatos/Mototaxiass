@@ -5,7 +5,7 @@
    - Imagens e mapas: cache primeiro (economiza dados do celular do usuário). */
 'use strict';
 
-const VERSION = 'amt-v3';
+const VERSION = 'amt-v4';
 const SHELL = `${VERSION}-shell`;
 const MEDIA = `${VERSION}-media`;
 
@@ -13,7 +13,7 @@ const PRECACHE = [
   '/visao-geral', '/passageiro', '/motorista', '/empresa', '/admin',
   '/css/app.css', '/fonts/inter-latin-var.woff2',
   '/js/icons.js', '/js/common.js', '/js/passenger.js', '/js/driver.js', '/js/admin.js',
-  '/img/icon.svg', '/img/icon-192.png', '/offline.html',
+  '/img/icon.svg?v=2', '/img/icon-192.png?v=2', '/offline.html',
 ];
 
 self.addEventListener('install', event => {
@@ -44,8 +44,8 @@ self.addEventListener('push', event => {
   const isOffer = d.kind === 'ride_offer';
   event.waitUntil(self.registration.showNotification(d.title, {
     body: d.body || '',
-    icon: '/img/icon-192.png',
-    badge: '/img/icon-192.png',
+    icon: '/img/icon-192.png?v=2',
+    badge: '/img/icon-192.png?v=2',
     tag: d.tag || d.kind || 'amt',
     renotify: true,
     requireInteraction: isOffer || d.kind === 'confirm_required',
@@ -122,7 +122,7 @@ self.addEventListener('fetch', event => {
         }
         return fresh;
       } catch {
-        return caches.match('/img/icon.svg') || new Response('', { status: 504 });
+        return caches.match('/img/icon.svg?v=2') || new Response('', { status: 504 });
       }
     })());
     return;

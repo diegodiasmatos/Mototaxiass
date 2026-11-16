@@ -131,7 +131,7 @@ h1, h2, h3 { letter-spacing: -.02em; }
   box-shadow: 0 0 18px var(--brand-glow);
   display: grid; place-items: center;
 }
-.logo-tile svg { width: 58%; height: 58%; display: block; }
+.logo-tile svg { width: 68%; height: 68%; display: block; }
 .logo-tile.lg { width: 64px; height: 64px; border-radius: 18px; }
 
 /* ---------- topo ---------- */
