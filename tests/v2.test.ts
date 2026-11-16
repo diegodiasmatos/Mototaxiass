@@ -1589,3 +1589,404 @@ test('número de casa: sem chave do Google, o Mapbox responde; "forçar OSM" des
     });
   } finally { await cleanNumberTests(); }
 });
+
+// ================= Mapas (Google Maps) =================
+
+const GMAPS_BROWSER = 'AIzaSyTESTE-chave-do-navegador-0001';
+const GMAPS_SERVER = 'AIzaSyTESTE-chave-de-servidor-00002';
+
+type GReq = { url: URL; method: string; headers: Headers; body: any };
+type GReply = { status?: number; body: unknown };
+
+/**
+ * Simula as APIs do Google (Routes, Places e Geocoding) e, se pedido, o
+ * Mapbox, com a rede de geo ligada. Qualquer outro serviço responde 503.
+ */
+async function withFakeGoogle(
+  handlers: { google?: (r: GReq) => GReply; mapbox?: (u: URL) => GReply },
+  fn: (calls: { google: GReq[]; mapbox: URL[] }) => Promise<void>): Promise<void> {
+  const realFetch = globalThis.fetch;
+  const calls = { google: [] as GReq[], mapbox: [] as URL[] };
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = new URL(typeof input === 'string' ? input : input.url ?? String(input));
+    if (url.hostname === '127.0.0.1') return realFetch(input, init);
+    const reply = (r: GReply) => new Response(JSON.stringify(r.body), {
+      status: r.status ?? 200, headers: { 'Content-Type': 'application/json' },
+    });
+    if (url.hostname.endsWith('.googleapis.com') && handlers.google) {
+      const req: GReq = {
+        url, method: init?.method || 'GET', headers: new Headers(init?.headers || {}),
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      };
+      calls.google.push(req);
+      return reply(handlers.google(req));
+    }
+    if (url.hostname === 'api.mapbox.com' && handlers.mapbox) {
+      calls.mapbox.push(url);
+      return reply(handlers.mapbox(url));
+    }
+    return new Response('fora do ar', { status: 503 });
+  }) as typeof fetch;
+  process.env.GEO_OFFLINE = '0';
+  try { await fn(calls); } finally {
+    process.env.GEO_OFFLINE = '1';
+    globalThis.fetch = realFetch;
+  }
+}
+
+/** Polyline de exemplo da documentação do Google: 3 pontos. */
+const GPOLY = '_p~iF~ps|U_ulLnnqC_mqNvxq`@';
+
+/** Respostas no formato real das APIs do Google. */
+function fakeGoogleOk(r: GReq): GReply {
+  if (r.url.hostname === 'routes.googleapis.com') {
+    return { body: { routes: [{ distanceMeters: 3900, duration: '540s', polyline: { encodedPolyline: GPOLY } }] } };
+  }
+  if (r.url.pathname === '/v1/places:autocomplete') {
+    return {
+      body: {
+        suggestions: [
+          { placePrediction: {
+            placeId: 'ChIJ-farmacia-sao-joao-001',
+            text: { text: 'Farmácia São João, Avenida Tupãssi, Assis Chateaubriand - PR' },
+            structuredFormat: { mainText: { text: 'Farmácia São João' }, secondaryText: { text: 'Avenida Tupãssi, 1200 - Centro' } },
+          } },
+          { placePrediction: {
+            placeId: 'ChIJ-rua-da-farmacia-00002',
+            structuredFormat: { mainText: { text: 'Rua da Farmácia' }, secondaryText: { text: 'Assis Chateaubriand - PR' } },
+          } },
+          { queryPrediction: { text: { text: 'farmácia perto de mim' } } },
+        ],
+      },
+    };
+  }
+  if (r.url.pathname.startsWith('/v1/places/')) {
+    return {
+      body: {
+        id: 'ChIJ-farmacia-sao-joao-001',
+        location: { latitude: -24.4170, longitude: -53.5230 },
+        formattedAddress: 'Av. Tupãssi, 1200 - Centro, Assis Chateaubriand - PR, 85935-000, Brasil',
+      },
+    };
+  }
+  if (r.url.pathname === '/maps/api/geocode/json') {
+    return {
+      body: {
+        status: 'OK',
+        results: [
+          { types: ['plus_code'], formatted_address: 'HF7H+2X Assis Chateaubriand, PR, Brasil' },
+          { types: ['locality'], formatted_address: 'Assis Chateaubriand - PR, Brasil' },
+          { types: ['street_address'], formatted_address: 'Av. Tupãssi, 1200 - Centro, Assis Chateaubriand - PR, 85935-000, Brasil' },
+        ],
+      },
+    };
+  }
+  return { status: 404, body: { error: { message: 'Not Found', status: 'NOT_FOUND' } } };
+}
+
+async function resetGoogle(): Promise<void> {
+  await adm.req('PUT', '/api/admin/maps-config', {
+    credentials: {
+      GOOGLE_MAPS_BROWSER_KEY: '', GOOGLE_MAPS_SERVER_KEY: '', GOOGLE_GEOCODING_KEY: '',
+      MAPBOX_PUBLIC_TOKEN: '', MAPBOX_SERVER_TOKEN: '',
+    },
+    provider: 'auto',
+  });
+  await adm.req('POST', '/api/admin/maps-config/clear-cache');
+}
+
+test('Google: a chave do navegador vai ao app e a de servidor nunca vaza', async () => {
+  try {
+    // chave com formato errado e provedor desconhecido são recusados, sem gravar nada
+    assert.equal((await adm.req('PUT', '/api/admin/maps-config',
+      { credentials: { GOOGLE_MAPS_BROWSER_KEY: 'chave curta' } })).status, 400);
+    assert.equal((await adm.req('PUT', '/api/admin/maps-config',
+      { credentials: { GOOGLE_MAPS_BROWSER_KEY: GMAPS_BROWSER }, provider: 'bing' })).status, 400);
+    let cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.google_key, null);
+    assert.equal(cfg.data.maps.provider, 'osm');
+
+    const ok = await adm.req('PUT', '/api/admin/maps-config', {
+      credentials: {
+        GOOGLE_MAPS_BROWSER_KEY: GMAPS_BROWSER, GOOGLE_MAPS_SERVER_KEY: GMAPS_SERVER,
+        MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC,
+      },
+    });
+    assert.equal(ok.status, 200, JSON.stringify(ok.data));
+
+    // automático: Google na frente, Mapbox junto como reserva
+    cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.google_key, GMAPS_BROWSER);
+    assert.equal(cfg.data.maps.mapbox_token, MBX_PUBLIC);
+    assert.equal(cfg.data.maps.provider, 'google');
+    assert.equal(cfg.data.maps.server_routing, 'google');
+    assert.equal(JSON.stringify(cfg.data).includes(GMAPS_SERVER), false);
+
+    const mc = await adm.req('GET', '/api/admin/maps-config');
+    assert.equal(mc.data.active_routing, 'google');
+    assert.equal(mc.data.active_visual, 'google');
+    assert.equal(mc.data.credentials.GOOGLE_MAPS_SERVER_KEY.filled, true);
+    assert.equal(JSON.stringify(mc.data).includes(GMAPS_SERVER), false);
+    assert.equal(JSON.stringify(mc.data).includes(GMAPS_BROWSER), false);
+
+    // escolher Mapbox desliga o Google no app e no backend, sem apagar a chave
+    await adm.req('PUT', '/api/admin/maps-config', { provider: 'mapbox' });
+    cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.google_key, null);
+    assert.equal(cfg.data.maps.provider, 'mapbox');
+    assert.equal(cfg.data.maps.server_routing, 'mapbox');
+
+    // "Forçar OpenStreetMap" desliga os dois
+    await adm.req('PUT', '/api/admin/maps-config', { provider: 'osm' });
+    cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.google_key, null);
+    assert.equal(cfg.data.maps.mapbox_token, null);
+    assert.equal(cfg.data.maps.provider, 'osm');
+
+    // só a chave do navegador: o mapa é do Google e o backend usa a mesma chave
+    await adm.req('PUT', '/api/admin/maps-config',
+      { credentials: { GOOGLE_MAPS_SERVER_KEY: '' }, provider: 'google' });
+    cfg = await pax.req('GET', '/api/config');
+    assert.equal(cfg.data.maps.provider, 'google');
+    assert.equal(cfg.data.maps.server_routing, 'google');
+  } finally { await resetGoogle(); }
+});
+
+test('Google: rota de motocicleta define distância e preço, com a chave de servidor e cache', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', {
+    credentials: { GOOGLE_MAPS_BROWSER_KEY: GMAPS_BROWSER, GOOGLE_MAPS_SERVER_KEY: GMAPS_SERVER },
+  });
+  try {
+    await withFakeGoogle({ google: fakeGoogleOk }, async calls => {
+      const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q.status, 200, JSON.stringify(q.data));
+      assert.equal(q.data.route.provider, 'google');
+      assert.equal(q.data.route.mode, 'two_wheeler');
+      assert.equal(q.data.route.mode_fallback, false);
+      assert.equal(q.data.route.estimated, false);
+      assert.deepEqual(q.data.route.geometry, [[-120.2, 38.5], [-120.95, 40.7], [-126.453, 43.252]]);
+      const eco = q.data.quotes.find((x: any) => x.category === 'economica');
+      assert.equal(eco.distance_m, 3900);
+      assert.equal(eco.duration_s, 540);
+      assert.equal(eco.price_cents, 550 + Math.round((3900 - 2000) * 200 / 1000));
+
+      assert.equal(calls.google.length, 1);
+      const c = calls.google[0];
+      assert.equal(c.url.hostname, 'routes.googleapis.com');
+      assert.equal(c.headers.get('X-Goog-Api-Key'), GMAPS_SERVER);
+      assert.equal(c.url.search, '');                       // a chave não vai na URL
+      assert.equal(c.body.travelMode, 'TWO_WHEELER');
+      assert.deepEqual(c.body.origin.location.latLng, { latitude: ORIGIN.lat, longitude: ORIGIN.lng });
+      assert.deepEqual(c.body.destination.location.latLng, { latitude: DEST.lat, longitude: DEST.lng });
+
+      // mesma rota de novo: sai do cache, sem nova chamada paga
+      const q2 = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q2.data.route.provider, 'google');
+      assert.equal(calls.google.length, 1);
+
+      // a procedência fica gravada na corrida
+      const rid = await newRide('dinheiro');
+      const row = db.prepare('SELECT route_provider, route_mode FROM rides WHERE id = ?').get(rid) as any;
+      assert.equal(row.route_provider, 'google');
+      assert.equal(row.route_mode, 'two_wheeler');
+      await pax.req('POST', `/api/rides/${rid}/cancel`, { reason: 'fim do teste' });
+    });
+  } finally { await resetGoogle(); }
+});
+
+test('Google: sem rota de moto no trajeto usa a de carro e avisa; fora do ar, o Mapbox assume', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', {
+    credentials: { GOOGLE_MAPS_BROWSER_KEY: GMAPS_BROWSER, MAPBOX_PUBLIC_TOKEN: MBX_PUBLIC },
+  });
+  try {
+    await withFakeGoogle({
+      google: r => r.body?.travelMode === 'TWO_WHEELER'
+        ? { status: 400, body: { error: { message: 'Two wheeler routing is not supported in this region.', status: 'INVALID_ARGUMENT' } } }
+        : fakeGoogleOk(r),
+    }, async calls => {
+      const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q.data.route.provider, 'google');
+      assert.equal(q.data.route.mode, 'drive');
+      assert.equal(q.data.route.mode_fallback, true);
+      assert.deepEqual(calls.google.map(c => c.body.travelMode), ['TWO_WHEELER', 'DRIVE']);
+      // sem chave de servidor, o backend usa a do navegador
+      assert.equal(calls.google[0].headers.get('X-Goog-Api-Key'), GMAPS_BROWSER);
+    });
+    await adm.req('POST', '/api/admin/maps-config/clear-cache');
+
+    await withFakeGoogle({
+      google: () => ({ status: 500, body: { error: { message: 'backend error' } } }),
+      mapbox: fakeMapboxOk,
+    }, async calls => {
+      const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q.status, 200);
+      assert.equal(q.data.route.provider, 'mapbox');
+      assert.equal(q.data.route.mode, 'drive');
+      assert.equal(calls.google.length, 1);
+      assert.equal(calls.mapbox.length, 1);
+    });
+    await adm.req('POST', '/api/admin/maps-config/clear-cache');
+
+    // provedor "Mapbox": o Google nem é chamado
+    await adm.req('PUT', '/api/admin/maps-config', { provider: 'mapbox' });
+    await withFakeGoogle({ google: fakeGoogleOk, mapbox: fakeMapboxOk }, async calls => {
+      const q = await pax.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+      assert.equal(q.data.route.provider, 'mapbox');
+      assert.equal(calls.google.length, 0);
+    });
+  } finally { await resetGoogle(); }
+});
+
+test('Google: a busca acha lojas pelo nome, junto com a base local, só na área atendida', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', {
+    credentials: { GOOGLE_MAPS_BROWSER_KEY: GMAPS_BROWSER, GOOGLE_MAPS_SERVER_KEY: GMAPS_SERVER },
+  });
+  db.prepare(`INSERT INTO local_addresses (kind, name, norm, lat, lng, updated_at)
+    VALUES ('rua', 'Rua da Farmácia', 'rua da farmacia', -24.4160, -53.5220, ?)`).run(Date.now());
+  try {
+    await withFakeGoogle({ google: fakeGoogleOk }, async calls => {
+      const r = await pax.req('GET', '/api/geo/search?q=farmacia&session=sessao-de-teste-0001');
+      assert.equal(r.status, 200);
+      const [rua, loja, ...resto] = r.data.results;
+      // a rua da base continua em primeiro, já com coordenada
+      assert.equal(rua.source, 'local');
+      assert.match(rua.text, /^Rua da Farmácia/);
+      assert.equal(typeof rua.lat, 'number');
+      // a loja vem do Google: nome, endereço resumido e nenhuma coordenada ainda
+      assert.equal(loja.source, 'google');
+      assert.equal(loja.text, 'Farmácia São João');
+      assert.equal(loja.secondary, 'Avenida Tupãssi, 1200 - Centro');
+      assert.equal(loja.place_id, 'ChIJ-farmacia-sao-joao-001');
+      assert.equal(loja.needs_details, true);
+      assert.equal(loja.lat, null);
+      // a "Rua da Farmácia" do Google repete a da base e a sugestão de pesquisa não é um lugar
+      assert.equal(resto.filter((x: any) => x.source === 'google').length, 0);
+
+      assert.equal(calls.google.length, 1);
+      const c = calls.google[0];
+      assert.equal(c.url.pathname, '/v1/places:autocomplete');
+      assert.equal(c.headers.get('X-Goog-Api-Key'), GMAPS_SERVER);
+      assert.equal(c.body.input, 'farmacia');
+      assert.equal(c.body.sessionToken, 'sessao-de-teste-0001');
+      assert.deepEqual(c.body.includedRegionCodes, ['br']);
+      // só o círculo da área atendida (12 km em volta do centro)
+      assert.deepEqual(c.body.locationRestriction.circle,
+        { center: { latitude: -24.4156, longitude: -53.5216 }, radius: 12000 });
+
+      // escolher a loja busca a posição, na mesma sessão, pedindo só o básico
+      const p = await pax.req('GET', '/api/geo/place?place_id=ChIJ-farmacia-sao-joao-001'
+        + '&session=sessao-de-teste-0001&text=' + encodeURIComponent('Farmácia São João'));
+      assert.equal(p.status, 200, JSON.stringify(p.data));
+      assert.equal(p.data.place.text, 'Farmácia São João — Av. Tupãssi, 1200 - Centro');
+      assert.equal(p.data.place.lat, -24.417);
+      assert.equal(p.data.place.lng, -53.523);
+      assert.equal(p.data.place.in_coverage, true);
+      assert.equal(p.data.place.source, 'google');
+      const d = calls.google[1];
+      assert.equal(d.url.pathname, '/v1/places/ChIJ-farmacia-sao-joao-001');
+      assert.equal(d.url.searchParams.get('sessionToken'), 'sessao-de-teste-0001');
+      assert.equal(d.headers.get('X-Goog-FieldMask'), 'id,location,formattedAddress');
+      assert.equal(d.headers.get('X-Goog-Api-Key'), GMAPS_SERVER);
+
+      // nada do Google fica guardado
+      assert.equal((db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c, 0);
+
+      // identificador inválido nem chega ao Google; visitante não usa a busca paga
+      assert.equal((await pax.req('GET', '/api/geo/place?place_id=' + encodeURIComponent('../x y'))).status, 400);
+      assert.equal(calls.google.length, 2);
+      const anon = await fetch(base + '/api/geo/place?place_id=ChIJ-farmacia-sao-joao-001');
+      assert.equal(anon.status, 401);
+    });
+
+    // lugar fora da área atendida: volta marcado, e o app recusa
+    await withFakeGoogle({
+      google: r => r.url.pathname.startsWith('/v1/places/')
+        ? { body: { id: 'x', location: { latitude: -24.95, longitude: -53.46 }, formattedAddress: 'Av. Brasil, 100 - Cascavel - PR' } }
+        : fakeGoogleOk(r),
+    }, async () => {
+      const p = await pax.req('GET', '/api/geo/place?place_id=ChIJ-loja-de-cascavel-0001&text=Loja');
+      assert.equal(p.data.place.in_coverage, false);
+      assert.ok(p.data.place.distance_m > 12000);
+    });
+
+    // Google fora do ar: a busca continua com a base, sem erro
+    await withFakeGoogle({ google: () => ({ status: 503, body: {} }) }, async () => {
+      const r = await pax.req('GET', '/api/geo/search?q=farmacia');
+      assert.equal(r.status, 200);
+      assert.equal(r.data.results[0].source, 'local');
+      assert.equal(r.data.results.some((x: any) => x.source === 'google'), false);
+      const p = await pax.req('GET', '/api/geo/place?place_id=ChIJ-farmacia-sao-joao-001');
+      assert.equal(p.status, 502);
+    });
+  } finally {
+    db.prepare(`DELETE FROM local_addresses WHERE norm = 'rua da farmacia'`).run();
+    await resetGoogle();
+  }
+});
+
+test('Google: "rua + número" fica com a base e o número de casa usa a mesma chave', async () => {
+  seedTupassi();
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { GOOGLE_MAPS_BROWSER_KEY: GMAPS_BROWSER } });
+  try {
+    await withFakeGoogle({
+      google: r => r.url.pathname === '/maps/api/geocode/json' ? googleResult('6161', CASA_6161) : fakeGoogleOk(r),
+    }, async calls => {
+      const top = (await buscaTupassi()).data.results[0];
+      assert.equal(top.source, 'local');
+      assert.equal(top.number_how, 'localizado');
+      assert.equal(top.lat, CASA_6161.lat);
+      // só o Geocoding foi chamado: nada de sugestões pagas para "rua + número"
+      assert.deepEqual(calls.google.map(c => c.url.pathname), ['/maps/api/geocode/json']);
+      assert.equal(calls.google[0].url.searchParams.get('key'), GMAPS_BROWSER);
+    });
+  } finally {
+    await cleanNumberTests();
+    await resetGoogle();
+  }
+});
+
+test('Google: endereço do GPS escolhe a rua com número, não a cidade', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { GOOGLE_MAPS_BROWSER_KEY: GMAPS_BROWSER } });
+  try {
+    await withFakeGoogle({ google: fakeGoogleOk }, async calls => {
+      const r = await pax.req('GET', `/api/geo/reverse?lat=${ORIGIN.lat}&lng=${ORIGIN.lng}`);
+      assert.equal(r.status, 200);
+      assert.equal(r.data.text, 'Av. Tupãssi, 1200 - Centro, Assis Chateaubriand - PR');
+      assert.equal(r.data.exact, true);
+      assert.equal(calls.google[0].url.searchParams.get('latlng'), `${ORIGIN.lat},${ORIGIN.lng}`);
+    });
+    // sem resultado no Google: segue para os outros serviços, sem inventar endereço
+    await withFakeGoogle({ google: () => ({ body: { status: 'ZERO_RESULTS', results: [] } }) }, async () => {
+      const r = await pax.req('GET', `/api/geo/reverse?lat=${ORIGIN.lat}&lng=${ORIGIN.lng}`);
+      assert.equal(r.status, 200);
+      assert.equal(r.data.exact, false);
+    });
+  } finally { await resetGoogle(); }
+});
+
+test('diagnóstico de mapas: confere cada API do Google e explica chave restrita por site', async () => {
+  await adm.req('PUT', '/api/admin/maps-config', { credentials: { GOOGLE_MAPS_BROWSER_KEY: GMAPS_BROWSER } });
+  try {
+    await withFakeGoogle({ google: fakeGoogleOk }, async () => {
+      const r = await adm.req('POST', '/api/admin/maps-config/test');
+      const by = Object.fromEntries(r.data.checks.map((c: any) => [c.item, c]));
+      assert.equal(r.data.checks[0].item, 'Token do Mapbox');       // o Mapbox continua relatado primeiro
+      assert.equal(by['Google Maps — mapa nos aplicativos'].ok, true);
+      assert.equal(by['Google — rotas (Routes API)'].ok, true);
+      assert.match(by['Google — rotas (Routes API)'].detail, /3\.9 km.*motocicleta/);
+      assert.equal(by['Google — busca por nome (Places API)'].ok, true);
+      assert.equal(by['Google — endereço do GPS (Geocoding API)'].ok, true);
+      assert.equal(JSON.stringify(r.data).includes(GMAPS_BROWSER), false);
+    });
+
+    await withFakeGoogle({
+      google: () => ({ status: 403, body: { error: { message: 'Requests from referer <empty> are blocked.', status: 'PERMISSION_DENIED' } } }),
+    }, async () => {
+      const r = await adm.req('POST', '/api/admin/maps-config/test');
+      const rota = r.data.checks.find((c: any) => c.item === 'Google — rotas (Routes API)');
+      assert.equal(rota.ok, false);
+      assert.match(rota.detail, /Chave de servidor/);
+      assert.equal(JSON.stringify(r.data).includes(GMAPS_BROWSER), false);
+    });
+  } finally { await resetGoogle(); }
+});

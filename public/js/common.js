@@ -383,11 +383,13 @@ window.addEventListener('offline', () => {
 window.addEventListener('online', () => { $('#offline-bar')?.remove(); toast('Conexão restabelecida', 'ok'); });
 
 /* ============================================================
-   MAPA — adaptador único para Mapbox GL JS e Leaflet/OpenStreetMap.
+   MAPA — adaptador único para Google Maps, Mapbox GL JS e
+   Leaflet/OpenStreetMap.
    O resto do aplicativo usa sempre a mesma API (makeMap, emojiMarker,
    drawRoute, accuracyCircle), sem saber qual provedor está ativo.
-   O Mapbox entra quando há token público configurado; sem ele, o
-   OpenStreetMap continua funcionando (mapa real, não simulado).
+   Ordem: Google Maps quando há chave do navegador; senão Mapbox quando há
+   token público; senão OpenStreetMap (mapa real, não simulado). Se um
+   provedor falhar, o seguinte assume.
    ============================================================ */
 
 // Versão fixa de propósito: uma versão nova só entra depois de testada aqui.
@@ -395,6 +397,8 @@ const MAPBOX_GL_VERSION = '3.33.0';
 const MAPBOX_DEFAULT_STYLE = 'mapbox://styles/mapbox/streets-v12';
 
 let _mapsProvider = 'osm';
+let _mapsConfig = {};          // bloco "maps" de /api/config (chave e token públicos)
+let _googleReady = null;
 let _mapboxReady = null;
 let _mapboxStyle = MAPBOX_DEFAULT_STYLE;
 let _mapboxSeq = 0;
@@ -414,6 +418,49 @@ function mapboxFailed(message) {
   // erro do próprio mapa, que não pode ser destruído enquanto o dispara
   setTimeout(() => document.dispatchEvent(
     new CustomEvent('maps-provider-changed', { detail: 'osm' })), 0);
+}
+
+/**
+ * O Google recusou a chave (inválida, API desativada, faturamento ou site
+ * fora da restrição): passa para o Mapbox, se houver token, ou para o
+ * OpenStreetMap, e manda as telas refazerem os mapas.
+ */
+async function googleFailed(message) {
+  if (_mapsProvider !== 'google') return;
+  _mapsProvider = 'osm';
+  const next = await startMapbox(_mapsConfig, true) ? 'mapbox' : 'osm';
+  toast(`${message} Usando ${next === 'mapbox' ? 'o Mapbox' : 'o OpenStreetMap'}.`, 'err');
+  setTimeout(() => document.dispatchEvent(
+    new CustomEvent('maps-provider-changed', { detail: next })), 0);
+}
+/** Chamado pelo próprio Google quando a chave não é aceita. */
+window.gm_authFailure = () => {
+  googleFailed('Chave do Google Maps recusada (confira a chave, as APIs ativadas e a restrição de site).');
+};
+
+/** Carrega a Maps JavaScript API uma única vez. */
+function loadGoogleMaps(key) {
+  if (_googleReady) return _googleReady;
+  _googleReady = new Promise((resolve, reject) => {
+    if (window.google?.maps?.Map) { resolve(window.google.maps); return; }
+    window.__vairoGoogleMaps = async () => {
+      try {
+        const gm = window.google.maps;
+        // com carregamento assíncrono, as classes chegam por biblioteca
+        if (gm.importLibrary) await Promise.all([gm.importLibrary('core'), gm.importLibrary('maps')]);
+        resolve(gm);
+      } catch { reject(new Error('Google Maps carregou sem a biblioteca esperada.')); }
+    };
+    const s = document.createElement('script');
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}`
+      + '&v=weekly&language=pt-BR&region=BR&loading=async&callback=__vairoGoogleMaps';
+    s.async = true;
+    s.onerror = () => reject(new Error('Falha ao carregar o Google Maps.'));
+    // rede lenta não pode travar a abertura do aplicativo
+    setTimeout(() => reject(new Error('Google Maps demorou demais para responder.')), 9000);
+    document.head.appendChild(s);
+  });
+  return _googleReady;
 }
 
 /** Carrega o Mapbox GL JS (script + CSS) uma única vez. */
@@ -440,24 +487,117 @@ function loadMapboxGL() {
   return _mapboxReady;
 }
 
-/**
- * Prepara o provedor de mapas a partir de /api/config.
- * Se o Mapbox falhar (sem rede, biblioteca bloqueada), cai para o
- * OpenStreetMap e avisa — nunca fica sem mapa silenciosamente.
- */
-async function initMaps(config) {
-  const token = config?.maps?.mapbox_token;
-  if (!token) { _mapsProvider = 'osm'; return 'osm'; }
+/** Liga o Mapbox, se houver token. Devolve true quando ele ficou ativo. */
+async function startMapbox(maps, quiet = false) {
+  const token = maps?.mapbox_token;
+  if (!token) return false;
   try {
     const mb = await loadMapboxGL();
     mb.accessToken = token;
-    _mapboxStyle = config.maps.style || MAPBOX_DEFAULT_STYLE;
+    _mapboxStyle = maps.style || MAPBOX_DEFAULT_STYLE;
     _mapsProvider = 'mapbox';
+    return true;
   } catch {
-    _mapsProvider = 'osm';
-    toast('Mapbox indisponível — usando OpenStreetMap.', 'err');
+    if (!quiet) toast('Mapbox indisponível — usando OpenStreetMap.', 'err');
+    return false;
   }
+}
+
+/**
+ * Prepara o provedor de mapas a partir de /api/config.
+ * Se um provedor falhar (sem rede, biblioteca bloqueada), o seguinte assume
+ * e o app avisa — nunca fica sem mapa silenciosamente.
+ */
+async function initMaps(config) {
+  _mapsConfig = config?.maps || {};
+  _mapsProvider = 'osm';
+  if (_mapsConfig.google_key) {
+    try {
+      await loadGoogleMaps(_mapsConfig.google_key);
+      _mapsProvider = 'google';
+      return _mapsProvider;
+    } catch {
+      toast('Google Maps indisponível — usando o mapa de reserva.', 'err');
+    }
+  }
+  await startMapbox(_mapsConfig);
   return _mapsProvider;
+}
+
+/* ---------- adaptador Google com a mesma interface do Leaflet ---------- */
+
+function googleMapAdapter(el, center, zoom) {
+  const gm = window.google.maps;
+  const map = new gm.Map(el, {
+    center: { lat: center.lat, lng: center.lng },
+    zoom,
+    disableDefaultUI: true,
+    gestureHandling: 'greedy',     // um dedo arrasta o mapa, como nos outros provedores
+    clickableIcons: false,         // o toque marca o ponto; não abre o balão do Google
+    keyboardShortcuts: false,
+  });
+  const clickHandlers = new Map();
+  return {
+    _google: map,
+    _provider: 'google',
+    setView([lat, lng], z) { map.setCenter({ lat, lng }); if (z) map.setZoom(z); },
+    fitBounds(bounds, opts = {}) {
+      if (!bounds || bounds.isEmpty()) return;
+      const pad = (opts.padding && opts.padding[0]) || 30;
+      // trajeto curto não pode aproximar até o nível do telhado
+      map.setOptions({ maxZoom: 17 });
+      map.fitBounds(bounds, pad);
+      gm.event.addListenerOnce(map, 'idle', () => map.setOptions({ maxZoom: null }));
+    },
+    invalidateSize() { gm.event.trigger(map, 'resize'); },
+    on(evt, fn) {
+      if (evt !== 'click') return;
+      const l = map.addListener('click', e => {
+        if (e.latLng) fn({ latlng: { lat: e.latLng.lat(), lng: e.latLng.lng() } });
+      });
+      clickHandlers.set(fn, l);
+    },
+    off(evt, fn) {
+      const l = clickHandlers.get(fn);
+      if (l) { l.remove(); clickHandlers.delete(fn); }
+    },
+    remove() { gm.event.clearInstanceListeners(map); el.replaceChildren(); },
+  };
+}
+
+/**
+ * Marcador de emoji no mapa do Google: o mesmo elemento HTML usado no
+ * Leaflet e no Mapbox, posicionado por uma camada própria. Não recebe
+ * toques — o toque passa para o mapa, que marca o ponto.
+ */
+let _GoogleEmojiOverlay = null;
+function googleEmojiOverlay(lat, lng, emoji, title) {
+  const gm = window.google.maps;
+  if (!_GoogleEmojiOverlay) {
+    _GoogleEmojiOverlay = class extends gm.OverlayView {
+      constructor(pos, text, tip) {
+        super();
+        this.pos = pos;
+        this.div = document.createElement('div');
+        this.div.className = 'marker-moto';
+        this.div.textContent = text;
+        if (tip) this.div.title = tip;
+        Object.assign(this.div.style, {
+          position: 'absolute', transform: 'translate(-50%, -50%)',
+          pointerEvents: 'none', whiteSpace: 'nowrap', lineHeight: '1',
+        });
+      }
+      onAdd() { this.getPanes().markerLayer.appendChild(this.div); }
+      draw() {
+        const p = this.getProjection()?.fromLatLngToDivPixel(new gm.LatLng(this.pos.lat, this.pos.lng));
+        if (!p) return;
+        this.div.style.left = `${p.x}px`;
+        this.div.style.top = `${p.y}px`;
+      }
+      onRemove() { this.div.remove(); }
+    };
+  }
+  return new _GoogleEmojiOverlay({ lat, lng }, emoji, title);
 }
 
 /* ---------- adaptador Mapbox com a mesma interface do Leaflet ---------- */
@@ -567,6 +707,10 @@ function makeMap(elId, center, zoom = 14) {
   const el = document.getElementById(elId);
   if (!el) return null;
 
+  if (_mapsProvider === 'google' && window.google?.maps?.Map) {
+    try { return googleMapAdapter(el, center, zoom); }
+    catch { el.replaceChildren(); /* este mapa segue no Leaflet abaixo */ }
+  }
   if (_mapsProvider === 'mapbox' && window.mapboxgl) {
     try { return mapboxAdapter(el, center, zoom); }
     catch {
@@ -592,6 +736,15 @@ function makeMap(elId, center, zoom = 14) {
 
 function emojiMarker(map, lat, lng, emoji, title = '') {
   if (!map) return null;
+  if (map._provider === 'google') {
+    const overlay = googleEmojiOverlay(lat, lng, emoji, title);
+    overlay.setMap(map._google);
+    return {
+      setLatLng([la, ln]) { overlay.pos = { lat: la, lng: ln }; overlay.draw(); return this; },
+      remove() { overlay.setMap(null); },
+      _google: overlay,
+    };
+  }
   if (map._provider === 'mapbox') {
     // mesmo visual dos marcadores do Leaflet: o emoji num elemento HTML
     const el = document.createElement('div');
@@ -615,6 +768,22 @@ function emojiMarker(map, lat, lng, emoji, title = '') {
 /** geometry: [[lng,lat],...] (GeoJSON) */
 function drawRoute(map, geometry, color = '#111118') {
   if (!map) return null;
+  if (map._provider === 'google') {
+    const gm = window.google.maps;
+    const path = geometry.map(([lng, lat]) => ({ lat, lng }));
+    const base = { path, map: map._google, clickable: false };
+    const lines = [
+      // contorno claro: a rota continua visível sobre ruas escuras e satélite
+      new gm.Polyline({ ...base, strokeColor: '#ffffff', strokeWeight: 8, strokeOpacity: .7, zIndex: 1 }),
+      new gm.Polyline({ ...base, strokeColor: color, strokeWeight: 5, strokeOpacity: .85, zIndex: 2 }),
+    ];
+    const bounds = new gm.LatLngBounds();
+    path.forEach(p => bounds.extend(p));
+    return {
+      getBounds() { return bounds; },
+      remove() { lines.forEach(l => l.setMap(null)); },
+    };
+  }
   if (map._provider === 'mapbox') {
     const layout = { 'line-join': 'round', 'line-cap': 'round' };
     const layer = mapboxGeoLayer(map,
@@ -638,6 +807,17 @@ function drawRoute(map, geometry, color = '#111118') {
 /** Círculo de precisão do GPS. */
 function accuracyCircle(map, lat, lng, radius) {
   if (!map) return null;
+  if (map._provider === 'google') {
+    const c = new window.google.maps.Circle({
+      map: map._google, center: { lat, lng }, radius, clickable: false,
+      strokeColor: '#2563eb', strokeWeight: 1, fillColor: '#2563eb', fillOpacity: .08,
+    });
+    return {
+      setLatLng([la, ln]) { c.setCenter({ lat: la, lng: ln }); return this; },
+      setRadius(r) { c.setRadius(r); return this; },
+      remove() { c.setMap(null); },
+    };
+  }
   if (map._provider === 'mapbox') {
     const layer = mapboxGeoLayer(map, circleFeature(lat, lng, radius), [
       { type: 'fill', paint: { 'fill-color': '#2563eb', 'fill-opacity': .08 } },

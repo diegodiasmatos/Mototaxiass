@@ -73,13 +73,46 @@ passageiro, e a Central de Segurança/SOS.
 | Backend | Node 24 + TypeScript nativo (sem build) | simples, estável, sem toolchain |
 | Banco | SQLite (`node:sqlite`) com migrações versionadas | persistente, zero instalação, WAL |
 | Tempo real | Server-Sent Events (SSE) | ofertas de corrida, GPS e notificações ao vivo |
-| Mapas | **Mapbox GL JS** quando há token; Leaflet + OpenStreetMap como reserva | mapa vetorial rápido e nítido no celular; a reserva mantém o sistema funcionando sem custo |
-| Rotas/ETA | **Mapbox Directions API** → OSRM → estimativa | rota real por ruas, com a procedência marcada |
-| Endereços | **Base local** (todas as ruas da cidade importadas do OSM) → Mapbox Geocoding → Nominatim | autocomplete instantâneo de ruas, números, bairros e estabelecimentos |
+| Mapas | **Google Maps** quando há chave; senão **Mapbox GL JS** quando há token; Leaflet + OpenStreetMap como reserva | o mapa mais atualizado de comércio e ruas; as reservas mantêm o sistema funcionando |
+| Rotas/ETA | **Google Routes API (motocicleta)** → Mapbox Directions API → OSRM → estimativa | rota real por ruas, com a procedência marcada |
+| Endereços | **Base local** (todas as ruas da cidade importadas do OSM) + **Google Places** (lojas e locais pelo nome) → Mapbox Geocoding → Nominatim | autocomplete de ruas, números, bairros e estabelecimentos |
 | Senhas | scrypt + salt (node:crypto) | hash forte, sem texto puro |
 | Sessões | cookie HttpOnly + tabela `sessions` | revogável no servidor (bloqueio derruba sessão) |
 
+## Mapas com Google Maps
+
+Com uma chave do Google salva em central → 🗺️ Mapas (ou em
+`GOOGLE_MAPS_BROWSER_KEY`) e o provedor em "Automático" ou "Google Maps":
+
+| Recurso do Google | Onde | Para quê |
+|---|---|---|
+| **Maps JavaScript API** | navegador | mapa visual do passageiro e do mototaxista |
+| **Routes API** | servidor | rota em modo motocicleta (`TWO_WHEELER`); se o Google não tiver esse modo no trajeto, usa a de carro e a tela avisa |
+| **Places API (New)** | servidor | busca por nome de lojas, locais e ruas, limitada ao círculo da área atendida |
+| **Geocoding API** | servidor | endereço a partir do GPS/toque no mapa e número de casa |
+
+- **Chaves**: a do navegador é pública por natureza (restrinja por site). A de
+  servidor (`GOOGLE_MAPS_SERVER_KEY`) é opcional — só é necessária quando a do
+  navegador tem restrição de site — e nunca vai ao navegador.
+- **Busca**: as sugestões do Google aparecem junto com as da base local. A
+  posição do lugar só é buscada quando a pessoa escolhe (`/api/geo/place`);
+  digitação + escolha formam uma sessão de cobrança única. "Rua + número"
+  continua resolvido pela base local.
+- **O que fica guardado**: só as rotas, por no máximo 30 dias. Sugestões,
+  lugares e endereços do Google não são armazenados.
+- **Reserva**: se o Google falhar (chave recusada, cota, rede), o app e o
+  backend passam sozinhos para o Mapbox, se houver token, ou para o
+  OpenStreetMap/OSRM.
+- **Custo**: o Google exige faturamento ativo e cobra por uso depois da
+  franquia mensal. Defina um alerta de orçamento no Google Cloud.
+
+Implementação em `server/google-maps.ts` e no adaptador de mapas de
+`public/js/common.js`.
+
 ## Mapas com Mapbox
+
+O Mapbox é usado quando não há chave do Google, quando o provedor escolhido é
+"Mapbox", ou como reserva do Google.
 
 ### O que é usado
 
@@ -226,6 +259,7 @@ server/          backend (TypeScript puro)
   admin.ts       dashboard, aprovações, tarifas, auditoria, suporte
   fares.ts       cálculo de tarifa e comissão (centavos inteiros)
   geo.ts         rotas, geocodificação, área de cobertura
+  google-maps.ts Google: rotas de moto (Routes), busca por nome (Places), endereço do GPS (Geocoding)
   mapbox.ts      Mapbox: rotas (Directions), endereços (Geocoding), diagnóstico do token
   notify.ts      SSE + notificações persistentes
 public/          frontend (mobile-first, 3 apps)
@@ -366,6 +400,7 @@ aprovação pela central e dashboard.
 
 | Item | Situação |
 |---|---|
+| Google Maps | **integrado** (mapa, rotas de moto, busca de lojas pelo nome, endereço do GPS). Falta você criar a chave em console.cloud.google.com com o faturamento ativo, colar na central → 🗺️ Mapas e rodar o "Testar agora" |
 | Mapbox | **integrado** (Mapbox GL JS, Directions e Geocoding). Falta você criar a conta em account.mapbox.com, colar o token público na central → 🗺️ Mapas e rodar o "Testar agora" |
 | OpenStreetMap/OSRM/Nominatim | reserva automática, pública e gratuita; usada enquanto não houver token do Mapbox |
 | Login com Google | opcional; exige `GOOGLE_CLIENT_ID` (gratuito) — instruções no `.env.example` |

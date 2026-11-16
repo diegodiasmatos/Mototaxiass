@@ -680,27 +680,33 @@ async function secMaps() {
   };
   const cacheRows = m.cache.length
     ? m.cache.map(c => `<tr>
-        <td data-l="Tipo">${c.kind === 'rota_mapbox' ? 'Rotas (Mapbox)' : escapeHtml(c.kind)}</td>
+        <td data-l="Tipo">${c.kind === 'rota_mapbox' ? 'Rotas (Mapbox)'
+        : c.kind === 'rota_google' ? 'Rotas (Google)' : escapeHtml(c.kind)}</td>
         <td data-l="Entradas">${c.entradas}</td>
         <td data-l="Chamadas evitadas"><b style="color:var(--green)">${c.acertos}</b></td>
       </tr>`).join('')
     : '<tr><td class="muted center">Nada em cache ainda.</td></tr>';
 
+  const NOMES = { google: 'Google Maps', mapbox: 'Mapbox', osrm: 'OSRM', osm: 'OpenStreetMap' };
+  const pago = p => p === 'google' || p === 'mapbox';
   main().innerHTML = `
     <h2 class="mb">🗺️ Mapas</h2>
     <div class="fin-grid mb">
-      <div class="fin-card ${m.active_routing === 'mapbox' ? 'in' : 'warn'}">
-        <div class="fv">${m.active_routing === 'mapbox' ? 'Mapbox' : 'OSRM'}</div>
-        <div class="fl">Rotas e distâncias (backend)</div></div>
-      <div class="fin-card ${m.active_visual === 'mapbox' ? 'in' : 'warn'}">
-        <div class="fv">${m.active_visual === 'mapbox' ? 'Mapbox' : 'OpenStreetMap'}</div>
+      <div class="fin-card ${pago(m.active_routing) ? 'in' : 'warn'}">
+        <div class="fv">${NOMES[m.active_routing]}</div>
+        <div class="fl">Rotas, busca e endereços (backend)</div></div>
+      <div class="fin-card ${pago(m.active_visual) ? 'in' : 'warn'}">
+        <div class="fv">${NOMES[m.active_visual]}</div>
         <div class="fl">Mapa visual (aplicativos)</div></div>
     </div>
-    ${m.active_routing !== 'mapbox' ? `<div class="testbar">
-      🗺️ ${m.provider === 'osm' && m.has_server_token
-      ? 'OpenStreetMap forçado: o token do Mapbox está salvo, mas não é usado.'
-      : 'Sem token do Mapbox: o sistema usa OpenStreetMap/OSRM — mapa real e gratuito.'}
+    ${!pago(m.active_routing) ? `<div class="testbar">
+      🗺️ ${m.provider === 'osm' && (m.has_server_token || m.has_google_key)
+      ? 'OpenStreetMap forçado: as chaves salvas não são usadas.'
+      : 'Sem chave do Google nem token do Mapbox: o sistema usa OpenStreetMap/OSRM — mapa real e gratuito.'}
       Baixe a base local de endereços abaixo para a busca ficar completa e instantânea.</div>` : ''}
+    ${m.active_routing === 'google' ? `<div class="testbar ok">
+      🔎 Busca por nome ligada: passageiros encontram lojas e locais do Google Maps
+      dentro da área atendida, além das ruas da base local.</div>` : ''}
 
     <div class="card">
       <h3>📍 Base local de endereços <span class="pill ${m.address_base.total ? 'green' : 'gray'}">
@@ -747,6 +753,31 @@ async function secMaps() {
     </div>
 
     <div class="card">
+      <h3>Google Maps · mapa, rotas de moto e busca de lojas pelo nome</h3>
+      <ol class="muted small" style="padding-left:18px;line-height:1.9">
+        <li>Entre em <a href="https://console.cloud.google.com/google/maps-apis" target="_blank" rel="noopener">console.cloud.google.com</a>,
+          crie um projeto e <b>ative o faturamento</b> (o Google exige cartão; há franquia gratuita mensal —
+          confira os limites e preços atuais na página de preços da Google Maps Platform).</li>
+        <li>Em <b>APIs e serviços → Biblioteca</b>, ative: <b>Maps JavaScript API</b>, <b>Routes API</b>,
+          <b>Places API (New)</b> e <b>Geocoding API</b>.</li>
+        <li>Em <b>Credenciais</b>, crie uma chave de API. Para começar, uma chave só basta: cole-a em
+          "Chave do navegador" abaixo.</li>
+        <li>Recomendado antes de divulgar: restrinja essa chave ao endereço do seu site
+          (<b>Sites</b> → <i>https://seudominio.com.br/*</i>) e crie uma <b>segunda chave</b>, sem restrição de site
+          e limitada às APIs Routes, Places e Geocoding, para colar em "Chave de servidor".</li>
+        <li>Defina um <b>limite de gastos/alerta de orçamento</b> no Google Cloud para não ter surpresa na fatura.</li>
+      </ol>
+      ${cred('GOOGLE_MAPS_BROWSER_KEY', 'Chave do navegador (Google Maps)',
+    'Desenha o mapa nos aplicativos — vai para o navegador, é pública por natureza. Sem chave de servidor, também calcula rotas e faz as buscas.')}
+      ${cred('GOOGLE_MAPS_SERVER_KEY', 'Chave de servidor (Google, opcional)',
+    'Só é necessária se a chave do navegador tiver restrição de site. Usada apenas pelo backend; <b>nunca</b> vai para o navegador.')}
+      <p class="muted small mb">Com a chave salva e o provedor em "Automático" ou "Google Maps", o mapa, as rotas
+        (em modo motocicleta) e a busca passam para o Google. O Mapbox e o OpenStreetMap ficam de reserva
+        se o Google falhar. Depois de salvar, use "Testar agora" mais abaixo.</p>
+      <button class="btn btn-primary" id="mp-save-google" type="button">Salvar chaves do Google</button>
+    </div>
+
+    <div class="card">
       <h3>Passo 1 · Criar a conta e o token no Mapbox</h3>
       <ol class="muted small" style="padding-left:18px;line-height:1.9">
         <li>Crie a conta em <a href="https://account.mapbox.com/" target="_blank" rel="noopener">account.mapbox.com</a>
@@ -768,11 +799,13 @@ async function secMaps() {
       ${cred('MAPBOX_SERVER_TOKEN', 'Token de servidor (opcional)',
     'Só é necessário se o token público tiver restrição de URL. Usado apenas pelo backend; <b>nunca</b> vai para o navegador.')}
       ${cred('GOOGLE_GEOCODING_KEY', 'Chave do Google para números de casa (opcional)',
-    'Faz "rua + número" cair na casa certa. Crie em console.cloud.google.com uma chave com a <b>Geocoding API</b> ativada (exige faturamento ativo no Google Cloud). Usada só pelo backend; <b>nunca</b> vai para o navegador.')}
+    'Só para quem usa o Mapbox como provedor: faz "rua + número" cair na casa certa. Com o Google Maps configurado acima, deixe em branco — a mesma chave já faz isso. Crie em console.cloud.google.com uma chave com a <b>Geocoding API</b> ativada (exige faturamento ativo no Google Cloud). Usada só pelo backend; <b>nunca</b> vai para o navegador.')}
       <div class="field">
         <label>Provedor de mapas</label>
         <select class="input" id="mp-provider">
-          <option value="auto" ${m.provider === 'auto' ? 'selected' : ''}>Automático — Mapbox quando houver token</option>
+          <option value="auto" ${m.provider === 'auto' ? 'selected' : ''}>Automático — Google Maps se houver chave; senão Mapbox; senão OpenStreetMap</option>
+          <option value="google" ${m.provider === 'google' ? 'selected' : ''}>Google Maps (Mapbox e OpenStreetMap de reserva)</option>
+          <option value="mapbox" ${m.provider === 'mapbox' ? 'selected' : ''}>Mapbox (não usa o Google)</option>
           <option value="osm" ${m.provider === 'osm' ? 'selected' : ''}>Forçar OpenStreetMap (sem custo)</option>
         </select>
       </div>
@@ -785,15 +818,16 @@ async function secMaps() {
       </div>
       <div class="field"><label>Validade do cache de rotas (horas)</label>
         <input class="input" id="ch-route" type="number" min="0" max="8760" value="${m.cache_hours.route}">
-        <p class="muted small" style="margin-top:4px">A mesma rota não é pedida duas vezes ao Mapbox
-          dentro desse prazo. Use 0 para desligar.</p></div>
+        <p class="muted small" style="margin-top:4px">A mesma rota não é pedida duas vezes ao provedor
+          dentro desse prazo (no Google, no máximo 30 dias). Use 0 para desligar.</p></div>
       <button class="btn btn-primary" id="mp-save">Salvar configuração de mapas</button>
     </div>
 
     <div class="card">
       <h3>Passo 3 · Testar em ${escapeHtml(m.city_name)}</h3>
-      <p class="muted small mb">Confere o token e faz uma chamada real de rota, de busca de endereço e de
-        endereço por GPS, usando o centro da cidade como referência. Faça antes de divulgar o app.</p>
+      <p class="muted small mb">Confere as chaves e faz uma chamada real de rota, de busca e de
+        endereço por GPS em cada provedor configurado, usando o centro da cidade como referência.
+        Faça antes de divulgar o app.</p>
       <button class="btn btn-navy btn-sm" id="mp-test">Testar agora</button>
       <div id="mp-result" class="mt"></div>
     </div>
@@ -830,6 +864,8 @@ async function secMaps() {
     secMaps();
   }, { okMsg: 'Configuração de mapas salva.' }).catch(() => { });
 
+  $('#mp-save-google').onclick = () => $('#mp-save').click();
+
   // -------- estabelecimentos manuais --------
   let plCoord = null;
   $('#pl-locate').onclick = () => withLoading($('#pl-locate'), async () => {
@@ -854,11 +890,20 @@ async function secMaps() {
       <label class="list-item" style="cursor:pointer">
         <input type="radio" name="pl-opt" value="${i}">
         <div class="li-main"><div class="li-title">${escapeHtml(x.text)}</div>
-          <div class="li-sub">${(x.distance_m / 1000).toFixed(1)} km do centro</div></div>
+          <div class="li-sub">${x.needs_details ? escapeHtml(x.secondary || 'Google Maps')
+        : (x.distance_m / 1000).toFixed(1) + ' km do centro'}</div></div>
       </label>`).join('');
     box.querySelectorAll('input[name="pl-opt"]').forEach(inp => {
-      inp.onchange = () => {
-        const x = r.results[Number(inp.value)];
+      inp.onchange = async () => {
+        let x = r.results[Number(inp.value)];
+        // sugestão do Google: a posição é buscada na escolha
+        if (x.needs_details && x.place_id) {
+          $('#pl-save').disabled = true; plCoord = null;
+          try {
+            x = (await api(`/api/geo/place?place_id=${encodeURIComponent(x.place_id)}&text=${encodeURIComponent(x.text)}`)).place;
+          } catch (e) { toast(e.message, 'err'); return; }
+          if (!inp.checked) return;                  // outra opção foi escolhida no meio do caminho
+        }
         plCoord = { lat: x.lat, lng: x.lng };
         $('#pl-save').disabled = false;
       };
@@ -890,12 +935,13 @@ async function secMaps() {
     btn.onclick = async () => {
       const k = btn.dataset.mkClear;
       const nome = k.includes('GOOGLE') ? 'chave do Google' : k.includes('PUBLIC') ? 'token público' : 'token de servidor';
-      const efeito = k.includes('GOOGLE')
+      const efeito = k === 'GOOGLE_GEOCODING_KEY'
         ? 'Os números de casa voltam a depender do Mapbox ou do ajuste do pino.'
-        : 'Sem token, o sistema volta a usar o OpenStreetMap.';
+        : k.includes('GOOGLE') ? 'Sem ela, o Google Maps deixa de ser usado nessa parte e o sistema volta para o Mapbox ou o OpenStreetMap.'
+          : 'Sem token, o sistema volta a usar o OpenStreetMap.';
       if (!await confirmModal('Remover credencial', `Remover ${k.includes('GOOGLE') ? 'a' : 'o'} ${nome} salv${k.includes('GOOGLE') ? 'a' : 'o'}? ${efeito}`)) return;
       await api('/api/admin/maps-config', { method: 'PUT', body: { credentials: { [k]: '' } } });
-      toast('Token removido.', 'ok');
+      toast('Credencial removida.', 'ok');
       secMaps();
     };
   });

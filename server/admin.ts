@@ -19,7 +19,11 @@ const CREDENTIAL_KEYS = [
   'MP_CLIENT_ID', 'MP_CLIENT_SECRET', 'PUBLIC_URL',
 ] as const;
 
-const MAPS_CREDENTIAL_KEYS = ['MAPBOX_PUBLIC_TOKEN', 'MAPBOX_SERVER_TOKEN', 'GOOGLE_GEOCODING_KEY'] as const;
+const MAPS_CREDENTIAL_KEYS = [
+  'GOOGLE_MAPS_BROWSER_KEY', 'GOOGLE_MAPS_SERVER_KEY',
+  'MAPBOX_PUBLIC_TOKEN', 'MAPBOX_SERVER_TOKEN', 'GOOGLE_GEOCODING_KEY',
+] as const;
+const MAPS_PROVIDERS = ['auto', 'google', 'mapbox', 'osm'];
 
 function dayKey(ts: number): string {
   const d = new Date(ts);
@@ -513,6 +517,8 @@ export const adminRoutes: Route[] = [
   route('GET /api/admin/maps-config', 'admin', async ({ res }) => {
     const { mapboxEnabled, cacheStats, publicToken, serverToken, mapStyle, MAP_STYLES } =
       await import('./mapbox.ts');
+    const { googleEnabled, googleVisualEnabled, serverKey: googleServerKey } =
+      await import('./google-maps.ts');
     const { baseStats } = await import('./address-base.ts');
     const usage = db.prepare(`SELECT route_provider provider, route_mode mode, COUNT(*) qtd
       FROM rides WHERE route_provider IS NOT NULL
@@ -524,9 +530,11 @@ export const adminRoutes: Route[] = [
       })),
       provider: getSetting('maps_provider'),
       city_name: getSetting('city_name'),
-      active_routing: mapboxEnabled() ? 'mapbox' : 'osrm',
-      active_visual: (getSetting('maps_provider') !== 'osm' && publicToken()) ? 'mapbox' : 'osm',
+      active_routing: googleEnabled() ? 'google' : mapboxEnabled() ? 'mapbox' : 'osrm',
+      active_visual: googleVisualEnabled() ? 'google'
+        : (getSetting('maps_provider') !== 'osm' && publicToken()) ? 'mapbox' : 'osm',
       has_server_token: !!serverToken(),
+      has_google_key: !!googleServerKey(),
       style: mapStyle(),
       styles: MAP_STYLES,
       address_base: baseStats(),
@@ -556,7 +564,14 @@ export const adminRoutes: Route[] = [
       if (value && k === 'MAPBOX_SERVER_TOKEN' && !/^(pk|sk)\./.test(value)) {
         throw new ApiError(400, 'O token de servidor do Mapbox começa com "pk." ou "sk.".');
       }
+      if (value && (k === 'GOOGLE_MAPS_BROWSER_KEY' || k === 'GOOGLE_MAPS_SERVER_KEY')
+        && !/^[A-Za-z0-9_-]{20,120}$/.test(value)) {
+        throw new ApiError(400, 'Essa não parece uma chave do Google Maps. Copie-a inteira de "APIs e serviços → Credenciais" (começa com "AIza").');
+      }
       tokens.push([k, value]);
+    }
+    if (b.provider !== undefined && !MAPS_PROVIDERS.includes(String(b.provider))) {
+      throw new ApiError(400, 'Provedor de mapas desconhecido.');
     }
     if (b.style !== undefined && !MAP_STYLES[String(b.style)]) {
       throw new ApiError(400, 'Estilo de mapa desconhecido.');
@@ -575,8 +590,8 @@ export const adminRoutes: Route[] = [
       setCredential(k, value, user!.id);
       changed.push(value ? `${k} definido` : `${k} removido`);
     }
-    if (b.provider === 'auto' || b.provider === 'osm') {
-      setSetting('maps_provider', b.provider);
+    if (b.provider !== undefined) {
+      setSetting('maps_provider', String(b.provider));
       changed.push(`provedor: ${b.provider}`);
     }
     if (b.style !== undefined) {
@@ -591,11 +606,18 @@ export const adminRoutes: Route[] = [
     json(res, 200, { ok: true, changed });
   }),
 
-  /** Chama as APIs do Mapbox de verdade e relata o que funciona. */
+  /** Chama as APIs do Mapbox e do Google de verdade e relata o que funciona. */
   route('POST /api/admin/maps-config/test', 'admin', async ({ res }) => {
     const { testMapboxToken } = await import('./mapbox.ts');
+    const { testGoogleKeys } = await import('./google-maps.ts');
     const { testGoogleGeocoding } = await import('./house-number.ts');
-    json(res, 200, { checks: [...await testMapboxToken(), await testGoogleGeocoding()] });
+    const mapbox = await testMapboxToken();
+    const google = await testGoogleKeys();
+    // com o Google ligado, a falta do token do Mapbox não é problema: ele é só reserva
+    if (google.length && mapbox.length === 1 && !mapbox[0].ok) {
+      mapbox[0].detail = 'Não configurado — opcional: serve de reserva se o Google falhar.';
+    }
+    json(res, 200, { checks: [...mapbox, ...google, await testGoogleGeocoding()] });
   }),
 
   // ---------- estabelecimentos cadastrados à mão ----------
