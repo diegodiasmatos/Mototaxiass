@@ -5,7 +5,7 @@
    - Imagens e mapas: cache primeiro (economiza dados do celular do usuário). */
 'use strict';
 
-const VERSION = 'vairo-v2';
+const VERSION = 'vairo-v3';
 const SHELL = `${VERSION}-shell`;
 const MEDIA = `${VERSION}-media`;
 

@@ -15,18 +15,26 @@ const DARK: RGB = [0x09, 0x09, 0x09];
 const WHITE: RGB = [0xff, 0xff, 0xff];
 type RGB = [number, number, number];
 
-/** "V" do VAIRO (mesmo polígono de public/img/icon.svg, viewBox 40). `scale` encolhe para a zona segura. */
-const V_POLY: [number, number][] = [
-  [10, 11.5], [15.2, 11.5], [20, 22.6], [24.8, 11.5], [30, 11.5], [22.1, 27.8], [17.9, 27.8],
-].map(([x, y]) => [x / 40, y / 40] as [number, number]);
+/** Logo do VAIRO: contornos em tools/logo-shape.json (caixa 0..100), mesma posição do
+ *  public/img/icon.svg — translate(6.07 6) scale(.28) num tile de 40. Regra par-ímpar. */
+const SHAPE: [number, number][][] = JSON.parse(
+  fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'logo-shape.json'), 'utf8'),
+).polys;
+const BBOX = SHAPE.flat().reduce(
+  (b, [x, y]) => [Math.min(b[0], x), Math.min(b[1], y), Math.max(b[2], x), Math.max(b[3], y)],
+  [Infinity, Infinity, -Infinity, -Infinity],
+);
 
 function vInk(x: number, y: number, scale: number): boolean {
-  const u = (x - 0.5) / scale + 0.5;
-  const v = (y - 0.5) / scale + 0.5;
+  const u = (((x - 0.5) / scale + 0.5) * 40 - 6.07) / 0.28;
+  const v = (((y - 0.5) / scale + 0.5) * 40 - 6) / 0.28;
+  if (u < BBOX[0] || u > BBOX[2] || v < BBOX[1] || v > BBOX[3]) return false;
   let inside = false;
-  for (let i = 0, j = V_POLY.length - 1; i < V_POLY.length; j = i++) {
-    const [xi, yi] = V_POLY[i], [xj, yj] = V_POLY[j];
-    if ((yi > v) !== (yj > v) && u < ((xj - xi) * (v - yi)) / (yj - yi) + xi) inside = !inside;
+  for (const poly of SHAPE) {
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if ((yi > v) !== (yj > v) && u < ((xj - xi) * (v - yi)) / (yj - yi) + xi) inside = !inside;
+    }
   }
   return inside;
 }
@@ -85,7 +93,7 @@ function render(size: number, fullBleed: boolean): Buffer {
   const SS = 4;
   const out = Buffer.alloc(size * size * 4);
   // no modo maskable o conteúdo fica dentro da zona segura (80%)
-  const logoScale = fullBleed ? 0.8 : 1;
+  const logoScale = fullBleed ? 0.9 : 1;
   const RING = 0.025;           // borda de 1px em 40
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
