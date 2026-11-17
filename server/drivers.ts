@@ -195,6 +195,12 @@ export const driverRoutes: Route[] = [
     const maxAcc = getSettingNum('gps_max_accuracy_m');
     const accuracy = Number.isFinite(acc) ? acc : null;
     const t = now();
+    // offline e sem corrida: a posição não serve para nada — não é guardada
+    const online = (db.prepare('SELECT online FROM drivers WHERE user_id = ?').get(user!.id) as any)?.online;
+    if (!online && !activeRideOf(user!.id)) {
+      json(res, 200, { ok: true, ignored: true, accuracy_ok: accuracy === null || accuracy <= maxAcc, max_accuracy_m: maxAcc });
+      return;
+    }
     db.prepare(`UPDATE drivers SET last_lat = ?, last_lng = ?, last_loc_at = ?,
       last_accuracy_m = ?, last_seen_at = ? WHERE user_id = ?`)
       .run(lat, lng, t, accuracy, t, user!.id);

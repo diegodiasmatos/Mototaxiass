@@ -163,12 +163,69 @@ export function parseCookies(req: IncomingMessage): Record<string, string> {
   return out;
 }
 
-export function setSessionCookie(res: ServerResponse, token: string, maxAgeS = 30 * 24 * 3600): void {
-  res.setHeader('Set-Cookie',
-    `amt_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeS}`);
+// ---------- proxy, HTTPS e cookie de sessão ----------
+
+/**
+ * O app roda atrás de um proxy (Fly.io, Render): a conexão TCP vem do proxy,
+ * não do usuário. Com TRUST_PROXY=1 os cabeçalhos do proxy passam a valer;
+ * sem isso eles são ignorados (qualquer cliente poderia forjá-los).
+ */
+export function trustProxy(): boolean {
+  return process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true';
 }
-export function clearSessionCookie(res: ServerResponse): void {
-  res.setHeader('Set-Cookie', 'amt_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+
+/** IP real do cliente (para limite de tentativas). */
+export function clientIp(req: IncomingMessage): string {
+  if (trustProxy()) {
+    const fly = req.headers['fly-client-ip'];
+    if (typeof fly === 'string' && fly.trim()) return fly.trim().slice(0, 64);
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.trim()) {
+      // o último endereço foi acrescentado pelo proxy de confiança; os anteriores vêm do cliente
+      const parts = xff.split(',').map(x => x.trim()).filter(Boolean);
+      if (parts.length) return parts[parts.length - 1].slice(0, 64);
+    }
+  }
+  return (req.socket.remoteAddress || '0.0.0.0').replace('::ffff:', '');
+}
+
+/** A requisição chegou por HTTPS (direto ou pelo proxy de confiança)? */
+export function isSecureRequest(req: IncomingMessage): boolean {
+  if (process.env.COOKIE_SECURE === '1') return true;
+  if ((req.socket as any).encrypted) return true;
+  if (trustProxy()) {
+    const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+    if (proto === 'https') return true;
+  }
+  return false;
+}
+
+/** Origem pública da requisição ("https://app.exemplo.com"), para conferir Origin/Referer. */
+export function requestOrigin(req: IncomingMessage): string {
+  const host = String((trustProxy() && req.headers['x-forwarded-host']) || req.headers.host || '')
+    .split(',')[0].trim().toLowerCase();
+  return `${isSecureRequest(req) ? 'https' : 'http'}://${host}`;
+}
+
+/**
+ * Cookie de sessão: HttpOnly (JavaScript não lê), SameSite=Lax (não vai em
+ * POST de outro site; Strict quebraria o retorno do Mercado Pago e links de
+ * notificação) e Secure quando a conexão é HTTPS.
+ */
+export function setSessionCookie(req: IncomingMessage, res: ServerResponse, token: string,
+  maxAgeS: number): void {
+  res.setHeader('Set-Cookie',
+    `amt_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.max(0, Math.floor(maxAgeS))}`
+    + (isSecureRequest(req) ? '; Secure' : ''));
+}
+export function clearSessionCookie(req: IncomingMessage, res: ServerResponse): void {
+  res.setHeader('Set-Cookie', 'amt_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'
+    + (isSecureRequest(req) ? '; Secure' : ''));
+}
+
+/** O banco guarda só o hash do token: quem copiar o banco não consegue usar as sessões. */
+export function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
 }
 
 // ---------- geodésia ----------
@@ -216,6 +273,11 @@ export function rateLimit(key: string, max: number, windowMs: number): boolean {
   if (!b || b.resetAt < t) { buckets.set(key, { count: 1, resetAt: t + windowMs }); return true; }
   b.count++;
   return b.count <= max;
+}
+/** Remove contadores vencidos (chamado pela manutenção periódica). */
+export function pruneRateLimits(): void {
+  const t = now();
+  for (const [k, b] of buckets) if (b.resetAt < t) buckets.delete(k);
 }
 
 export function fmtCents(c: number): string {

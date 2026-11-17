@@ -2,9 +2,12 @@ import {
   db, getSettingNum, getSetting, setSetting, audit,
   getCredential, setCredential, credentialSource,
 } from './db.ts';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
 import {
-  ApiError, id, now, json, readBody, reqStr, reqNum, signedDocUrl, maskSecret,
+  ApiError, id, now, json, readBody, reqStr, reqNum, signedDocUrl, maskSecret, hashPassword,
 } from './util.ts';
+import { ACTIVE_RIDE_STATUSES } from './maintenance.ts';
 import { route, type Route } from './router.ts';
 import { getFare, allFares, computePriceCents, splitCommission } from './fares.ts';
 import { eligibleDrivers, finalizeRide, getRide, rideEvent, cancelRide } from './rides.ts';
@@ -170,6 +173,90 @@ export const adminRoutes: Route[] = [
     json(res, 200, { ok: true });
   }),
 
+  /**
+   * Anonimização de conta (LGPD, art. 18), a pedido do titular.
+   *
+   * Apaga ou descaracteriza tudo o que identifica a pessoa: nome, e-mail,
+   * telefone, CPF, foto, documentos, dados da moto, favoritos, notificações,
+   * mensagens, GPS e endereços das corridas. MANTÉM, sem identificar a pessoa,
+   * o que a lei obriga a guardar: corridas (valores e datas), pagamentos,
+   * repasses e o livro-caixa. A conta fica bloqueada e sem senha utilizável.
+   * Não pode ser desfeito.
+   */
+  route('POST /api/admin/users/:id/anonymize', 'admin', async ({ req, res, user, params }) => {
+    const b = await readBody(req);
+    if (b.confirm !== 'ANONIMIZAR') {
+      throw new ApiError(400, 'Confirme digitando ANONIMIZAR. Esta ação não pode ser desfeita.');
+    }
+    const target = db.prepare('SELECT id, role, email FROM users WHERE id = ?').get(params.id) as any;
+    if (!target) throw new ApiError(404, 'Usuário não encontrado.');
+    if (target.role === 'admin') throw new ApiError(403, 'Contas de administrador não são anonimizadas por aqui.');
+    if (/@anonimizado\.invalid$/.test(target.email)) throw new ApiError(409, 'Esta conta já foi anonimizada.');
+    const active = db.prepare(`SELECT COUNT(*) c FROM rides
+      WHERE (passenger_id = ? OR driver_id = ?) AND status IN (${ACTIVE_RIDE_STATUSES.map(() => '?').join(',')})`)
+      .get(params.id, params.id, ...ACTIVE_RIDE_STATUSES) as any;
+    if (active.c) throw new ApiError(409, 'Há corrida em andamento ou em disputa com esta conta. Conclua antes de anonimizar.');
+
+    const uid = params.id;
+    const files: string[] = [];
+    const counts: Record<string, number> = {};
+    const run = (k: string, sql: string, ...p: any[]) => {
+      counts[k] = (counts[k] || 0) + Number(db.prepare(sql).run(...p).changes);
+    };
+    db.exec('BEGIN');
+    try {
+      run('conta', `UPDATE users SET name = 'Usuário removido', email = ?, phone = NULL, cpf = NULL,
+        photo = NULL, password_hash = ?, blocked = 1,
+        blocked_reason = 'Conta anonimizada a pedido do titular (LGPD)' WHERE id = ?`,
+        `removido-${uid}@anonimizado.invalid`, hashPassword(crypto.randomBytes(24).toString('hex')), uid);
+      run('sessoes', 'DELETE FROM sessions WHERE user_id = ?', uid);
+      run('push', 'DELETE FROM push_subscriptions WHERE user_id = ?', uid);
+      run('favoritos', 'DELETE FROM favorites WHERE user_id = ?', uid);
+      run('notificacoes', 'DELETE FROM notifications WHERE user_id = ?', uid);
+      // cotação que virou corrida fica (a corrida aponta para ela), sem o endereço
+      run('cotacoes', 'DELETE FROM ride_quotes WHERE user_id = ? AND used = 0', uid);
+      run('cotacoes', `UPDATE ride_quotes SET origin_text = '[endereço removido]', dest_text = '[endereço removido]',
+        origin_lat = ROUND(origin_lat, 2), origin_lng = ROUND(origin_lng, 2),
+        dest_lat = ROUND(dest_lat, 2), dest_lng = ROUND(dest_lng, 2), route_geojson = NULL
+        WHERE user_id = ?`, uid);
+      run('mensagens', `UPDATE ride_messages SET body = '[mensagem removida]' WHERE sender_id = ?`, uid);
+      run('suporte', `UPDATE support_messages SET subject = '[removido]', body = '[removido]' WHERE user_id = ?`, uid);
+      run('ocorrencias', `UPDATE ride_issues SET description = '[removido]' WHERE user_id = ?`, uid);
+      run('avaliacoes', 'UPDATE ratings SET comment = NULL WHERE passenger_id = ? OR driver_id = ?', uid, uid);
+      run('gps', `DELETE FROM ride_locations WHERE
+        (who = 'passenger' AND ride_id IN (SELECT id FROM rides WHERE passenger_id = ?))
+        OR (who = 'driver' AND ride_id IN (SELECT id FROM rides WHERE driver_id = ?))`, uid, uid);
+      // corridas do passageiro: endereços e trajeto saem; ponto vira a região (~1 km)
+      run('corridas', `UPDATE rides SET origin_text = '[endereço removido]', dest_text = '[endereço removido]',
+        origin_lat = ROUND(origin_lat, 2), origin_lng = ROUND(origin_lng, 2),
+        dest_lat = ROUND(dest_lat, 2), dest_lng = ROUND(dest_lng, 2), route_geojson = NULL
+        WHERE passenger_id = ?`, uid);
+      run('eventos', `UPDATE ride_events SET details = NULL WHERE actor_id = ?
+        OR (type = 'pickup_updated' AND ride_id IN (SELECT id FROM rides WHERE passenger_id = ?))`, uid, uid);
+      if (target.role === 'driver') {
+        for (const d of db.prepare('SELECT file_path FROM driver_documents WHERE driver_id = ?').all(uid) as any[]) {
+          files.push(d.file_path);
+        }
+        run('documentos', 'DELETE FROM driver_documents WHERE driver_id = ?', uid);
+        run('motorista', `UPDATE drivers SET birth_date = NULL, address = NULL, moto_plate = NULL,
+          moto_brand = NULL, moto_model = NULL, moto_year = NULL, moto_color = NULL,
+          online = 0, last_lat = NULL, last_lng = NULL, last_accuracy_m = NULL, review_reason = NULL,
+          mp_user_id = NULL, mp_access_token_enc = NULL, mp_refresh_token_enc = NULL,
+          mp_expires_at = NULL, mp_nickname = NULL WHERE user_id = ?`, uid);
+      }
+      audit(user!.id, 'user_anonymize', 'user', uid,
+        `LGPD: ${Object.entries(counts).filter(([, n]) => n).map(([k, n]) => `${k}=${n}`).join(', ')}`);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+    // arquivos só depois do COMMIT: se algo falhou acima, nada foi apagado
+    let removedFiles = 0;
+    for (const f of files) { try { fs.unlinkSync(f); removedFiles++; } catch { /* já não existia */ } }
+    json(res, 200, { ok: true, counts, files_removed: removedFiles });
+  }),
+
   route('GET /api/admin/passengers', 'admin', ({ res, query }) => {
     const q = (query.get('q') || '').trim();
     const rows = db.prepare(`SELECT u.id, u.name, u.email, u.phone, u.blocked, u.blocked_reason,
@@ -197,7 +284,7 @@ export const adminRoutes: Route[] = [
     json(res, 200, { rides: rows });
   }),
 
-  route('GET /api/admin/rides/:id', 'admin', ({ res, params }) => {
+  route('GET /api/admin/rides/:id', 'admin', ({ res, params, user }) => {
     const r = db.prepare(`SELECT r.*, p.name passenger_name, p.email passenger_email,
         du.name driver_name FROM rides r
       JOIN users p ON p.id = r.passenger_id
@@ -206,6 +293,8 @@ export const adminRoutes: Route[] = [
     const events = db.prepare('SELECT * FROM ride_events WHERE ride_id = ? ORDER BY at').all(params.id);
     const locations = db.prepare(`SELECT who, lat, lng, at FROM ride_locations
       WHERE ride_id = ? ORDER BY at DESC LIMIT 100`).all(params.id);
+    // acesso a histórico de localização fica registrado (quem viu e quando)
+    if (locations.length) audit(user!.id, 'gps_view', 'ride', params.id, `${locations.length} ponto(s)`);
     const payment = db.prepare('SELECT * FROM payments WHERE ride_id = ?').get(params.id);
     json(res, 200, { ride: r, events, locations, payment });
   }),
@@ -257,6 +346,35 @@ export const adminRoutes: Route[] = [
         changed.push(`fare:${cur.category}`);
       }
     }
+    // prazos de privacidade e de sessão (validados antes de gravar qualquer um)
+    const PRIVACY: Record<string, [number, number]> = {
+      gps_retention_days: [1, 3650], driver_offline_loc_hours: [1, 720],
+      session_idle_days: [1, 365], session_max_days: [1, 365],
+      admin_session_idle_hours: [1, 168], admin_session_max_days: [1, 90],
+      login_max_failures: [3, 20], login_lock_min: [1, 1440], backup_keep: [1, 60],
+    };
+    const priv: [string, string][] = [];
+    for (const [k, [min, max]] of Object.entries(PRIVACY)) {
+      if (b.settings?.[k] === undefined) continue;
+      const n = Number(b.settings[k]);
+      if (!Number.isInteger(n) || n < min || n > max) {
+        throw new ApiError(400, `${k} deve ser um número inteiro entre ${min} e ${max}.`);
+      }
+      priv.push([k, String(n)]);
+    }
+    const val = (k: string) => Number(priv.find(p => p[0] === k)?.[1] ?? getSetting(k));
+    if (val('session_max_days') < val('session_idle_days')) {
+      throw new ApiError(400, 'O prazo máximo da sessão não pode ser menor que o prazo de inatividade.');
+    }
+    if (val('admin_session_max_days') * 24 < val('admin_session_idle_hours')) {
+      throw new ApiError(400, 'O prazo máximo da sessão da central não pode ser menor que o prazo de inatividade.');
+    }
+    for (const [k, v] of priv) {
+      if (getSetting(k) === v) continue;
+      setSetting(k, v);
+      changed.push(`${k}=${v}`);
+    }
+
     if (changed.length) audit(user!.id, 'settings_update', 'settings', undefined, changed.join('; '));
     json(res, 200, { ok: true, changed });
   }),

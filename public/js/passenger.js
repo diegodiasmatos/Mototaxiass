@@ -264,7 +264,8 @@ function onGpsFix(pos) {
   drawMeOnMaps(lat, lng, accuracy);
 
   // durante a corrida, compartilha a posição com o mototaxista
-  if (S.activeRide && ['requested', 'accepted', 'in_progress'].includes(S.activeRide.status)) {
+  // (só com mototaxista a caminho ou em viagem; antes disso a posição não é enviada)
+  if (S.activeRide && ['accepted', 'in_progress'].includes(S.activeRide.status)) {
     api(`/api/rides/${S.activeRide.id}/location`, {
       method: 'POST', body: { lat, lng, accuracy_m: accuracy },
     }).catch(() => { });

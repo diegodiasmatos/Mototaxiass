@@ -77,7 +77,14 @@ export function rideEvent(rideId: string, type: string, actorId?: string,
     .run(rideId, type, actorId ?? null, detail || null, now());
 }
 
-function driverCard(driverId: string): any {
+/**
+ * Situações em que o passageiro pode ver onde o mototaxista está: só entre o
+ * aceite e o fim da viagem. Antes não há motorista; depois, a posição dele
+ * deixa de ser da conta do passageiro (corrida antiga não serve de rastreador).
+ */
+const DRIVER_VISIBLE_STATES = ['accepted', 'in_progress'];
+
+function driverCard(driverId: string, withLocation: boolean): any {
   const d = db.prepare(`
     SELECT u.name, u.photo, d.moto_brand, d.moto_model, d.moto_color, d.moto_plate,
            d.rating_sum, d.rating_count, d.rides_count, d.last_lat, d.last_lng, d.last_loc_at
@@ -88,8 +95,10 @@ function driverCard(driverId: string): any {
     moto: { brand: d.moto_brand, model: d.moto_model, color: d.moto_color, plate: d.moto_plate },
     rating: d.rating_count ? Math.round(d.rating_sum / d.rating_count * 10) / 10 : null,
     rides_count: d.rides_count,
-    last_lat: d.last_lat, last_lng: d.last_lng, last_loc_at: d.last_loc_at,
-    loc_stale: !d.last_loc_at || (now() - d.last_loc_at) > getSettingNum('loc_fresh_s') * 1000,
+    ...(withLocation ? {
+      last_lat: d.last_lat, last_lng: d.last_lng, last_loc_at: d.last_loc_at,
+      loc_stale: !d.last_loc_at || (now() - d.last_loc_at) > getSettingNum('loc_fresh_s') * 1000,
+    } : {}),
   };
 }
 
@@ -108,7 +117,7 @@ function paymentView(p: any): any {
 export function rideViewForPassenger(r: any): any {
   let driver = null, eta_s = null;
   if (r.driver_id) {
-    driver = driverCard(r.driver_id);
+    driver = driverCard(r.driver_id, DRIVER_VISIBLE_STATES.includes(r.status));
     if (driver?.last_lat != null) {
       const target = r.status === 'in_progress'
         ? { lat: r.dest_lat, lng: r.dest_lng } : { lat: r.origin_lat, lng: r.origin_lng };
@@ -782,11 +791,15 @@ export const rideRoutes: Route[] = [
     json(res, 200, { ok: true, moved_m: moved });
   }),
 
-  /** Posição do passageiro durante a corrida (visível só ao mototaxista dela). */
+  /**
+   * Posição do passageiro durante a corrida (visível só ao mototaxista dela).
+   * Só é guardada quando há mototaxista a caminho ou em viagem: antes disso
+   * ninguém precisa dela.
+   */
   route('POST /api/rides/:id/location', 'passenger', async ({ req, res, user, params }) => {
     const r = getRide(params.id);
     if (r.passenger_id !== user!.id) throw new ApiError(403, 'Esta corrida não é sua.');
-    if (!['requested', 'accepted', 'in_progress'].includes(r.status)) {
+    if (!r.driver_id || !DRIVER_VISIBLE_STATES.includes(r.status)) {
       json(res, 200, { ok: true, ignored: true }); return;
     }
     const b = await readBody(req);
@@ -795,9 +808,7 @@ export const rideRoutes: Route[] = [
     if (Math.abs(lat) > 90 || Math.abs(lng) > 180) throw new ApiError(400, 'Coordenadas inválidas.');
     db.prepare('INSERT INTO ride_locations (ride_id, who, lat, lng, accuracy_m, at) VALUES (?,?,?,?,?,?)')
       .run(r.id, 'passenger', lat, lng, Number.isFinite(acc) ? acc : null, now());
-    if (r.driver_id) {
-      sseSend(r.driver_id, 'passenger_location', { ride_id: r.id, lat, lng, accuracy_m: acc });
-    }
+    sseSend(r.driver_id, 'passenger_location', { ride_id: r.id, lat, lng, accuracy_m: acc });
     json(res, 200, { ok: true });
   }),
 

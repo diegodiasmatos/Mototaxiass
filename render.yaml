@@ -11,6 +11,8 @@ services:
     envVars:
       - key: DATA_DIR
         value: /data
+      - key: TRUST_PROXY
+        value: "1"               # atrás do proxy do Render: IP real e HTTPS pelos cabeçalhos dele
       - key: SESSION_SECRET
         generateValue: true      # o Render gera um segredo forte automaticamente
       - key: ADMIN_EMAIL

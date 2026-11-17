@@ -7,7 +7,9 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 /* ---------- API ---------- */
 async function api(path, opts = {}) {
-  const init = { headers: {}, credentials: 'same-origin', ...opts };
+  // X-VAIRO-Request: o servidor recusa escrita sem ele (proteção contra CSRF —
+  // um site de terceiros não consegue enviar este cabeçalho)
+  const init = { credentials: 'same-origin', ...opts, headers: { 'X-VAIRO-Request': '1', ...(opts.headers || {}) } };
   if (opts.body !== undefined && typeof opts.body !== 'string') {
     init.body = JSON.stringify(opts.body);
     init.headers['Content-Type'] = 'application/json';

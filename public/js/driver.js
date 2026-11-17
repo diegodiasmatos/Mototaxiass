@@ -288,8 +288,9 @@ function renderPending() {
         <p class="muted mt">Recebemos seus documentos em ${fmt.dt(d.submitted_at)}.<br>
         Nossa equipe analisará em até <b>${left > 0 ? `${h}h ${m}min` : 'breve'}</b>.</p>
         <p class="muted small mt">Você será notificado aqui e poderá começar a trabalhar assim que for aprovado.</p>
-        <button class="btn btn-outline mt" onclick="location.reload()">Atualizar</button>
+        <button class="btn btn-outline mt" id="pending-reload">Atualizar</button>
         <button class="btn btn-danger mt" id="pending-logout">Sair</button>`;
+      $('#pending-reload').onclick = () => location.reload();
       $('#pending-logout').onclick = logout;
     };
     render();

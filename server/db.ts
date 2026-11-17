@@ -1,10 +1,16 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
-import { dataDir, now, encryptSecret, decryptSecret } from './util.ts';
+import fs from 'node:fs';
+import { dataDir, now, encryptSecret, decryptSecret, hashToken } from './util.ts';
 
 export let db: DatabaseSync;
 
-const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
+/**
+ * Migrações versionadas. `sql` roda dentro de uma transação; `run`, quando
+ * existe, roda logo depois, na MESMA transação (para conversões que o SQL
+ * sozinho não faz, como calcular hashes).
+ */
+const MIGRATIONS: { version: number; sql: string; fkOff?: boolean; run?: () => void }[] = [
   {
     version: 1,
     sql: `
@@ -630,6 +636,31 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     CREATE INDEX idx_addr_pts_street ON address_points(street_norm);
     `,
   },
+
+  // ----------------------------------------------------------------
+  // V3.1 — Segurança de sessões e retenção de GPS.
+  //  - o token da sessão passa a ser guardado só como hash SHA-256 (as
+  //    sessões existentes são convertidas: ninguém é deslogado);
+  //  - last_seen_at permite expirar por inatividade e renovar ao usar;
+  //  - índices para a limpeza periódica não varrer as tabelas inteiras.
+  // ----------------------------------------------------------------
+  {
+    version: 8,
+    sql: `
+    ALTER TABLE sessions ADD COLUMN last_seen_at INTEGER;
+    UPDATE sessions SET last_seen_at = created_at;
+    CREATE INDEX idx_sessions_expires ON sessions(expires_at);
+    CREATE INDEX idx_ride_locations_at ON ride_locations(at);
+    `,
+    run: () => {
+      const rows = db.prepare('SELECT token FROM sessions').all() as { token: string }[];
+      const upd = db.prepare('UPDATE sessions SET token = ? WHERE token = ?');
+      for (const r of rows) {
+        if (/^[0-9a-f]{64}$/.test(r.token)) continue;      // já é hash
+        upd.run(hashToken(r.token), r.token);
+      }
+    },
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {
@@ -653,6 +684,19 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   mapbox_style: 'mapbox://styles/mapbox/streets-v12',
   cache_route_hours: '72',         // rota entre dois pontos muda pouco
 
+  // --- Sessões (V3.1) ---
+  session_idle_days: '30',         // passageiro/motorista: expira após N dias sem uso
+  session_max_days: '90',          // ... e nunca passa de N dias desde o login
+  admin_session_idle_hours: '12',  // central: expira após N horas sem uso
+  admin_session_max_days: '7',     // ... e nunca passa de N dias desde o login
+  login_max_failures: '5',         // senhas erradas na mesma conta antes da espera
+  login_lock_min: '15',            // espera, em minutos, depois disso
+
+  // --- Privacidade e manutenção (V3.1) ---
+  gps_retention_days: '30',        // histórico de GPS de corridas encerradas
+  driver_offline_loc_hours: '6',   // última posição de motorista offline
+  backup_keep: '7',                // cópias diárias do banco mantidas
+
   city_name: 'Assis Chateaubriand - PR',
   center_lat: '-24.4156',
   center_lng: '-53.5216',
@@ -670,6 +714,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
 export function initDb(dbPath?: string): DatabaseSync {
   const file = dbPath || process.env.DB_PATH || path.join(dataDir(), 'assis.db');
   db = new DatabaseSync(file);
+  _dbFile = file;
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -678,6 +723,11 @@ export function initDb(dbPath?: string): DatabaseSync {
   const applied = new Set(
     (db.prepare('SELECT version FROM schema_migrations').all() as any[]).map(r => r.version),
   );
+  const pending = MIGRATIONS.filter(m => !applied.has(m.version));
+  // Banco com dados e migração pendente: cópia completa ANTES de alterar.
+  if (pending.length && hasUserData()) {
+    backupDb(`pre-migracao-v${pending[0].version}`, file);
+  }
   for (const m of MIGRATIONS) {
     if (applied.has(m.version)) continue;
     // Rebuild de tabela: as chaves estrangeiras precisam ficar desligadas
@@ -686,6 +736,7 @@ export function initDb(dbPath?: string): DatabaseSync {
     db.exec('BEGIN');
     try {
       db.exec(m.sql);
+      m.run?.();
       db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
         .run(m.version, now());
       db.exec('COMMIT');
@@ -704,6 +755,44 @@ export function initDb(dbPath?: string): DatabaseSync {
   }
   seed();
   return db;
+}
+
+/** O banco já tem usuários? (banco novo não precisa de cópia antes de migrar) */
+function hasUserData(): boolean {
+  try {
+    return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'`).get()
+      && !!db.prepare('SELECT 1 FROM users LIMIT 1').get();
+  } catch { return false; }
+}
+
+let _dbFile = '';
+/** Pasta de cópias de segurança: ao lado do arquivo do banco. */
+export function backupDir(dbFile = _dbFile): string {
+  return path.join(path.dirname(dbFile), 'backups');
+}
+
+/**
+ * Cópia consistente do banco com `VACUUM INTO` (funciona com o app rodando,
+ * sem travar escritas por mais que alguns milissegundos num banco pequeno).
+ * Mantém as `keep` cópias mais recentes com o mesmo rótulo.
+ */
+export function backupDb(label: string, dbFile = _dbFile, keep?: number): string {
+  const dir = backupDir(dbFile);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const safe = label.replace(/[^a-z0-9-]/gi, '');
+  const target = path.join(dir, `assis-${safe}-${stamp}.db`);
+  if (fs.existsSync(target)) return target;
+  db.prepare('VACUUM INTO ?').run(target);
+  try { fs.chmodSync(target, 0o600); } catch { /* sistema sem permissões POSIX */ }
+  if (keep && keep > 0) {
+    const mine = fs.readdirSync(dir)
+      .filter(f => f.startsWith(`assis-${safe}-`) && f.endsWith('.db')).sort();
+    for (const old of mine.slice(0, Math.max(0, mine.length - keep))) {
+      try { fs.unlinkSync(path.join(dir, old)); } catch { /* já removida */ }
+    }
+  }
+  return target;
 }
 
 function seed(): void {

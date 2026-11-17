@@ -74,7 +74,8 @@ function go(sec) {
   main().innerHTML = '<div class="spinner"></div>';
   (SECTIONS[sec] || secDashboard)().catch(e => {
     main().innerHTML = `<div class="empty"><div class="eico">⚠️</div>${escapeHtml(e.message)}
-      <br><button class="btn btn-outline btn-sm mt" onclick="go('${sec}')">Tentar de novo</button></div>`;
+      <br><button class="btn btn-outline btn-sm mt" id="sec-retry">Tentar de novo</button></div>`;
+    $('#sec-retry').onclick = () => go(sec);
   });
 }
 
@@ -201,6 +202,7 @@ async function openDriver(idd) {
       <div class="row mt">
         <button class="btn ${d.blocked ? 'btn-green' : 'btn-danger'} btn-sm" data-block="${d.blocked ? 0 : 1}">
           ${d.blocked ? 'Desbloquear conta' : 'Bloquear conta'}</button>
+        <button class="btn btn-outline btn-sm" data-anon="${idd}">Anonimizar (LGPD)</button>
       </div>`}
     <h3 class="mt">Últimas corridas</h3>
     ${rides.map(r => `<div class="list-item"><div class="li-main">
@@ -227,6 +229,9 @@ async function openDriver(idd) {
     }, { okMsg: 'Decisão registrada e parceiro notificado.' }).catch(() => { });
   });
 
+  const ab = $('[data-anon]', m);
+  if (ab) ab.onclick = () => anonymizeUser(ab, idd, () => { m.close(); secDrivers(); });
+
   const bb = $('[data-block]', m);
   if (bb) bb.onclick = async () => {
     const block = bb.dataset.block === '1';
@@ -237,6 +242,23 @@ async function openDriver(idd) {
       m.close(); secDrivers();
     }, { okMsg: block ? 'Conta bloqueada.' : 'Conta desbloqueada.' }).catch(() => { });
   };
+}
+
+/**
+ * Anonimização de conta a pedido do titular (LGPD). Pede a palavra
+ * ANONIMIZAR digitada, porque não tem volta.
+ */
+async function anonymizeUser(btn, userId, done) {
+  const word = await askText('Anonimizar conta (LGPD)',
+    'Apaga nome, e-mail, telefone, CPF, foto, documentos, mensagens, GPS e endereços. '
+    + 'Corridas, pagamentos e livro-caixa ficam guardados sem identificar a pessoa. '
+    + 'NÃO pode ser desfeito. Digite ANONIMIZAR para confirmar');
+  if (!word) return;
+  if (word.trim() !== 'ANONIMIZAR') { toast('Confirmação incorreta. Nada foi alterado.', 'err'); return; }
+  await withLoading(btn, async () => {
+    await api(`/api/admin/users/${userId}/anonymize`, { method: 'POST', body: { confirm: 'ANONIMIZAR' } });
+    done();
+  }, { okMsg: 'Conta anonimizada e registrada na auditoria.' }).catch(() => { });
 }
 
 /** Caixa de texto em modal (substitui `prompt`, que é bloqueado em vários celulares). */
@@ -273,10 +295,12 @@ async function secPassengers() {
         <td data-l="Cancelamentos">${p.cancels_count}</td>
         <td data-l="Desde" class="small">${fmt.date(p.created_at)}</td>
         <td><button class="btn ${p.blocked ? 'btn-green' : 'btn-danger'} btn-sm" data-block="${p.id}" data-to="${p.blocked ? 0 : 1}">
-          ${p.blocked ? 'Desbloquear' : 'Bloquear'}</button></td>
+          ${p.blocked ? 'Desbloquear' : 'Bloquear'}</button>
+          ${/@anonimizado\.invalid$/.test(p.email) ? '' : `<button class="btn btn-outline btn-sm" data-anon="${p.id}">Anonimizar (LGPD)</button>`}</td>
       </tr>`).join('') || '<tr><td class="muted center">Nenhum passageiro.</td></tr>'}
       </tbody></table>
     </div>`;
+  $$('[data-anon]').forEach(b => b.onclick = () => anonymizeUser(b, b.dataset.anon, secPassengers));
   $$('[data-block]').forEach(b => b.onclick = async () => {
     const block = b.dataset.to === '1';
     const reason = block ? await askText('Bloquear passageiro', 'Motivo do bloqueio') : '';
@@ -1014,6 +1038,23 @@ async function secSettings() {
       <p class="muted small">Alterações de tarifa e comissão valem apenas para corridas novas — o histórico financeiro é preservado.</p>
     </div>
     ${fares.map(fareRow).join('')}
+    <div class="card">
+      <h3>🔒 Privacidade e sessões</h3>
+      <p class="muted small mb">Prazos de guarda de dados pessoais e de validade do login.
+        A limpeza roda sozinha a cada 10 minutos e nunca toca corridas em andamento,
+        em disputa ou com ocorrência aberta. Corridas, pagamentos e livro-caixa não são apagados.</p>
+      <div class="grid2">
+        <div class="field"><label>Histórico de GPS das corridas encerradas (dias)</label><input class="input" id="pv-gps" type="number" min="1" max="3650" value="${st.gps_retention_days}"></div>
+        <div class="field"><label>Última posição de motorista offline (horas)</label><input class="input" id="pv-drvloc" type="number" min="1" max="720" value="${st.driver_offline_loc_hours}"></div>
+        <div class="field"><label>Login do app: expira sem uso (dias)</label><input class="input" id="pv-idle" type="number" min="1" max="365" value="${st.session_idle_days}"></div>
+        <div class="field"><label>Login do app: prazo máximo (dias)</label><input class="input" id="pv-max" type="number" min="1" max="365" value="${st.session_max_days}"></div>
+        <div class="field"><label>Login da central: expira sem uso (horas)</label><input class="input" id="pv-aidle" type="number" min="1" max="168" value="${st.admin_session_idle_hours}"></div>
+        <div class="field"><label>Login da central: prazo máximo (dias)</label><input class="input" id="pv-amax" type="number" min="1" max="90" value="${st.admin_session_max_days}"></div>
+        <div class="field"><label>Senhas erradas antes da espera</label><input class="input" id="pv-fail" type="number" min="3" max="20" value="${st.login_max_failures}"></div>
+        <div class="field"><label>Espera após senhas erradas (min)</label><input class="input" id="pv-lock" type="number" min="1" max="1440" value="${st.login_lock_min}"></div>
+        <div class="field"><label>Cópias diárias do banco guardadas</label><input class="input" id="pv-bkp" type="number" min="1" max="60" value="${st.backup_keep}"></div>
+      </div>
+    </div>
     <button class="btn btn-primary" id="st-save" style="max-width:340px">Salvar configurações</button>
 
     <div class="card mt">
@@ -1046,6 +1087,11 @@ async function secSettings() {
           driver_debt_limit_cents: String(Math.round(parseFloat($('#st-debt').value) * 100)),
           gps_max_accuracy_m: $('#st-acc').value, loc_fresh_s: $('#st-fresh').value,
           welcome_message: $('#st-welcome').value,
+          gps_retention_days: $('#pv-gps').value, driver_offline_loc_hours: $('#pv-drvloc').value,
+          session_idle_days: $('#pv-idle').value, session_max_days: $('#pv-max').value,
+          admin_session_idle_hours: $('#pv-aidle').value, admin_session_max_days: $('#pv-amax').value,
+          login_max_failures: $('#pv-fail').value, login_lock_min: $('#pv-lock').value,
+          backup_keep: $('#pv-bkp').value,
         },
         fares: faresBody,
       },

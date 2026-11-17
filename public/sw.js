@@ -5,7 +5,7 @@
    - Imagens e mapas: cache primeiro (economiza dados do celular do usuário). */
 'use strict';
 
-const VERSION = 'amt-v4';
+const VERSION = 'amt-v5';
 const SHELL = `${VERSION}-shell`;
 const MEDIA = `${VERSION}-media`;
 

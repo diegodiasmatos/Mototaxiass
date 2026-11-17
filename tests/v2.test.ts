@@ -30,6 +30,8 @@ function actor() {
       const r = await fetch(base + p, {
         method,
         headers: {
+          // o app (public/js/common.js → api) manda este cabeçalho em toda chamada
+          'X-VAIRO-Request': '1',
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
           ...(cookie ? { Cookie: cookie } : {}),
         },
@@ -1150,7 +1152,7 @@ test('diagnóstico de mapas: tudo certo, e token público restrito por URL é ex
 /** Faz login e devolve o cookie de sessão, para pedir páginas como aquele usuário. */
 async function sessionCookie(email: string, password: string): Promise<string> {
   const r = await fetch(base + '/api/auth/login', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-VAIRO-Request': '1' },
     body: JSON.stringify({ email, password }),
   });
   assert.equal(r.status, 200);

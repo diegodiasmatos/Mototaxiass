@@ -16,11 +16,12 @@
       <p class="muted mt">A VAIRO precisa de conexão para mostrar mapas,
         calcular preços e chamar motoristas.</p>
       <p class="muted small mt">Verifique seus dados móveis ou Wi-Fi e tente de novo.</p>
-      <button class="btn btn-primary mt" onclick="location.reload()">Tentar novamente</button>
+      <button class="btn btn-primary mt" id="retry">Tentar novamente</button>
     </div>
   </main>
   <script>
     addEventListener('online', () => location.replace('/'));
+    document.getElementById('retry').addEventListener('click', () => location.reload());
   </script>
 </body>
 </html>

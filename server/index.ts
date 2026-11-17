@@ -5,11 +5,12 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
   ROOT, loadEnv, json, parseCookies, ApiError, verifySignedDoc,
-  hashPassword, id, now,
+  hashPassword, id, now, clientIp, isSecureRequest, requestOrigin, setSessionCookie,
 } from './util.ts';
-import { initDb, db } from './db.ts';
+import { initDb, db, getCredential } from './db.ts';
 import { matchRoute, type Route, type Ctx } from './router.ts';
-import { authRoutes, userFromToken } from './auth.ts';
+import { authRoutes, sessionFromToken } from './auth.ts';
+import { startMaintenance } from './maintenance.ts';
 import { rideRoutes, startAutoConfirmSweeper } from './rides.ts';
 import { driverRoutes } from './drivers.ts';
 import { adminRoutes } from './admin.ts';
@@ -25,7 +26,115 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-function serveStatic(res: http.ServerResponse, urlPath: string): boolean {
+// ================= cabeçalhos de segurança =================
+
+/**
+ * Content Security Policy das páginas. Libera só a própria origem e os
+ * serviços que o app realmente usa: Google Maps, Mapbox, Leaflet (unpkg),
+ * blocos do OpenStreetMap e o login do Google. Scripts embutidos nas páginas
+ * entram pelo hash (calculado na subida a partir de public/*.html); atributos
+ * de evento (onclick=...) não são permitidos.
+ */
+function buildCsp(secure: boolean): string {
+  const g = ['https://*.googleapis.com', 'https://*.gstatic.com'];
+  const directives: Record<string, string[]> = {
+    'default-src': ["'self'"],
+    'script-src': ["'self'", ...inlineScriptHashes(), 'https://unpkg.com', 'https://api.mapbox.com',
+      ...g, 'https://accounts.google.com/gsi/client'],
+    'style-src': ["'self'", "'unsafe-inline'", 'https://unpkg.com', 'https://api.mapbox.com',
+      'https://fonts.googleapis.com', 'https://accounts.google.com/gsi/style'],
+    'img-src': ["'self'", 'data:', 'blob:', 'https://tile.openstreetmap.org',
+      'https://*.tile.openstreetmap.org', 'https://unpkg.com', 'https://api.mapbox.com', ...g,
+      'https://*.google.com', 'https://*.googleusercontent.com', 'https://*.ggpht.com'],
+    'font-src': ["'self'", 'data:', 'https://fonts.gstatic.com'],
+    'connect-src': ["'self'", 'https://api.mapbox.com', 'https://events.mapbox.com', ...g,
+      'https://*.google.com', 'https://accounts.google.com'],
+    'worker-src': ["'self'", 'blob:'],
+    'child-src': ["'self'", 'blob:'],
+    'frame-src': ['https://accounts.google.com'],
+    'manifest-src': ["'self'"],
+    'object-src': ["'none'"],
+    'base-uri': ["'self'"],
+    'form-action': ["'self'"],
+    'frame-ancestors': ["'none'"],
+  };
+  const out = Object.entries(directives).map(([k, v]) => `${k} ${v.join(' ')}`);
+  if (secure) out.push('upgrade-insecure-requests');
+  return out.join('; ');
+}
+
+let _inlineHashes: string[] | null = null;
+/** sha256 de cada <script> embutido nas páginas (sem atributo src). */
+function inlineScriptHashes(): string[] {
+  if (_inlineHashes) return _inlineHashes;
+  const set = new Set<string>();
+  for (const f of fs.readdirSync(PUBLIC_DIR)) {
+    if (!f.endsWith('.html')) continue;
+    const html = fs.readFileSync(path.join(PUBLIC_DIR, f), 'utf8');
+    for (const m of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+      set.add(`'sha256-${crypto.createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
+    }
+  }
+  return (_inlineHashes = [...set]);
+}
+
+/** Cabeçalhos aplicados a TODAS as respostas. */
+function securityHeaders(req: http.IncomingMessage, res: http.ServerResponse): void {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'DENY');
+  // só a geolocalização é usada (e só pela própria origem)
+  res.setHeader('Permissions-Policy',
+    'geolocation=(self), camera=(), microphone=(), payment=(), usb=(), interest-cohort=()');
+  // o login do Google abre uma janela que precisa falar com esta
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  if (isSecureRequest(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+}
+
+// ================= CSRF =================
+
+/** Rotas chamadas por servidores de terceiros: protegidas por assinatura própria. */
+const CSRF_EXEMPT = [/^\/api\/webhooks\//];
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/** Domínio (com porta) de uma URL; nulo se não for uma URL válida. */
+function hostOf(url: string): string | null {
+  try { return new URL(url).host.toLowerCase() || null; } catch { return null; }
+}
+
+/**
+ * Bloqueia escrita na API vinda de outro site:
+ *  1. exige o cabeçalho X-VAIRO-Request (o app sempre manda; um site de
+ *     terceiros não consegue mandar sem a liberação de CORS, que não existe);
+ *  2. Origin/Referer, quando presentes, têm de ser deste próprio site;
+ *  3. corpo só em JSON (formulário HTML de outro site não envia JSON).
+ */
+function assertSameSiteWrite(req: http.IncomingMessage, pathname: string): void {
+  if (SAFE_METHODS.has(req.method || 'GET') || !pathname.startsWith('/api/')) return;
+  if (CSRF_EXEMPT.some(r => r.test(pathname))) return;
+  if (req.headers['x-vairo-request'] !== '1') {
+    throw new ApiError(403, 'Requisição bloqueada pela proteção contra CSRF. Recarregue a página.');
+  }
+  // compara o domínio (não o esquema): atrás de um proxy sem TRUST_PROXY o
+  // servidor enxerga http, enquanto o navegador está em https no mesmo site
+  const allowed = new Set([hostOf(requestOrigin(req))]);
+  const pub = hostOf(getCredential('PUBLIC_URL') || '');
+  if (pub) allowed.add(pub);
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+  const from = typeof origin === 'string' && origin !== 'null' ? hostOf(origin)
+    : typeof referer === 'string' ? hostOf(referer) : undefined;
+  if (from === null || (from && !allowed.has(from)) || origin === 'null') {
+    throw new ApiError(403, 'Requisição de outra origem bloqueada.');
+  }
+  const hasBody = Number(req.headers['content-length'] || 0) > 0 || !!req.headers['transfer-encoding'];
+  const type = String(req.headers['content-type'] || '').toLowerCase();
+  if (hasBody && !type.startsWith('application/json')) {
+    throw new ApiError(415, 'Envie os dados em JSON.');
+  }
+}
+
+function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, urlPath: string): boolean {
   let rel = urlPath;
   // páginas amigáveis
   if (rel === '/' || rel === '/visao-geral') rel = '/visao-geral.html';
@@ -37,6 +146,7 @@ function serveStatic(res: http.ServerResponse, urlPath: string): boolean {
   if (!file.startsWith(PUBLIC_DIR)) return false; // path traversal
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return false;
   const ext = path.extname(file).toLowerCase();
+  if (ext === '.html') res.setHeader('Content-Security-Policy', buildCsp(isSecureRequest(req)));
   res.writeHead(200, {
     'Content-Type': MIME[ext] || 'application/octet-stream',
     'Cache-Control': 'no-cache',
@@ -89,14 +199,20 @@ const ALL_ROUTES: Route[] = [
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const url = new URL(req.url || '/', 'http://localhost');
   const pathname = url.pathname;
-  const ip = (req.socket.remoteAddress || '0.0.0.0').replace('::ffff:', '');
+  const ip = clientIp(req);
+  securityHeaders(req, res);
 
   try {
     // documentos privados assinados
     const docMatch = /^\/files\/doc\/([^/]+)$/.exec(pathname);
     if (docMatch && req.method === 'GET') { serveSignedDoc(res, docMatch[1], url.searchParams); return; }
 
-    const user = userFromToken(parseCookies(req)['amt_session']);
+    const sess = sessionFromToken(parseCookies(req)['amt_session']);
+    const user = sess?.user ?? null;
+    // prazo de inatividade renovado: o cookie acompanha (login/logout sobrescrevem)
+    if (sess?.renewMaxAgeS) setSessionCookie(req, res, parseCookies(req)['amt_session'], sess.renewMaxAgeS);
+
+    assertSameSiteWrite(req, pathname);
 
     // SSE — tempo real
     if (pathname === '/api/events' && req.method === 'GET') {
@@ -126,20 +242,23 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // de notificação e de retorno do pagamento apontam para "/"); visitante
     // vê a Visão Geral do ecossistema.
     if (req.method === 'GET' && pathname === '/' && user) {
-      if (user.role === 'passenger') { serveStatic(res, '/passageiro'); return; }
+      if (user.role === 'passenger') { serveStatic(req, res, '/passageiro'); return; }
       res.writeHead(302, { Location: user.role === 'admin' ? '/admin' : '/motorista' });
       res.end();
       return;
     }
 
-    if (req.method === 'GET' && serveStatic(res, pathname)) return;
+    if (req.method === 'GET' && serveStatic(req, res, pathname)) return;
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('404 — página não encontrada');
   } catch (err: any) {
     if (err instanceof ApiError) {
       json(res, err.status, { error: err.message });
     } else {
-      console.error(`[erro] ${req.method} ${pathname}:`, err);
+      // só método e caminho: corpo, parâmetros (coordenadas, buscas) e dados
+      // pessoais não vão para o log
+      console.error(`[erro] ${req.method} ${pathname}: ${err?.name || 'Error'}: ${String(err?.message || err).slice(0, 300)}`
+        + (err?.stack ? `\n${String(err.stack).split('\n').slice(1, 6).join('\n')}` : ''));
       json(res, 500, { error: 'Erro interno. Tente novamente.' });
     }
   }
@@ -161,14 +280,8 @@ export async function start(opts: StartOptions = {}): Promise<{ server: http.Ser
     import('./address-base.ts').then(m => m.refreshOutdatedBase()).catch(() => { });
   }
 
-  // limpeza periódica: sessões e cotações expiradas
-  const cleanup = setInterval(() => {
-    try {
-      db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now());
-      db.prepare('DELETE FROM ride_quotes WHERE expires_at < ? AND used = 0').run(now() - 86400_000);
-    } catch { /* não crítico */ }
-  }, 10 * 60_000);
-  cleanup.unref();
+  // limpeza periódica (sessões, cotações, GPS antigo) e cópia diária do banco
+  startMaintenance();
 
   const server = http.createServer((req, res) => { void handle(req, res); });
   const port = opts.port ?? Number(process.env.PORT || 8780);

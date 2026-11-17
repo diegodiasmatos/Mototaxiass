@@ -30,6 +30,8 @@ function actor() {
       const r = await fetch(base + p, {
         method,
         headers: {
+          // o app (public/js/common.js → api) manda este cabeçalho em toda chamada
+          'X-VAIRO-Request': '1',
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
           ...(cookie ? { Cookie: cookie } : {}),
         },

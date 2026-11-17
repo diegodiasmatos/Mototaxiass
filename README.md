@@ -297,9 +297,55 @@ data/            banco, segredo de sessão e uploads privados (criado em runtime
 
 ## Privacidade e segurança (LGPD)
 
+Inventário completo de dados pessoais, finalidades e prazos:
+[`docs/PRIVACIDADE-DADOS.md`](docs/PRIVACIDADE-DADOS.md).
+
+### Sessões e cookies
+
+- Cookie `amt_session` com `HttpOnly`, `SameSite=Lax` e `Secure` quando a
+  conexão é HTTPS (atrás de proxy, exige `TRUST_PROXY=1`).
+- O banco guarda só o **SHA-256** do token: uma cópia do banco não dá acesso às contas.
+- Expira por inatividade e tem prazo máximo desde o login: apps 30 dias sem
+  uso / 90 dias; central 12 horas sem uso / 7 dias (ajustável na central).
+  Cada uso renova o prazo de inatividade, sem passar do máximo.
+- Logout apaga a sessão no servidor; bloquear ou anonimizar o usuário apaga
+  todas as sessões dele. No máximo 10 sessões (aparelhos) por conta.
+- Força bruta: limite por IP real (cadastro, login) e por conta — 5 senhas
+  erradas seguidas deixam a conta em espera por 15 min, mesmo com a senha
+  certa, e a central é avisada. E-mail inexistente responde igual e no mesmo
+  tempo (não revela quem tem conta).
+
+### CSRF e cabeçalhos
+
+- Toda escrita em `/api/*` exige o cabeçalho `X-VAIRO-Request: 1` (enviado
+  pela função `api()` de `public/js/common.js`), corpo em JSON e, quando
+  presentes, `Origin`/`Referer` do próprio site. O webhook do Mercado Pago
+  fica de fora: é validado pela assinatura HMAC dele.
+- Content Security Policy nas páginas: só a própria origem e os serviços
+  usados (Google Maps, Mapbox, Leaflet/unpkg, OpenStreetMap, login Google);
+  scripts embutidos liberados por hash, sem `unsafe-eval` e sem atributos
+  `onclick=`. Também `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`,
+  `Permissions-Policy` (só geolocalização) e HSTS em HTTPS.
+
+### Localização
+
+- Posição do motorista: gravada só com ele online ou em corrida; o
+  passageiro a vê só entre o aceite e o fim da viagem (corrida encerrada não
+  expõe mais nada); apagada 6 h depois de o motorista ficar offline.
+- Posição do passageiro: gravada só com motorista a caminho ou em viagem e
+  enviada só a esse motorista.
+- Histórico de GPS das corridas: apagado 30 dias após o fim; mantido enquanto
+  houver ocorrência aberta. Consultas da central a esse histórico ficam na auditoria.
+
+### Dados pessoais
+
 - Documentos (CNH, CRLV, selfie) ficam em `data/uploads/` **fora da pasta
   pública**, servidos apenas por **links assinados HMAC que expiram em 10 min**
   para administradores.
+- Anonimização de conta a pedido do titular, pela central (Passageiros ou
+  cadastro do mototaxista → **Anonimizar (LGPD)**): apaga os dados pessoais
+  e mantém corridas, pagamentos e livro-caixa sem identificar a pessoa.
+- Erros no log do servidor: só método e caminho, sem corpo, buscas ou coordenadas.
 - Senhas com scrypt; sessões revogáveis; bloqueio derruba a sessão na hora.
 - Permissões validadas no backend em toda rota (passageiro × motorista × admin);
   ninguém acessa corrida, chat ou documento de terceiros.
@@ -312,8 +358,15 @@ data/            banco, segredo de sessão e uploads privados (criado em runtime
 
 ## Testes da V2 (executados de verdade)
 
-`npm test` roda **67 testes**. Resultado da última execução:
-**67/67 aprovados**. Cobrem, entre outros:
+`npm test` roda **101 testes** (`api`, `v2`, `security` e `migration`).
+Resultado da última execução: **101/101 aprovados**. Cobrem, entre outros:
+
+- **Segurança e privacidade** (`tests/security.test.ts`, `tests/migration.test.ts`):
+  sessão de outro usuário, dados de outro passageiro, localização sem
+  autorização, cookie protegido em produção, CSRF bloqueado, logout, sessão
+  expirada e renovada, força bruta, limpeza de GPS preservando corridas
+  ativas e em disputa, retenção configurável, anonimização (LGPD), CSP e
+  migração de um banco no formato anterior sem perder dados.
 
 - **Credenciais**: salvas cifradas (o `.db` não revela o segredo), devolvidas
   mascaradas, valor mascarado reenviado não corrompe o que está salvo, URL
@@ -612,6 +665,33 @@ Serviço + HTTPS automático:
 systemctl enable --now assis     # unit systemd apontando para: node server/index.ts
 apt install -y caddy             # Caddyfile: seudominio.com.br { reverse_proxy localhost:8780 }
 ```
+
+### Configuração de segurança em produção
+
+1. **`TRUST_PROXY=1`** — já está no `fly.toml` e no `render.yaml`. Num VPS
+   com Caddy/Nginx na frente, defina no `.env`. Sem isso, atrás de proxy, o
+   cookie não recebe `Secure`, não há HSTS e o limite de tentativas conta
+   todos os usuários como um só IP.
+2. **`SESSION_SECRET`**: assina links e é a chave das credenciais cifradas no
+   banco (Mercado Pago, Google, Mapbox). Sem ele, o app usa `/data/.secret`.
+   ⚠️ Num servidor **que já está rodando**, não troque nem defina um valor
+   novo: as credenciais salvas deixariam de abrir (seria preciso colá-las de
+   novo na central). Só defina um valor novo em instalação nova, ou use o mesmo
+   conteúdo do `/data/.secret` atual.
+3. **Domínio próprio**: se o app for acessado por um domínio diferente do que
+   chega no cabeçalho `Host`, cadastre `PUBLIC_URL` (central → Pagamentos) para
+   a verificação de origem aceitá-lo.
+4. **Backups**: o app faz uma cópia diária do banco em `/data/backups`
+   (mantém 7) e uma antes de cada migração. Elas ficam no **mesmo volume** —
+   mantenha também os snapshots de volume do Fly (`fly volumes snapshots list`)
+   e, de tempos em tempos, uma cópia fora do servidor:
+   `fly ssh sftp get /data/backups/<arquivo>.db`.
+5. **Restaurar uma cópia** (o banco original não é sobrescrito):
+   - teste antes numa máquina local: `fly ssh sftp get /data/backups/<arquivo>.db copia.db`
+     e `DB_PATH=./copia.db npm start`;
+   - no servidor: `fly ssh console -C "cp /data/backups/<arquivo>.db /data/restaurado.db"`
+     e `fly secrets set DB_PATH=/data/restaurado.db` (o app reinicia usando a cópia);
+   - para voltar ao banco anterior: `fly secrets unset DB_PATH`.
 
 ### Domínio próprio
 
