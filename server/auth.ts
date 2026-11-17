@@ -150,15 +150,19 @@ export const authRoutes: Route[] = [
   /**
    * Configuração pública consumida pelo frontend.
    * O token do Mapbox que vai aqui é o PÚBLICO (pk., restrito por URL na
-   * conta Mapbox). O token de servidor nunca sai do backend.
+   * conta Mapbox) e a chave do Google é a do NAVEGADOR (restrita por site).
+   * Token e chave de servidor nunca saem do backend.
    */
   route('GET /api/config', null, async ({ res }) => {
     const { publicToken, mapboxEnabled, mapStyle } = await import('./mapbox.ts');
+    const { browserKey, googleEnabled, googleVisualEnabled } = await import('./google-maps.ts');
     // "Forçar OpenStreetMap" vale para TUDO: com o provedor em 'osm', o token
     // nem é enviado — senão o app tentaria carregar um Mapbox com problema
     // (token revogado, cota estourada) em vez de usar o OSM que funciona.
     const forceOsm = getSetting('maps_provider') === 'osm';
     const tk = forceOsm ? null : publicToken();
+    // Google primeiro quando há chave; o Mapbox segue junto como reserva
+    const gk = googleVisualEnabled() ? browserKey() : null;
     json(res, 200, {
       city_name: getSetting('city_name'),
       center: { lat: Number(getSetting('center_lat')), lng: Number(getSetting('center_lng')) },
@@ -167,10 +171,11 @@ export const authRoutes: Route[] = [
       google_client_id: process.env.GOOGLE_CLIENT_ID || null,
       review_sla_hours: Number(getSetting('review_sla_hours')),
       maps: {
+        google_key: gk,                 // pública por natureza; restrinja por site
         mapbox_token: tk,               // público por natureza; restrinja por URL
-        provider: tk ? 'mapbox' : 'osm',
+        provider: gk ? 'google' : tk ? 'mapbox' : 'osm',
         style: mapStyle(),
-        server_routing: mapboxEnabled() ? 'mapbox' : 'osrm',
+        server_routing: googleEnabled() ? 'google' : mapboxEnabled() ? 'mapbox' : 'osrm',
       },
     });
   }),

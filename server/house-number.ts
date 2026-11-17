@@ -6,7 +6,8 @@
  * módulo pergunta a um serviço que conhece numeração:
  *
  *  1º Google Geocoding API — a melhor cobertura de numeração no Brasil.
- *     Opcional: precisa de chave (central → 🗺️ Mapas, `GOOGLE_GEOCODING_KEY`).
+ *     Usa a chave do Google Maps quando o Google é o provedor de mapas, ou
+ *     uma chave só para isso (central → 🗺️ Mapas, `GOOGLE_GEOCODING_KEY`).
  *  2º Mapbox Geocoding — usa o token do Mapbox já configurado.
  *
  * Só vale resposta em nível de ENDEREÇO, com o mesmo número pedido e perto
@@ -35,7 +36,12 @@ export interface HouseLocation {
 }
 
 export function googleGeocodingKey(): string | null {
-  return getCredential('GOOGLE_GEOCODING_KEY');
+  const dedicated = getCredential('GOOGLE_GEOCODING_KEY');
+  if (dedicated) return dedicated;
+  // sem chave própria: a do Google Maps serve, se o Google estiver em uso
+  const p = getSetting('maps_provider');
+  if (p !== 'auto' && p !== 'google') return null;
+  return getCredential('GOOGLE_MAPS_SERVER_KEY') || getCredential('GOOGLE_MAPS_BROWSER_KEY');
 }
 export function googleGeocodingEnabled(): boolean {
   return !!googleGeocodingKey() && getSetting('maps_provider') !== 'osm';

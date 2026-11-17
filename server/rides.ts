@@ -5,7 +5,7 @@ import {
 import { route, type Route, type SessionUser } from './router.ts';
 import { getFare, allFares, computePriceCents, splitCommission } from './fares.ts';
 import {
-  route as computeRoute, searchAddress, reverseGeocode, assertInCoverage,
+  route as computeRoute, searchAddress, reverseGeocode, assertInCoverage, resolvePlace,
 } from './geo.ts';
 import { notify, notifyAdmins, sseSend, sseSendMany } from './notify.ts';
 import {
@@ -452,7 +452,20 @@ export const rideRoutes: Route[] = [
     if (!rateLimit(`geo:${ip}`, 90, 60_000)) throw new ApiError(429, 'Aguarde um instante.');
     const q = (query.get('q') || '').trim();
     if (q.length < 2) { json(res, 200, { results: [] }); return; }
-    json(res, 200, { results: await searchAddress(q) });
+    // a sessão junta a digitação + a escolha numa só cobrança do Google
+    const { cleanSession } = await import('./google-maps.ts');
+    json(res, 200, { results: await searchAddress(q, cleanSession(query.get('session'))) });
+  }),
+
+  /** Converte a sugestão do Google escolhida em coordenada. */
+  route('GET /api/geo/place', 'any', async ({ res, query, ip }) => {
+    if (!rateLimit(`place:${ip}`, 40, 60_000)) throw new ApiError(429, 'Aguarde um instante.');
+    const placeId = (query.get('place_id') || '').trim();
+    if (!/^[A-Za-z0-9_-]{10,300}$/.test(placeId)) throw new ApiError(400, 'Lugar inválido.');
+    const { cleanSession } = await import('./google-maps.ts');
+    json(res, 200, {
+      place: await resolvePlace(placeId, cleanSession(query.get('session')), query.get('text') || undefined),
+    });
   }),
 
   /**
@@ -528,7 +541,7 @@ export const rideRoutes: Route[] = [
       quotes,
       route: {
         geometry: rt.geometry, estimated: rt.estimated,
-        provider: rt.provider, mode: rt.mode,
+        provider: rt.provider, mode: rt.mode, mode_fallback: !!rt.mode_fallback,
       },
       online_drivers: eligibleDrivers(origin.lat, origin.lng).length,
       payment_methods: availableMethods(),

@@ -15,21 +15,14 @@ const WHITE: RGB = [0xff, 0xff, 0xff];
 const NEON: RGB = [0x8d, 0x9c, 0x04];   // borda da marca (amarelo neon sobre o fundo escuro)
 type RGB = [number, number, number];
 
-/** distância de um ponto ao segmento AB (coords normalizadas 0..1) */
-function segDist(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const dx = bx - ax, dy = by - ay;
-  const len2 = dx * dx + dy * dy;
-  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
-  const cx = ax + t * dx, cy = ay + t * dy;
-  return Math.hypot(px - cx, py - cy);
-}
-
-// "V" da VAIRO — os mesmos pontos do SVG da marca (viewBox 0 0 24 24),
-// ver LOGO_MARK em public/js/common.js e public/img/icon.svg.
-const V_POLY: [number, number][] = [
-  [3.4, 4.8], [8.1, 4.8], [12, 15.2], [15.9, 4.8], [20.6, 4.8], [14.3, 19.4], [9.7, 19.4],
-];
-const V_NOTCH: [number, number, number, number] = [15.1, 9.9, 18.1, 7.6];   // corte no braço direito
+// Logo da VAIRO ("V" com estrada): contornos em tools/logo-shape.json, numa caixa 0..100.
+// O mesmo desenho está em LOGO_MARK (public/js/common.js) e em public/img/icon.svg.
+const SHAPE: [number, number][][] = JSON.parse(
+  fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'logo-shape.json'), 'utf8'),
+).polys;
+const BOXES = SHAPE.map(poly => poly.reduce(
+  (b, [x, y]) => [Math.min(b[0], x), Math.min(b[1], y), Math.max(b[2], x), Math.max(b[3], y)],
+  [Infinity, Infinity, -Infinity, -Infinity]));
 
 function inPolygon(x: number, y: number, poly: [number, number][]): boolean {
   let inside = false;
@@ -40,14 +33,17 @@ function inPolygon(x: number, y: number, poly: [number, number][]): boolean {
   return inside;
 }
 
-/** true se o pixel faz parte do "V". `scale` é a fração do ícone ocupada pela marca. */
+/** true se o pixel faz parte da marca. `scale` é a fração do ícone ocupada pela caixa do desenho. */
 function markInk(x: number, y: number, scale: number): boolean {
-  // converte para o espaço do desenho (24×24) centrado no ícone
-  const u = ((x - 0.5) / scale + 0.5) * 24;
-  const v = ((y - 0.5) / scale + 0.5) * 24;
-  if (u < 0 || u > 24 || v < 0 || v > 24) return false;
-  if (!inPolygon(u, v, V_POLY)) return false;
-  return segDist(u, v, ...V_NOTCH) > 0.575;
+  const u = ((x - 0.5) / scale + 0.5) * 100;
+  const v = ((y - 0.5) / scale + 0.5) * 100;
+  let inside = false;   // regra par-ímpar entre os contornos
+  for (let k = 0; k < SHAPE.length; k++) {
+    const b = BOXES[k];
+    if (u < b[0] || u > b[2] || v < b[1] || v > b[3]) continue;
+    if (inPolygon(u, v, SHAPE[k])) inside = !inside;
+  }
+  return inside;
 }
 
 /** distância (normalizada) do ponto até a borda do badge arredondado; negativa = dentro. */
@@ -104,7 +100,7 @@ function render(size: number, fullBleed: boolean): Buffer {
   const SS = 4;
   const out = Buffer.alloc(size * size * 4);
   // no modo maskable o conteúdo fica dentro da zona segura (80%)
-  const logoScale = fullBleed ? 0.50 : 0.62;
+  const logoScale = fullBleed ? 0.56 : 0.66;
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       let r = 0, g = 0, b = 0, a = 0;

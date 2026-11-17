@@ -541,12 +541,19 @@ function placeHomePin(p, kind) {
 }
 
 /**
- * Autocomplete de endereços. Toda sugestão já vem com a coordenada (base
- * local, Mapbox ou OpenStreetMap). Digitar depois de escolher invalida a
- * seleção: o texto nunca fica diferente do ponto realmente usado no cálculo.
+ * Autocomplete de endereços. As sugestões da base local, do Mapbox e do
+ * OpenStreetMap já vêm com a coordenada; as do Google (lojas e locais pelo
+ * nome) têm a posição buscada só quando a pessoa escolhe. Digitar depois de
+ * escolher invalida a seleção: o texto nunca fica diferente do ponto
+ * realmente usado no cálculo.
  */
 function setupAutocomplete(input, list, onPick, onEdit) {
   let timer = null, lastQuery = '';
+  // Sugestões do Google (lojas e locais pelo nome): a digitação e a escolha
+  // formam uma sessão; a coordenada só é buscada quando a pessoa escolhe.
+  let session = null;
+  const newSession = () => (crypto.randomUUID?.()
+    || `${Date.now()}${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9_-]/g, '');
 
   input.addEventListener('input', () => {
     onEdit?.();
@@ -555,12 +562,16 @@ function setupAutocomplete(input, list, onPick, onEdit) {
     if (q.length < 2) { list.hidden = true; return; }
     if (q === lastQuery) return;
     lastQuery = q;
+    if (!session) session = newSession();
+    const sess = session;
     list.innerHTML = '<button type="button" disabled>Buscando…</button>';
     list.hidden = false;
     // espera o usuário parar de digitar: menos chamadas, menos custo
     timer = setTimeout(async () => {
       try {
-        const { results } = await api(`/api/geo/search?q=${encodeURIComponent(q)}`);
+        const { results } = await api(
+          `/api/geo/search?q=${encodeURIComponent(q)}&session=${encodeURIComponent(sess)}`);
+        if (q !== lastQuery) return;          // a pessoa já digitou outra coisa
         if (!results.length) {
           list.innerHTML = `<button type="button" disabled>
             Nada encontrado. Tente a rua + bairro, ou use 📌 para marcar no mapa.</button>`;
@@ -571,12 +582,31 @@ function setupAutocomplete(input, list, onPick, onEdit) {
             : r.number_how === 'localizado' ? ' · nº localizado ✅'
             : r.number_how === 'interpolado' ? ' · nº estimado'
               : r.number_how === 'centro' ? ' · ajuste o ponto no mapa' : '';
-          const detalhe = `<span class="muted small">· ${fmt.dist(r.distance_m)} do centro${num}${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>`;
+          const detalhe = r.needs_details
+            ? `<span class="muted small">${escapeHtml(r.secondary || 'Local encontrado no Google Maps')}</span>`
+            : `<span class="muted small">· ${fmt.dist(r.distance_m)} do centro${num}${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>`;
           return `<button type="button" data-i="${i}">${escapeHtml(r.text)}<br>${detalhe}</button>`;
         }).join('');
 
-        $$('button[data-i]', list).forEach(b => b.onclick = () => {
-          const r = results[Number(b.dataset.i)];
+        $$('button[data-i]', list).forEach(b => b.onclick = async () => {
+          let r = results[Number(b.dataset.i)];
+          // sugestão do Google: busca a posição do lugar agora
+          if (r.needs_details && r.place_id) {
+            const nome = r.text;
+            b.disabled = true;
+            b.textContent = 'Localizando…';
+            try {
+              const { place } = await api(`/api/geo/place?place_id=${encodeURIComponent(r.place_id)}`
+                + `&session=${encodeURIComponent(sess)}&text=${encodeURIComponent(nome)}`);
+              r = place;
+            } catch (e) {
+              toast(e.message, 'err');
+              list.hidden = true;
+              return;
+            } finally {
+              if (session === sess) session = null;     // a escolha encerra a sessão
+            }
+          }
           if (!r.in_coverage) {
             toast(`"${r.text}" está fora da área de atendimento (${fmt.dist(r.distance_m)} do centro).`, 'err');
             list.hidden = true;
@@ -635,15 +665,19 @@ function renderQuotes(r) {
   const q0 = S.quotes[0];
   // procedência da rota: o passageiro vê se é rota de moto, de carro ou estimativa
   const PROC = {
+    two_wheeler: '<span class="pill green">rota de motocicleta</span>',
     drive: '<span class="pill blue">rota por ruas</span>',
     estimativa: '<span class="pill yellow">distância estimada</span>',
   };
   const procedencia = PROC[r.route.mode] || '';
+  const aviso = r.route.mode_fallback
+    ? '<br><span class="muted small">⚠️ Sem rota de motocicleta para este trajeto; usamos a rota de carro.</span>'
+    : '';
 
   $('#quote-summary').innerHTML =
     `📍 ${escapeHtml(S.origin.text)}<br>🏁 ${escapeHtml(S.dest.text)}<br>` +
     `Distância: <b>${fmt.dist(q0.distance_m)}</b> · Tempo estimado: <b>${fmt.dur(q0.duration_s)}</b>` +
-    ` · ${procedencia}` +
+    ` · ${procedencia}${aviso}` +
     `<br>🏍️ ${r.online_drivers} mototaxista(s) próximos disponíveis`;
 
   const DESC = {
