@@ -161,7 +161,7 @@ h1, h2, h3 { letter-spacing: -.02em; }
 }
 .topbar .spacer { flex: 1; }
 
-/* áreas do ecossistema (Visão Geral · Passageiro · Motorista · Empresa) */
+/* áreas do app (Visão Geral · Passageiro · Motorista · Empresa) */
 .areanav {
   display: none; align-items: center; gap: 5px; padding: 6px;
   background: var(--bg); border: 1px solid var(--line-2); border-radius: 17px;
@@ -739,7 +739,7 @@ input:focus, textarea:focus, select:focus { scroll-margin-bottom: 140px; }
 }
 
 /* ============================================================
-   Visão Geral (página de entrada do ecossistema)
+   Visão Geral (página de entrada do app)
    ============================================================ */
 .overview { max-width: 1280px; margin: 0 auto; padding: 22px 16px 48px; }
 .hero {

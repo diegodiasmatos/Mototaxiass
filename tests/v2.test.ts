@@ -1211,7 +1211,7 @@ test('páginas: cada área tem seu endereço e a entrada mostra a Visão Geral',
     return { status: r.status, html: await r.text(), type: r.headers.get('content-type') || '' };
   };
 
-  // visitante sem sessão: "/" é a Visão Geral do ecossistema
+  // visitante sem sessão: "/" é a Visão Geral do app
   const home = await page('/');
   assert.equal(home.status, 200);
   assert.match(home.html, /data-area="visao"/);

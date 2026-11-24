@@ -1000,12 +1000,12 @@ function renderBrand(el, tagline) {
   if (!el) return;
   el.innerHTML = `${logoTile()}
     <span class="brand-text">
-      <span class="brand-line"><span class="brand-name">VAIRO</span><span class="brand-badge">Pro Ecosystem</span></span>
+      <span class="brand-line"><span class="brand-name">VAIRO</span></span>
       <span class="brand-tag">${escapeHtml(tagline || BRAND_TAGLINE)}</span>
     </span>`;
 }
 
-/* ---------- cabeçalho: áreas do ecossistema e tema ---------- */
+/* ---------- cabeçalho: áreas do app e tema ---------- */
 const AREAS = [
   { id: 'visao', label: 'Visão Geral', href: '/visao-geral', icon: 'layer-group' },
   { id: 'passageiro', label: 'Passageiro', href: '/passageiro', icon: 'user' },

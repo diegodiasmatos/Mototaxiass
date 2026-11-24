@@ -137,7 +137,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
     // Entrada do site: quem já tem sessão cai direto no seu aplicativo (links
     // de notificação e de retorno do pagamento apontam para "/"); visitante
-    // vê a Visão Geral do ecossistema.
+    // vê a Visão Geral do app.
     if (req.method === 'GET' && pathname === '/' && user) {
       if (user.role === 'passenger') { serveStatic(res, '/passageiro'); return; }
       res.writeHead(302, { Location: user.role === 'admin' ? '/admin' : '/motorista' });
