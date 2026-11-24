@@ -662,7 +662,7 @@ async function secPayments() {
 /* ============ mapas (Mapbox) ============ */
 async function secMaps() {
   const m = await api('/api/admin/maps-config');
-  const { places } = await api('/api/admin/places');
+  const { places, hidden = [] } = await api('/api/admin/places');
   const cred = (k, label, help) => {
     const v = m.credentials[k];
     const origem = v.source === 'banco' ? '<span class="pill green">salva aqui</span>'
@@ -751,6 +751,16 @@ async function secMaps() {
       <div id="pl-options" class="mt"></div>
       <button class="btn btn-primary mt" id="pl-save" disabled>2 · Salvar local</button>
     </div>
+
+    ${hidden.length ? `<div class="card">
+      <h3>🙈 Ocultos da busca dos passageiros <span class="pill gray">${hidden.length}</span></h3>
+      <p class="muted small mb">Registros do OpenStreetMap com nome vago (“Escola”, “Trilha”) ou com cara
+        de casa particular (“Casa do Fulano”). Continuam na base, só não aparecem na busca. Se algum
+        for um lugar real e útil, cadastre-o acima com o nome completo.</p>
+      ${hidden.map(h => `<div class="list-item"><div class="li-main">
+        <div class="li-title">${escapeHtml(h.name)}</div>
+        <div class="li-sub">${escapeHtml(h.reason)}${h.detail ? ' · ' + escapeHtml(h.detail) : ''}</div></div></div>`).join('')}
+    </div>` : ''}
 
     <div class="card">
       <h3>Google Maps · mapa, rotas de moto e busca de lojas pelo nome</h3>

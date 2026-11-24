@@ -637,8 +637,8 @@ export const adminRoutes: Route[] = [
 
   // ---------- estabelecimentos cadastrados à mão ----------
   route('GET /api/admin/places', 'admin', async ({ res }) => {
-    const { manualPlaces } = await import('./address-base.ts');
-    json(res, 200, { places: manualPlaces() });
+    const { manualPlaces, hiddenPlaces } = await import('./address-base.ts');
+    json(res, 200, { places: manualPlaces(), hidden: hiddenPlaces() });
   }),
 
   /**

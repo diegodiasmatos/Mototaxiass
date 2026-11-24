@@ -286,6 +286,20 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
 }
 .ac-list button:last-child { border-bottom: none; }
 .ac-list button:hover { background: var(--card); }
+.ac-list { max-height: min(320px, 50vh); }
+.ac-head {
+  position: sticky; top: 0; padding: 7px 14px; font-size: .72rem; font-weight: 700;
+  letter-spacing: .03em; text-transform: uppercase; color: var(--muted);
+  background: var(--card-2); border-bottom: 1px solid var(--line);
+}
+.ac-empty { padding: 12px 14px; font-size: .85rem; line-height: 1.45; color: var(--muted); }
+.ac-empty b { color: var(--text); }
+.ac-kind {
+  display: inline-block; padding: 0 6px; margin-right: 2px; border-radius: 6px;
+  font-size: .68rem; font-weight: 700; border: 1px solid var(--line);
+}
+.ac-kind.ac-bairro { color: var(--accent); border-color: var(--accent); }
+.ac-kind.ac-fav { color: #e0a800; border-color: #e0a800; }
 
 /* ---------- navegação inferior ---------- */
 .bottomnav {

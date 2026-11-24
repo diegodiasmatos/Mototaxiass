@@ -6,6 +6,7 @@ import { route, type Route, type SessionUser } from './router.ts';
 import { getFare, allFares, computePriceCents, splitCommission } from './fares.ts';
 import {
   route as computeRoute, searchAddress, reverseGeocode, assertInCoverage, resolvePlace,
+  searchSuggestions,
 } from './geo.ts';
 import { notify, notifyAdmins, sseSend, sseSendMany } from './notify.ts';
 import {
@@ -458,6 +459,11 @@ export const rideRoutes: Route[] = [
     // a sessão junta a digitação + a escolha numa só cobrança do Google
     const { cleanSession } = await import('./google-maps.ts');
     json(res, 200, { results: await searchAddress(q, cleanSession(query.get('session'))) });
+  }),
+
+  /** Pontos de referência e bairros para sugerir antes de digitar (só dados reais da base). */
+  route('GET /api/geo/suggestions', 'any', ({ res }) => {
+    json(res, 200, searchSuggestions());
   }),
 
   /** Converte a sugestão do Google escolhida em coordenada. */

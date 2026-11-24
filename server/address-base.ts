@@ -220,6 +220,100 @@ function fuzzyHasToken(words: string[], token: string): boolean {
   });
 }
 
+// ---------------------------------------------------------------
+// Nomes vagos: registros do OpenStreetMap sem nome próprio ("Escola",
+// "Café", "Gasolina") ou com cara de casa particular ("Casa do Fulano").
+// Eles continuam na base (não são apagados), só não aparecem na busca
+// dos passageiros. Locais cadastrados pela central nunca são ocultados.
+// ---------------------------------------------------------------
+const GENERIC_NAMES = new Set([
+  'escola', 'colegio', 'creche', 'cafe', 'gasolina', 'posto', 'ferramentas', 'trilha',
+  'farmacia', 'drogaria', 'mercado', 'mercearia', 'supermercado', 'padaria', 'restaurante',
+  'lanchonete', 'lanches', 'bar', 'igreja', 'academia', 'loja', 'oficina', 'hotel',
+  'quadra', 'campo', 'estacionamento', 'banheiro', 'parquinho', 'salao', 'praca',
+]);
+
+/** O registro tem nome vago demais para ajudar alguém a escolher um destino? */
+export function isVaguePlace(kind: string, name: string, detail: string | null,
+  source?: string | null): boolean {
+  if (kind !== 'local' || source === 'manual') return false;
+  const n = normalize(name).replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (looksPrivate(n)) return true;                           // "Casa do Fulano"
+  return GENERIC_NAMES.has(n) && !detail;                     // "Escola", sem rua para situar
+}
+
+/** Palavras que fazem de "Casa da/do X" um lugar público, não a casa de alguém. */
+const PUBLIC_HOUSE_WORDS = new Set([
+  'cultura', 'artesao', 'estudante', 'idoso', 'idosos', 'crianca', 'saude', 'agricultor',
+  'povo', 'cidadao', 'cidadania', 'mulher', 'memoria', 'musica', 'oracao', 'apoio', 'acolhida',
+]);
+/** "casa do marcelo" (3 palavras, a última um nome) parece casa particular. */
+function looksPrivate(n: string): boolean {
+  const m = /^casa (do|da|de|dos|das) (\S+)$/.exec(n);
+  return !!m && !PUBLIC_HOUSE_WORDS.has(m[2]);
+}
+
+/** Lista para a central do que está oculto da busca e por quê. */
+export function hiddenPlaces(): { name: string; detail: string | null; reason: string }[] {
+  const rows = db.prepare(`SELECT kind, name, detail, source FROM local_addresses
+    WHERE kind = 'local' ORDER BY name`).all() as any[];
+  return rows.filter(r => isVaguePlace(r.kind, r.name, r.detail, r.source)).map(r => ({
+    name: r.name, detail: r.detail || null,
+    reason: looksPrivate(normalize(r.name).replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim())
+      ? 'parece endereço particular' : 'nome genérico, sem rua',
+  }));
+}
+
+/**
+ * Pontos de referência para sugerir antes de a pessoa digitar: os locais
+ * cadastrados pela central e os da base que são de uso público e fácil de
+ * reconhecer (rodoviária, hospital, UBS, prefeitura, faculdade...). Tudo
+ * vem da base: nada é inventado. Mantém a ordem das categorias abaixo.
+ */
+const REFERENCE_TERMS: [RegExp, number][] = [
+  // [começo do nome, quantos no máximo] — pelo NOME, não pela categoria do OSM
+  // (que marca farmácia como "saúde" e traria farmácia para "UBS")
+  [/^(rodoviaria|terminal rodoviario)/, 1],
+  [/^hospital/, 2],
+  [/^(ubs|unidade basica)\b/, 2],
+  [/^prefeitura/, 1],
+  [/^(faculdade|ifpr|universidade)\b/, 2],
+  [/^forum\b/, 1],
+  [/^praca\b/, 2],
+];
+export function referencePlaces(limit = 12): BaseHit[] {
+  const rows = db.prepare(`SELECT kind, name, norm, tags, detail, lat, lng, source
+    FROM local_addresses WHERE kind = 'local'`).all() as any[];
+  const useful = rows.filter(r => !isVaguePlace(r.kind, r.name, r.detail, r.source));
+  const picked: any[] = [];
+  const seen = new Set<string>();
+  const add = (r: any) => {
+    // mesmo lugar cadastrado duas vezes ("IFPR Campus ..." com grafias diferentes)
+    const key = r.norm.split(SAME_NAME_SEP)[0].split(/\s+/).slice(0, 2).join(' ');
+    if (seen.has(key) || picked.length >= limit) return;
+    seen.add(key);
+    picked.push(r);
+  };
+  useful.filter(r => r.source === 'manual').sort((a, b) => a.name.localeCompare(b.name)).forEach(add);
+  for (const [re, max] of REFERENCE_TERMS) {
+    let n = 0;
+    for (const r of useful.filter(x => re.test(x.norm)).sort((a, b) => a.name.length - b.name.length)) {
+      const before = picked.length;
+      if (n >= max) break;
+      add(r);
+      if (picked.length > before) n++;
+    }
+  }
+  return picked.map(r => ({ kind: 'local', name: r.name, detail: r.detail || null, lat: r.lat, lng: r.lng }));
+}
+
+/** Bairros da base, em ordem alfabética (sugestão para quem não sabe a rua). */
+export function neighbourhoods(): BaseHit[] {
+  return (db.prepare(`SELECT name, detail, lat, lng FROM local_addresses
+    WHERE kind = 'bairro' ORDER BY name`).all() as any[])
+    .map(r => ({ kind: 'bairro', name: r.name, detail: r.detail || null, lat: r.lat, lng: r.lng }));
+}
+
 export function baseCount(): number {
   try {
     return (db.prepare('SELECT COUNT(*) c FROM local_addresses').get() as any).c;
@@ -276,15 +370,17 @@ export function searchBase(q: string, limit = 8): BaseHit[] {
   // (é o que faz "hospital" listar hospitais e "mecanica" achar oficinas)
   const where = effective.map(() =>
     "(norm LIKE '%' || ? || '%' OR IFNULL(tags,'') LIKE '%' || ? || '%')").join(' AND ');
-  let rows = db.prepare(
-    `SELECT kind, name, norm, tags, detail, lat, lng FROM local_addresses
-     WHERE ${where} LIMIT 60`).all(...effective.flatMap(t => [t, t])) as any[];
+  let rows = (db.prepare(
+    `SELECT kind, name, norm, tags, detail, lat, lng, source FROM local_addresses
+     WHERE ${where} LIMIT 80`).all(...effective.flatMap(t => [t, t])) as any[])
+    .filter(r => !isVaguePlace(r.kind, r.name, r.detail, r.source));
 
   // nada na busca exata? tenta tolerando erro de digitação
   // ("av tupanssi" → "Avenida Tupassi")
   if (!rows.length) {
-    const all = db.prepare(
-      'SELECT kind, name, norm, tags, detail, lat, lng FROM local_addresses').all() as any[];
+    const all = (db.prepare(
+      'SELECT kind, name, norm, tags, detail, lat, lng, source FROM local_addresses').all() as any[])
+      .filter(r => !isVaguePlace(r.kind, r.name, r.detail, r.source));
     rows = all.filter(r => {
       const words = `${r.norm} ${r.tags || ''}`.split(/\s+/).filter(Boolean);
       return effective.every(t => fuzzyHasToken(words, t));
@@ -300,6 +396,11 @@ export function searchBase(q: string, limit = 8): BaseHit[] {
     if (effective.every(t => r.norm.includes(t))) score += 15; // termo no nome > só na categoria
     for (const t of typeTokens) if (r.norm.includes(t)) score += 10;
     if (houseNumber && r.kind === 'rua') score += 20;       // número pede rua
+    // sem número de casa, bairro e ponto de referência com o termo no NOME
+    // vêm antes das ruas ("panorama" → Jardim Panorama antes da Rua Panorama)
+    const nameHit = effective.every(t => r.norm.includes(t));
+    if (!houseNumber && nameHit && r.kind === 'bairro') score += 30;
+    if (!houseNumber && nameHit && r.kind === 'local') score += 18;
     if (r.kind === 'local') score += 5;                     // POI é mais específico
     score -= r.norm.length / 50;                            // nomes curtos primeiro
     return { r, score };

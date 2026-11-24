@@ -391,6 +391,54 @@ test('base: busca por categoria acha estabelecimento sem a palavra no nome', asy
     '"mercado" deveria listar o Lorena Alimentos pelas palavras-chave');
 });
 
+test('busca: bairro e ponto de referência pelo nome vêm antes das ruas; nomes vagos somem', async () => {
+  const t = Date.now();
+  const ins = db.prepare(`INSERT INTO local_addresses
+    (kind, name, norm, detail, tags, lat, lng, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  ins.run('rua', 'Rua Horizonte', 'rua horizonte', null, null, -24.4150, -53.5200, t);
+  ins.run('bairro', 'Jardim Horizonte', 'jardim horizonte', null, null, -24.4120, -53.5180, t);
+  ins.run('local', 'Rodoviária Teste', 'rodoviaria teste', null, 'rodoviaria', -24.4158, -53.5214, t);
+  ins.run('local', 'Polícia Rodoviária Teste', 'policia rodoviaria teste', null, 'policia', -24.4159, -53.5215, t);
+  ins.run('local', 'Casa do Zezinho', 'casa do zezinho', null, null, -24.4157, -53.5217, t);
+  ins.run('local', 'Casa da Cultura Teste', 'casa da cultura teste', null, null, -24.4156, -53.5218, t);
+  ins.run('local', 'Escola', 'escola', null, null, -24.4155, -53.5219, t);
+
+  const r = await pax.req('GET', '/api/geo/search?q=horizonte');
+  assert.equal(r.status, 200);
+  assert.equal(r.data.results[0].kind, 'bairro', 'o bairro deveria vir primeiro');
+  assert.ok(r.data.results[0].text.startsWith('Jardim Horizonte'));
+  assert.ok(r.data.results.some((x: any) => x.kind === 'rua' && x.text.startsWith('Rua Horizonte')));
+
+  // "Casa do Fulano" (parece residência) e "Escola" (sem nome próprio) ficam fora
+  const casa = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('casa do zezinho'));
+  assert.ok(!casa.data.results.some((x: any) => x.text.includes('Zezinho')));
+  const cultura = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('casa da cultura'));
+  assert.ok(cultura.data.results.some((x: any) => x.text.includes('Casa da Cultura Teste')),
+    'lugar público "Casa da Cultura" não deve ser ocultado');
+
+  // sugestões antes de digitar: só dados da base, sem a delegacia no lugar da rodoviária
+  assert.equal((await actor().req('GET', '/api/geo/suggestions')).status, 401);
+  const sg = await pax.req('GET', '/api/geo/suggestions');
+  assert.equal(sg.status, 200);
+  const refs = sg.data.referencias.map((x: any) => x.text);
+  assert.ok(refs.some((x: string) => x.startsWith('Rodoviária Teste')));
+  assert.ok(!refs.some((x: string) => x.startsWith('Polícia')));
+  assert.ok(!refs.some((x: string) => x.includes('Zezinho')));
+  assert.ok(sg.data.bairros.some((x: any) => x.text.startsWith('Jardim Horizonte') && x.approx === true));
+  assert.ok(sg.data.bairros.every((x: any) => x.in_coverage && x.kind === 'bairro'));
+
+  // a central vê o que foi ocultado e por quê
+  const pl = await adm.req('GET', '/api/admin/places');
+  assert.equal(pl.status, 200);
+  const names = pl.data.hidden.map((h: any) => h.name);
+  assert.ok(names.includes('Casa do Zezinho') && names.includes('Escola'));
+  assert.ok(!names.includes('Casa da Cultura Teste'));
+  // nada foi apagado da base
+  assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM local_addresses WHERE norm IN ('casa do zezinho','escola')`).get() as any).n, 2);
+  db.prepare(`DELETE FROM local_addresses WHERE norm IN ('rua horizonte','jardim horizonte','rodoviaria teste',
+    'policia rodoviaria teste','casa do zezinho','casa da cultura teste','escola')`).run();
+});
+
 test('números de casa: o app aprende com o passageiro e passa a acertar', async () => {
   // rua que não existe na base é recusada (ninguém ensina endereço inventado)
   assert.equal((await pax.req('POST', '/api/geo/learn',
