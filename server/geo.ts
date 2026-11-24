@@ -4,7 +4,7 @@ import { mapboxEnabled, mapboxRoute, mapboxSearch, mapboxReverse } from './mapbo
 import {
   googleEnabled, googleRoute, googleAutocomplete, googlePlaceDetails, googleReverse,
 } from './google-maps.ts';
-import { searchBase, nearestBase } from './address-base.ts';
+import { searchBase, nearestBase, referencePlaces, neighbourhoods } from './address-base.ts';
 import { locateHouseNumber } from './house-number.ts';
 
 const UA = 'AssisMotoTaxi/1.0 (plataforma de mototaxi; contato: admin local)';
@@ -134,6 +134,8 @@ export interface GeoSearchResult {
   distance_m: number;
   in_coverage: boolean;
   source: 'local' | 'osm' | 'mapbox' | 'google';
+  /** o que é: bairro, ponto de referência, rua ou endereço vindo de serviço externo */
+  kind?: 'bairro' | 'local' | 'rua' | 'endereco' | 'google';
   approx?: boolean;
   /** sugestão do Google: identificador do lugar, resolvido em /api/geo/place */
   place_id?: string;
@@ -198,6 +200,7 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
       cityName,
     ].filter(Boolean).join(', ');
     const item = decorate(line, hit.lat, hit.lng, 'local');
+    item.kind = hit.kind;
     if (hit.number) {
       item.street = hit.name;
       item.number = hit.number;
@@ -230,8 +233,14 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
   for (const p of LOCAL_PLACES) {
     const hay = normalize(`${p.name} ${p.tags || ''}`);
     if (qn.length >= 2 && (hay.includes(qn) || qn.split(/\s+/).every(w => w.length < 3 || hay.includes(w)))) {
-      if (results.some(x => normalize(x.text).startsWith(normalize(p.name)))) continue;
-      results.push(decorate(`${p.name}, ${cityName}`, p.lat, p.lng, 'local'));
+      // já listado pela base com o MESMO nome (não basta começar igual:
+      // "Centro de Eventos" não é o bairro Centro)
+      if (results.some(x => normalize(x.text).split(',')[0].replace(/\s*\(bairro\)$/, '') === normalize(p.name))) continue;
+      const item = decorate(`${p.name}, ${cityName}`, p.lat, p.lng, 'local');
+      item.kind = /\bbairro\b/.test(p.tags || '') || p.name === 'Centro' ? 'bairro' : 'local';
+      if (item.kind === 'bairro') item.approx = true;
+      // nome digitado por inteiro ("centro"): vai para o topo da lista
+      if (normalize(p.name) === qn) results.unshift(item); else results.push(item);
     }
   }
 
@@ -251,7 +260,7 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
         fromGoogle.push({
           text: p.text, secondary: p.secondary,
           lat: NaN, lng: NaN, distance_m: 0, in_coverage: true,
-          source: 'google', place_id: p.place_id, needs_details: true,
+          source: 'google', kind: 'google', place_id: p.place_id, needs_details: true,
         });
       }
       if (fromGoogle.length) {
@@ -278,6 +287,7 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
           // mesmo ponto que um local já listado: não repete
           if (results.some(x => haversineM(x.lat, x.lng, p.lat, p.lng) < 40)) continue;
           const item = decorate(p.text, p.lat, p.lng, 'mapbox');
+          item.kind = 'endereco';
           // bairro/localidade: o pino cai no centro da área, não num endereço
           if (!p.exact) item.approx = true;
           results.push(item);
@@ -325,6 +335,7 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
             a.city || a.town || a.village || a.municipality,
           ].filter(Boolean).join(', ') || String(p.display_name).split(',').slice(0, 3).join(',');
           const item = decorate(line, lat, lng, 'osm');
+          item.kind = 'endereco';
           // evita duplicados muito próximos (mesmo ponto vindo das duas consultas)
           if (results.some(x => haversineM(x.lat, x.lng, lat, lng) < 40)) continue;
           results.push(item);
@@ -343,6 +354,43 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
     (a.in_coverage === b.in_coverage ? 0 : a.in_coverage ? -1 : 1) || a.distance_m - b.distance_m);
 
   return [...localPart, ...osmPart].slice(0, 8);
+}
+
+/**
+ * Sugestões para antes de digitar: pontos de referência e bairros que
+ * EXISTEM na base local (ou cadastrados pela central). Sem base baixada,
+ * usa só os pontos embutidos no código.
+ */
+export function searchSuggestions(): { referencias: GeoSearchResult[]; bairros: GeoSearchResult[] } {
+  const cityName = getSetting('city_name').split('-')[0].trim();
+  const fmt = (name: string, detail: string | null) => [name, detail, cityName].filter(Boolean).join(', ');
+  const referencias = referencePlaces().map(h => {
+    const it = decorate(fmt(h.name, h.detail), h.lat, h.lng, 'local');
+    it.kind = 'local';
+    return it;
+  });
+  const bairros = neighbourhoods().map(h => {
+    const it = decorate(fmt(`${h.name} (bairro)`, h.detail), h.lat, h.lng, 'local');
+    it.kind = 'bairro';
+    it.approx = true;                   // o pino cai no centro do bairro
+    return it;
+  });
+  // "Centro" e demais pontos embutidos entram quando a base não os tem
+  for (const p of LOCAL_PLACES) {
+    const isBairro = /\bbairro\b/.test(p.tags || '') || p.name === 'Centro';
+    const list = isBairro ? bairros : referencias;
+    if (list.some(x => normalize(x.text).startsWith(normalize(p.name)))) continue;
+    if (!isBairro && neighbourhoods().length + referencePlaces().length > 0) continue;
+    const it = decorate(isBairro ? fmt(`${p.name} (bairro)`, null) : fmt(p.name, null), p.lat, p.lng, 'local');
+    it.kind = isBairro ? 'bairro' : 'local';
+    if (isBairro) it.approx = true;
+    list.push(it);
+  }
+  bairros.sort((a, b) => a.text.localeCompare(b.text, 'pt-BR'));
+  return {
+    referencias: referencias.filter(x => x.in_coverage),
+    bairros: bairros.filter(x => x.in_coverage),
+  };
 }
 
 /**

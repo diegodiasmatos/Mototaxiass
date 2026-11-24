@@ -10,6 +10,9 @@ const S = {
   pendingTimer: null, offerModal: null,
 };
 
+// atualização automática do app espera a corrida/turno acabar (common.js)
+window.vairoBusy = () => !!S.activeRide || !!S.online || !!S.offerModal;
+
 init();
 
 async function init() {

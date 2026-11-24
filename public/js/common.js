@@ -327,6 +327,99 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+/* ---------- atualização do app para quem já tem instalado ----------
+   O servidor publica a versão (hash dos arquivos) em /api/version e dentro de
+   cada página (<meta name="app-version">). Quando as duas diferem, existe
+   versão nova:
+   - app em segundo plano, ou voltando para a tela, sem nada em andamento:
+     recarrega sozinho (a pessoa nem percebe);
+   - com algo em andamento (corrida, formulário preenchido, janela aberta):
+     só mostra o aviso "Nova versão disponível · Atualizar".
+   Recarregar não perde o login (cookie) nem as preferências (localStorage). */
+const APP_VERSION = document.querySelector('meta[name="app-version"]')?.content || '';
+window.APP_VERSION = APP_VERSION;
+
+/** Há algo que um recarregamento atrapalharia? */
+function appBusy() {
+  if (document.querySelector('.modal-backdrop')) return true;
+  if (typeof window.vairoBusy === 'function') {
+    try { if (window.vairoBusy()) return true; } catch { return true; }
+  }
+  // campo visível em que a PESSOA digitou e que ainda tem texto (campos que
+  // o próprio app preenche, como nome e telefone do perfil, não contam)
+  for (const el of document.querySelectorAll('[data-typed]')) {
+    if (el.value && el.offsetParent !== null) return true;
+  }
+  return false;
+}
+document.addEventListener('input', e => {
+  const el = e.target;
+  if (e.isTrusted && el?.matches?.('input:not([type=checkbox]):not([type=radio]):not([type=file]), textarea')) {
+    el.dataset.typed = '1';
+  }
+}, true);
+
+function showUpdateBanner() {
+  if (document.getElementById('update-banner')) return;
+  const b = document.createElement('div');
+  b.id = 'update-banner';
+  b.className = 'update-banner';
+  b.setAttribute('role', 'status');
+  b.innerHTML = '<span>Nova versão disponível</span><button type="button">Atualizar</button>';
+  b.querySelector('button').onclick = () => applyUpdate(true);
+  document.body.appendChild(b);
+}
+
+let _updating = false;
+async function applyUpdate(byUser = false) {
+  if (_updating) return;
+  _updating = true;
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    reg?.waiting?.postMessage('skip-waiting');
+  } catch { /* sem service worker: recarregar já basta */ }
+  if (!byUser) sessionStorage.setItem('vairo-update-tried', _newVersion || '');
+  location.reload();
+}
+
+let _newVersion = '';
+let _checking = false;
+async function checkForUpdate(reason) {
+  if (!APP_VERSION || _checking || _updating || navigator.onLine === false) return;
+  _checking = true;
+  try {
+    // pede ao navegador para conferir o sw.js agora (normalmente só confere ao abrir)
+    navigator.serviceWorker?.getRegistration().then(r => r?.update()).catch(() => { });
+    const r = await fetch('/api/version', { cache: 'no-store', credentials: 'same-origin' });
+    if (!r.ok) return;
+    const { version } = await r.json();
+    if (!version || version === APP_VERSION) {
+      sessionStorage.removeItem('vairo-update-tried');
+      return;
+    }
+    _newVersion = version;
+    // já tentou recarregar para esta versão e continuou na antiga: não insiste
+    const triedBefore = sessionStorage.getItem('vairo-update-tried') === version;
+    const quiet = document.visibilityState === 'hidden' || reason === 'foreground';
+    if (quiet && !triedBefore && !appBusy()) {
+      // dá um instante para o service worker novo terminar de instalar
+      setTimeout(() => { if (!appBusy()) applyUpdate(); else showUpdateBanner(); }, 1500);
+    } else {
+      showUpdateBanner();
+    }
+  } catch { /* sem rede: tenta na próxima */ }
+  finally { _checking = false; }
+}
+
+if (APP_VERSION) {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkForUpdate('foreground');
+  });
+  addEventListener('online', () => checkForUpdate('online'));
+  setInterval(() => checkForUpdate('timer'), 10 * 60 * 1000);
+  addEventListener('load', () => setTimeout(() => checkForUpdate('load'), 5000));
+}
+
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
   _installPrompt = e;
@@ -907,12 +1000,12 @@ function renderBrand(el, tagline) {
   if (!el) return;
   el.innerHTML = `${logoTile()}
     <span class="brand-text">
-      <span class="brand-line"><span class="brand-name">VAIRO</span><span class="brand-badge">Pro Ecosystem</span></span>
+      <span class="brand-line"><span class="brand-name">VAIRO</span></span>
       <span class="brand-tag">${escapeHtml(tagline || BRAND_TAGLINE)}</span>
     </span>`;
 }
 
-/* ---------- cabeçalho: áreas do ecossistema e tema ---------- */
+/* ---------- cabeçalho: áreas do app e tema ---------- */
 const AREAS = [
   { id: 'visao', label: 'Visão Geral', href: '/visao-geral', icon: 'layer-group' },
   { id: 'passageiro', label: 'Passageiro', href: '/passageiro', icon: 'user' },

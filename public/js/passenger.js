@@ -16,6 +16,9 @@ const S = {
   serverSkew: 0,                     // diferença entre relógio do servidor e do aparelho
 };
 
+// atualização automática do app espera a corrida/turno acabar (common.js)
+window.vairoBusy = () => !!S.activeRide || !!S.pickingOnMap;
+
 init();
 
 async function init() {
@@ -555,11 +558,51 @@ function setupAutocomplete(input, list, onPick, onEdit) {
   const newSession = () => (crypto.randomUUID?.()
     || `${Date.now()}${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9_-]/g, '');
 
+  /** Desenha os resultados (busca ou sugestões) e trata a escolha. */
+  const render = (results, sess, groups) => {
+    const KIND = { bairro: 'Bairro', local: 'Referência', rua: 'Rua', endereco: 'Endereço', google: 'Google Maps', fav: 'Favorito' };
+    let html = '';
+    results.forEach((r, i) => {
+      if (groups?.[i]) html += `<div class="ac-head">${escapeHtml(groups[i])}</div>`;
+      const num = r.number_how === 'exato' ? ' · nº confirmado ✅'
+        : r.number_how === 'localizado' ? ' · nº localizado ✅'
+        : r.number_how === 'interpolado' ? ' · nº estimado'
+          : r.number_how === 'centro' ? ' · ajuste o ponto no mapa' : '';
+      const tag = r.kind && KIND[r.kind] ? `<span class="ac-kind ac-${r.kind}">${KIND[r.kind]}</span> ` : '';
+      const detalhe = r.needs_details
+        ? `<span class="muted small">${tag}${escapeHtml(r.secondary || 'Local encontrado no Google Maps')}</span>`
+        : `<span class="muted small">${tag}${r.distance_m != null ? `${fmt.dist(r.distance_m)} do centro` : ''}${num}${r.in_coverage === false ? ' · FORA DE ÁREA' : ''}</span>`;
+      html += `<button type="button" data-i="${i}">${escapeHtml(r.text)}<br>${detalhe}</button>`;
+    });
+    list.innerHTML = html;
+    list.hidden = false;
+    bindPick(results, sess);
+  };
+
+  /** Sugestões antes de digitar: favoritos, pontos de referência e bairros reais da base. */
+  let suggestions = null;
+  const showSuggestions = async () => {
+    if (input.value.trim().length >= 2) return;
+    try {
+      if (!suggestions) suggestions = await api('/api/geo/suggestions');
+    } catch { return; }
+    if (input.value.trim().length >= 2 || document.activeElement !== input) return;
+    const favs = (S.favorites || []).map(f => ({ text: f.text, lat: f.lat, lng: f.lng, in_coverage: true, kind: 'fav', label: f.label }));
+    const items = [], groups = {};
+    const add = (title, arr) => { if (!arr.length) return; groups[items.length] = title; items.push(...arr); };
+    add('⭐ Seus favoritos', favs);
+    add('📍 Pontos de referência', suggestions.referencias || []);
+    add('🏘️ Bairros', suggestions.bairros || []);
+    if (!items.length) return;
+    lastQuery = '';
+    render(items, null, groups);
+  };
+
   input.addEventListener('input', () => {
     onEdit?.();
     clearTimeout(timer);
     const q = input.value.trim();
-    if (q.length < 2) { list.hidden = true; return; }
+    if (q.length < 2) { if (q.length === 0) showSuggestions(); else list.hidden = true; return; }
     if (q === lastQuery) return;
     lastQuery = q;
     if (!session) session = newSession();
@@ -573,21 +616,20 @@ function setupAutocomplete(input, list, onPick, onEdit) {
           `/api/geo/search?q=${encodeURIComponent(q)}&session=${encodeURIComponent(sess)}`);
         if (q !== lastQuery) return;          // a pessoa já digitou outra coisa
         if (!results.length) {
-          list.innerHTML = `<button type="button" disabled>
-            Nada encontrado. Tente a rua + bairro, ou use 📌 para marcar no mapa.</button>`;
+          list.innerHTML = `<div class="ac-empty">
+            <b>Não encontramos "${escapeHtml(q)}".</b><br>
+            Confira a grafia, tente o nome da rua com o bairro (ex.: "Rua Paraná, Centro")
+            ou um ponto conhecido perto. Se não achar, toque em 📌 e marque o lugar no mapa.</div>`;
           return;
         }
-        list.innerHTML = results.map((r, i) => {
-          const num = r.number_how === 'exato' ? ' · nº confirmado ✅'
-            : r.number_how === 'localizado' ? ' · nº localizado ✅'
-            : r.number_how === 'interpolado' ? ' · nº estimado'
-              : r.number_how === 'centro' ? ' · ajuste o ponto no mapa' : '';
-          const detalhe = r.needs_details
-            ? `<span class="muted small">${escapeHtml(r.secondary || 'Local encontrado no Google Maps')}</span>`
-            : `<span class="muted small">· ${fmt.dist(r.distance_m)} do centro${num}${r.in_coverage ? '' : ' · FORA DE ÁREA'}</span>`;
-          return `<button type="button" data-i="${i}">${escapeHtml(r.text)}<br>${detalhe}</button>`;
-        }).join('');
+        render(results, sess);
+      } catch (e) {
+        list.innerHTML = `<button type="button" disabled>${escapeHtml(e.message)}</button>`;
+      }
+    }, 450);
+  });
 
+  function bindPick(results, sess) {
         $$('button[data-i]', list).forEach(b => b.onclick = async () => {
           let r = results[Number(b.dataset.i)];
           // sugestão do Google: busca a posição do lugar agora
@@ -604,7 +646,7 @@ function setupAutocomplete(input, list, onPick, onEdit) {
               list.hidden = true;
               return;
             } finally {
-              if (session === sess) session = null;     // a escolha encerra a sessão
+              if (sess && session === sess) session = null;     // a escolha encerra a sessão
             }
           }
           if (!r.in_coverage) {
@@ -620,12 +662,11 @@ function setupAutocomplete(input, list, onPick, onEdit) {
             number_how: r.number_how,
           });
         });
-      } catch (e) {
-        list.innerHTML = `<button type="button" disabled>${escapeHtml(e.message)}</button>`;
-      }
-    }, 450);
+  }
+  input.addEventListener('focus', () => {
+    if (!input.value.trim()) { showSuggestions(); return; }
+    if (list.innerHTML && input.value.length >= 2) list.hidden = false;
   });
-  input.addEventListener('focus', () => { if (list.innerHTML && input.value.length >= 2) list.hidden = false; });
   document.addEventListener('click', e => {
     if (!list.contains(e.target) && e.target !== input) list.hidden = true;
   });
@@ -634,6 +675,7 @@ function setupAutocomplete(input, list, onPick, onEdit) {
 async function loadFavorites() {
   try {
     const { favorites } = await api('/api/favorites');
+    S.favorites = favorites;
     $('#fav-chips').innerHTML = favorites.map(f =>
       `<button class="chip soft" data-id="${f.id}" title="${escapeHtml(f.text)}">⭐ ${escapeHtml(f.label)}</button>`).join('');
     $$('#fav-chips .chip').forEach(b => b.onclick = () => {

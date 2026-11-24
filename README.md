@@ -187,6 +187,27 @@ todo comércio de cidade pequena — o administrador cadastra "Mercado Lorena",
 de referência ou colando coordenadas). Aparece na busca na hora e sobrevive
 às reimportações da base.
 
+**Sugestões antes de digitar.** Ao tocar no campo de origem ou destino vazio,
+aparecem os favoritos do passageiro, pontos de referência e a lista de bairros
+(`GET /api/geo/suggestions`). Tudo vem da base local importada do
+OpenStreetMap ou do que a central cadastrou; nada é inventado. Os pontos de
+referência são escolhidos pelo nome (rodoviária, hospital, UBS, prefeitura,
+faculdade/IFPR, fórum, praças). Bairro escolhido fica marcado como aproximado,
+porque o pino cai no centro do bairro.
+
+**Ordem dos resultados.** Sem número de casa, um bairro ou ponto de referência
+com o termo no nome vem antes das ruas ("panorama" → Jardim Panorama). Cada
+resultado mostra o tipo (Bairro, Referência, Rua, Endereço, Google Maps).
+
+**Nomes vagos ocultos.** Registros do OpenStreetMap sem nome próprio ("Escola",
+"Trilha") ou com cara de casa particular ("Casa do Fulano") não aparecem na
+busca, mas continuam na base. A central vê a lista em 🗺️ Mapas → "Ocultos da
+busca". Locais cadastrados à mão nunca são ocultados.
+
+A cobertura depende do que está no OpenStreetMap. Na cópia do banco usada nos
+testes havia 471 ruas, 28 bairros e 108 locais de Assis Chateaubriand. O que
+faltar, a central cadastra à mão.
+
 Ordem da busca: **base local → Mapbox Geocoding (se houver token) → Nominatim**.
 Qualquer resultado da base responde na hora, sem chamada externa — é o que
 mantém a busca em milissegundos. A busca no Mapbox é limitada à caixa da área
@@ -543,6 +564,13 @@ O service worker (`public/sw.js`) guarda só a interface (HTML/CSS/JS, ícones e
 tiles do mapa). **API, documentos e eventos em tempo real nunca são cacheados** —
 dados sensíveis não ficam no aparelho e o app nunca roda com código velho.
 Sem internet, exibe a tela `/offline.html` em vez de erro do navegador.
+
+**Atualizações.** Quem já tem o app instalado recebe a versão nova sozinho ao
+abrir ou voltar para o app, sem perder login nem preferências. Durante uma
+corrida, ou com algo digitado, aparece o aviso "Nova versão disponível ·
+Atualizar" em vez de recarregar. O ícone da tela inicial é exceção: no Android
+o Chrome atualiza com o tempo; no iPhone só readicionando. Detalhes, o que
+atualiza e como publicar: [docs/ATUALIZACOES.md](docs/ATUALIZACOES.md).
 
 Para publicar nas lojas de verdade (APK/IPA), o caminho é empacotar o PWA com
 [Bubblewrap](https://github.com/GoogleChromeLabs/bubblewrap) (Android) ou

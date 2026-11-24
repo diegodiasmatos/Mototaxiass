@@ -161,7 +161,7 @@ h1, h2, h3 { letter-spacing: -.02em; }
 }
 .topbar .spacer { flex: 1; }
 
-/* áreas do ecossistema (Visão Geral · Passageiro · Motorista · Empresa) */
+/* áreas do app (Visão Geral · Passageiro · Motorista · Empresa) */
 .areanav {
   display: none; align-items: center; gap: 5px; padding: 6px;
   background: var(--bg); border: 1px solid var(--line-2); border-radius: 17px;
@@ -286,6 +286,20 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); }
 }
 .ac-list button:last-child { border-bottom: none; }
 .ac-list button:hover { background: var(--card); }
+.ac-list { max-height: min(320px, 50vh); }
+.ac-head {
+  position: sticky; top: 0; padding: 7px 14px; font-size: .72rem; font-weight: 700;
+  letter-spacing: .03em; text-transform: uppercase; color: var(--muted);
+  background: var(--card-2); border-bottom: 1px solid var(--line);
+}
+.ac-empty { padding: 12px 14px; font-size: .85rem; line-height: 1.45; color: var(--muted); }
+.ac-empty b { color: var(--text); }
+.ac-kind {
+  display: inline-block; padding: 0 6px; margin-right: 2px; border-radius: 6px;
+  font-size: .68rem; font-weight: 700; border: 1px solid var(--line);
+}
+.ac-kind.ac-bairro { color: var(--accent); border-color: var(--accent); }
+.ac-kind.ac-fav { color: #e0a800; border-color: #e0a800; }
 
 /* ---------- navegação inferior ---------- */
 .bottomnav {
@@ -725,7 +739,7 @@ input:focus, textarea:focus, select:focus { scroll-margin-bottom: 140px; }
 }
 
 /* ============================================================
-   Visão Geral (página de entrada do ecossistema)
+   Visão Geral (página de entrada do app)
    ============================================================ */
 .overview { max-width: 1280px; margin: 0 auto; padding: 22px 16px 48px; }
 .hero {
@@ -808,4 +822,18 @@ input:focus, textarea:focus, select:focus { scroll-margin-bottom: 140px; }
 }
 @media (max-width: 380px) {
   .brand-badge { display: none; }
+}
+
+/* aviso de versão nova do app */
+.update-banner {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  top: calc(10px + env(safe-area-inset-top, 0px)); z-index: 300;
+  display: flex; align-items: center; gap: 12px; padding: 9px 10px 9px 16px;
+  background: var(--card-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 999px; box-shadow: var(--shadow-lg); font-size: .87rem; max-width: calc(100% - 20px);
+  white-space: nowrap; width: max-content;
+}
+.update-banner button {
+  padding: 6px 14px; border-radius: 999px; font-weight: 700;
+  background: var(--accent); color: var(--accent-ink);
 }
