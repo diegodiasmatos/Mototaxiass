@@ -362,7 +362,10 @@ export function startAutoConfirmSweeper(): NodeJS.Timeout {
       const due = db.prepare(`SELECT id FROM rides
         WHERE status = 'awaiting_confirmation' AND auto_confirm_at IS NOT NULL
           AND auto_confirm_at <= ?`).all(now()) as any[];
-      for (const r of due) void finalizeRide(r.id, 'auto');
+      for (const r of due) {
+        finalizeRide(r.id, 'auto').catch(e =>
+          console.error(`[confirmação automática] corrida ${r.id}: ${e?.message || e}`));
+      }
     } catch { /* não derruba o servidor */ }
   }, 1000);
   timer.unref();

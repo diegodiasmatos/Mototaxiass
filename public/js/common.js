@@ -14,7 +14,19 @@ async function api(path, opts = {}) {
   }
   let r;
   try { r = await fetch(path, init); }
-  catch { throw new Error('Sem conexão com o servidor. Verifique sua internet.'); }
+  catch {
+    // fetch só falha assim quando não há resposta nenhuma: sem internet no
+    // aparelho, ou o servidor fora do ar
+    throw new Error(navigator.onLine === false
+      ? 'Sem internet no aparelho. Verifique os dados móveis ou o Wi-Fi.'
+      : 'Não foi possível falar com o servidor da VAIRO agora. Tente de novo em alguns minutos.');
+  }
+  // proxy da hospedagem sem o app por trás (fora do ar ou reiniciando)
+  if ([502, 503, 504].includes(r.status) && !String(r.headers.get('content-type') || '').includes('json')) {
+    const err = new Error('O servidor da VAIRO está reiniciando ou fora do ar. Tente de novo em alguns minutos.');
+    err.status = r.status;
+    throw err;
+  }
   let data = {};
   try { data = await r.json(); } catch { /* respostas sem corpo */ }
   if (!r.ok) {

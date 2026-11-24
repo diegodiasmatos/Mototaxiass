@@ -221,7 +221,22 @@ export const adminRoutes: Route[] = [
     const b = await readBody(req);
     const EDITABLE = ['city_name', 'center_lat', 'center_lng', 'coverage_radius_km',
       'dispatch_radius_km', 'commission_pct', 'quote_ttl_min', 'loc_fresh_s',
-      'welcome_message', 'review_sla_hours'];
+      'welcome_message', 'review_sla_hours',
+      // apareciam na tela de configurações, mas o servidor não gravava
+      'confirm_window_s', 'driver_debt_limit_cents', 'gps_max_accuracy_m'];
+    const RANGES: Record<string, [number, number]> = {
+      confirm_window_s: [1, 120],
+      driver_debt_limit_cents: [0, 10_000_000],
+      gps_max_accuracy_m: [10, 5000],
+    };
+    for (const [k, [min, max]] of Object.entries(RANGES)) {
+      if (b.settings?.[k] === undefined) continue;
+      const n = Number(b.settings[k]);
+      if (!Number.isFinite(n) || n < min || n > max) {
+        throw new ApiError(400, `Valor fora do intervalo em ${k} (${min} a ${max}).`);
+      }
+      b.settings[k] = String(Math.round(n));
+    }
     const changed: string[] = [];
     for (const k of EDITABLE) {
       if (b.settings?.[k] === undefined) continue;
