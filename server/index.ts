@@ -15,6 +15,7 @@ import { driverRoutes } from './drivers.ts';
 import { adminRoutes } from './admin.ts';
 import { integrationRoutes } from './integrations.ts';
 import { sseConnect } from './notify.ts';
+import { appVersion, injectSwVersion, injectHtmlVersion } from './version.ts';
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const MIME: Record<string, string> = {
@@ -37,11 +38,16 @@ function serveStatic(res: http.ServerResponse, urlPath: string): boolean {
   if (!file.startsWith(PUBLIC_DIR)) return false; // path traversal
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return false;
   const ext = path.extname(file).toLowerCase();
+  let body: Buffer | string = fs.readFileSync(file);
+  // a versão do app vai dentro do sw.js e de cada página (ver server/version.ts)
+  if (rel === '/sw.js') body = injectSwVersion(body.toString('utf8'), appVersion(PUBLIC_DIR));
+  else if (ext === '.html') body = injectHtmlVersion(body.toString('utf8'), appVersion(PUBLIC_DIR));
   res.writeHead(200, {
     'Content-Type': MIME[ext] || 'application/octet-stream',
-    'Cache-Control': 'no-cache',
+    // HTML e sw.js: o navegador sempre confere com o servidor antes de usar
+    'Cache-Control': rel === '/sw.js' || ext === '.html' ? 'no-cache, must-revalidate' : 'no-cache',
   });
-  res.end(fs.readFileSync(file));
+  res.end(body);
   return true;
 }
 
@@ -97,6 +103,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (docMatch && req.method === 'GET') { serveSignedDoc(res, docMatch[1], url.searchParams); return; }
 
     const user = userFromToken(parseCookies(req)['amt_session']);
+
+    // versão publicada do app: a página aberta compara com a dela (sem login)
+    if (pathname === '/api/version' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ version: appVersion(PUBLIC_DIR) }));
+      return;
+    }
 
     // SSE — tempo real
     if (pathname === '/api/events' && req.method === 'GET') {

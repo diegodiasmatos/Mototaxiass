@@ -2,12 +2,18 @@
    Política deliberada:
    - API, SSE e documentos: SEMPRE rede, nunca cache (dados sensíveis e em tempo real).
    - HTML/CSS/JS: rede primeiro, cache como reserva → nunca serve código velho.
-   - Imagens e mapas: cache primeiro (economiza dados do celular do usuário). */
+   - Imagens e mapas: cache primeiro (economiza dados do celular do usuário).
+   Atualização: o servidor troca a linha VERSION abaixo pela versão publicada
+   (hash dos arquivos, server/version.ts). Mudou a versão, o navegador instala
+   este arquivo de novo, o cache do app é trocado e a página avisa/recarrega.
+   Login (cookie) e preferências (localStorage) não ficam no cache: não se perdem. */
 'use strict';
 
 const VERSION = 'amt-v4';
 const SHELL = `${VERSION}-shell`;
-const MEDIA = `${VERSION}-media`;
+// imagens e blocos do mapa: cache que sobrevive às versões (não baixa tudo de novo)
+const MEDIA = 'amt-media';
+const MEDIA_MAX = 600;
 
 const PRECACHE = [
   '/visao-geral', '/passageiro', '/motorista', '/empresa', '/admin',
@@ -19,8 +25,9 @@ const PRECACHE = [
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const cache = await caches.open(SHELL);
-    // falha em um item não pode abortar a instalação inteira
-    await Promise.allSettled(PRECACHE.map(u => cache.add(u)));
+    // falha em um item não pode abortar a instalação inteira;
+    // 'reload' pula o cache HTTP do aparelho: guarda o arquivo da versão nova
+    await Promise.allSettled(PRECACHE.map(u => cache.add(new Request(u, { cache: 'reload' }))));
     await self.skipWaiting();
   })());
 });
@@ -28,7 +35,8 @@ self.addEventListener('install', event => {
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.filter(k => !k.startsWith(VERSION)).map(k => caches.delete(k)));
+    // apaga só caches de versões antigas do app (o de imagens/mapa fica)
+    await Promise.all(keys.filter(k => k !== SHELL && k !== MEDIA).map(k => caches.delete(k)));
     await self.clients.claim();
   })());
 });
@@ -71,6 +79,12 @@ self.addEventListener('notificationclick', event => {
   })());
 });
 
+/** Mantém o cache de imagens/mapa abaixo do limite (apaga os mais antigos). */
+async function trimMedia(cache) {
+  const keys = await cache.keys();
+  for (let i = 0; i < keys.length - MEDIA_MAX; i++) await cache.delete(keys[i]);
+}
+
 function isApi(url) {
   return url.pathname.startsWith('/api/') || url.pathname.startsWith('/files/');
 }
@@ -111,19 +125,24 @@ self.addEventListener('fetch', event => {
   const isMedia = /\.(png|jpg|jpeg|svg|webp|ico)$/i.test(url.pathname)
     || url.hostname.endsWith('tile.openstreetmap.org');
   if (isMedia) {
+    const own = url.origin === self.location.origin;
     event.respondWith((async () => {
-      const hit = await caches.match(req);
-      if (hit) return hit;
-      try {
-        const fresh = await fetch(req);
-        if (fresh.ok && (url.origin === self.location.origin || fresh.type === 'cors')) {
-          const cache = await caches.open(MEDIA);
-          cache.put(req, fresh.clone());
+      const cache = await caches.open(MEDIA);
+      const hit = await cache.match(req);
+      const refresh = fetch(req).then(fresh => {
+        if (fresh.ok && (own || fresh.type === 'cors')) {
+          cache.put(req, fresh.clone()).then(() => trimMedia(cache)).catch(() => { });
         }
         return fresh;
-      } catch {
-        return caches.match('/img/icon.svg?v=2') || new Response('', { status: 504 });
+      });
+      if (hit) {
+        // imagem do próprio app (logo, ícones): mostra a guardada e confere em
+        // segundo plano, para um logo novo aparecer na próxima abertura
+        if (own) event.waitUntil(refresh.catch(() => { }));
+        return hit;
       }
+      try { return await refresh; }
+      catch { return (await caches.match('/img/icon.svg?v=2')) || new Response('', { status: 504 }); }
     })());
     return;
   }

@@ -823,3 +823,17 @@ input:focus, textarea:focus, select:focus { scroll-margin-bottom: 140px; }
 @media (max-width: 380px) {
   .brand-badge { display: none; }
 }
+
+/* aviso de versão nova do app */
+.update-banner {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  top: calc(10px + env(safe-area-inset-top, 0px)); z-index: 300;
+  display: flex; align-items: center; gap: 12px; padding: 9px 10px 9px 16px;
+  background: var(--card-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 999px; box-shadow: var(--shadow-lg); font-size: .87rem; max-width: calc(100% - 20px);
+  white-space: nowrap; width: max-content;
+}
+.update-banner button {
+  padding: 6px 14px; border-radius: 999px; font-weight: 700;
+  background: var(--accent); color: var(--accent-ink);
+}

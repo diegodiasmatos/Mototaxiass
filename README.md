@@ -565,6 +565,13 @@ tiles do mapa). **API, documentos e eventos em tempo real nunca são cacheados**
 dados sensíveis não ficam no aparelho e o app nunca roda com código velho.
 Sem internet, exibe a tela `/offline.html` em vez de erro do navegador.
 
+**Atualizações.** Quem já tem o app instalado recebe a versão nova sozinho ao
+abrir ou voltar para o app, sem perder login nem preferências. Durante uma
+corrida, ou com algo digitado, aparece o aviso "Nova versão disponível ·
+Atualizar" em vez de recarregar. O ícone da tela inicial é exceção: no Android
+o Chrome atualiza com o tempo; no iPhone só readicionando. Detalhes, o que
+atualiza e como publicar: [docs/ATUALIZACOES.md](docs/ATUALIZACOES.md).
+
 Para publicar nas lojas de verdade (APK/IPA), o caminho é empacotar o PWA com
 [Bubblewrap](https://github.com/GoogleChromeLabs/bubblewrap) (Android) ou
 Capacitor — fase 2, não é necessário para operar.

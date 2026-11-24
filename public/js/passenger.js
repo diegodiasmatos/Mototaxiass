@@ -16,6 +16,9 @@ const S = {
   serverSkew: 0,                     // diferença entre relógio do servidor e do aparelho
 };
 
+// atualização automática do app espera a corrida/turno acabar (common.js)
+window.vairoBusy = () => !!S.activeRide || !!S.pickingOnMap;
+
 init();
 
 async function init() {

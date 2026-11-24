@@ -1025,6 +1025,8 @@ async function secSettings() {
     </div>
     ${fares.map(fareRow).join('')}
     <button class="btn btn-primary" id="st-save" style="max-width:340px">Salvar configurações</button>
+    <p class="muted small mt">Versão do app publicada: <b>${escapeHtml(window.APP_VERSION || '—')}</b>.
+      Quem já tem o app instalado recebe a versão nova ao abrir ou voltar para o app.</p>
 
     <div class="card mt">
       <h3>🧮 Calculadora de corrida</h3>
