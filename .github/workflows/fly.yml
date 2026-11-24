@@ -1,25 +1,56 @@
-
 name: Fly Deploy
 
 on:
   push:
     branches:
       - main
+  # permite rodar de novo pela aba Actions → Fly Deploy → Run workflow
+  workflow_dispatch:
 
 jobs:
   deploy:
-    name: Deploy Assis Mototáxi
+    name: Deploy VAIRO
     runs-on: ubuntu-latest
     concurrency: deploy-group
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      APP: assis-mototaxi
 
     steps:
       - name: Baixar código
         uses: actions/checkout@v4
 
+      - name: Node 24 (o mesmo da imagem)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # nada vai para o ar se algum teste falhar
+      - name: Testes
+        run: npm test
+
       - name: Configurar Fly.io
         uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Publicar aplicativo
-        run: flyctl deploy --remote-only
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only -a "$APP"
+
+      # O deploy mantém desligada uma máquina que estava desligada. O app tem
+      # uma máquina só: se ela ficou parada (queda, reinícios esgotados), liga.
+      - name: Garantir que o app está ligado
+        run: |
+          flyctl machine list -a "$APP"
+          for id in $(flyctl machine list -a "$APP" --json | jq -r '.[] | select(.state != "started") | .id'); do
+            echo "Ligando a máquina $id"
+            flyctl machine start "$id" -a "$APP"
+          done
+          sleep 15
+          flyctl status -a "$APP"
+
+      - name: Conferir se o app responde
+        run: curl -fsS --retry 6 --retry-delay 10 --retry-all-errors "https://$APP.fly.dev/api/config" > /dev/null && echo "App no ar."
+
+      # sempre mostra os últimos registros do servidor (diagnóstico de quedas)
+      - name: Últimos registros do servidor
+        if: always()
+        run: flyctl logs -a "$APP" --no-tail 2>&1 | tail -200 || true
