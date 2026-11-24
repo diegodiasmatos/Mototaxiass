@@ -37,6 +37,12 @@ primary_region = 'gru'
     method = 'GET'
     path = '/api/config'
 
+# Se o processo cair, a Fly religa a máquina sempre (o padrão desiste
+# depois de algumas tentativas e deixa o app fora do ar).
+[[restart]]
+  policy = 'always'
+  processes = ['app']
+
 [[vm]]
   size = 'shared-cpu-1x'
   memory = '512mb'

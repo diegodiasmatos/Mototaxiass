@@ -1990,3 +1990,32 @@ test('diagnóstico de mapas: confere cada API do Google e explica chave restrita
     });
   } finally { await resetGoogle(); }
 });
+
+// ================= configurações (correção) =================
+
+test('configurações: confirmação, limite de dívida e precisão do GPS são gravados e validados', async () => {
+  const before = (await adm.req('GET', '/api/admin/settings')).data.settings;
+  try {
+    const ok = await adm.req('PUT', '/api/admin/settings', {
+      settings: { confirm_window_s: '8', driver_debt_limit_cents: '7500', gps_max_accuracy_m: '200' },
+    });
+    assert.equal(ok.status, 200, JSON.stringify(ok.data));
+    const s = (await adm.req('GET', '/api/admin/settings')).data.settings;
+    assert.equal(s.confirm_window_s, '8');
+    assert.equal(s.driver_debt_limit_cents, '7500');
+    assert.equal(s.gps_max_accuracy_m, '200');
+    // fora do intervalo: recusado sem gravar
+    for (const bad of [{ confirm_window_s: '0' }, { confirm_window_s: '500' },
+      { driver_debt_limit_cents: '-1' }, { gps_max_accuracy_m: 'abc' }]) {
+      assert.equal((await adm.req('PUT', '/api/admin/settings', { settings: bad })).status, 400, JSON.stringify(bad));
+    }
+    assert.equal((await adm.req('GET', '/api/admin/settings')).data.settings.confirm_window_s, '8');
+  } finally {
+    await adm.req('PUT', '/api/admin/settings', {
+      settings: {
+        confirm_window_s: before.confirm_window_s, driver_debt_limit_cents: before.driver_debt_limit_cents,
+        gps_max_accuracy_m: before.gps_max_accuracy_m,
+      },
+    });
+  }
+});

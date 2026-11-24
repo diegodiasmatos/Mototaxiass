@@ -147,7 +147,30 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
 export interface StartOptions { port?: number; dbPath?: string; quiet?: boolean }
 
+/**
+ * Rede de segurança do processo. Uma promessa rejeitada sem tratamento (ex.:
+ * falha de rede ao enviar um push) encerraria o Node inteiro — o app saía do
+ * ar para todo mundo. Agora o erro é registrado e o servidor continua.
+ * Exceção síncrona não tratada deixa o processo num estado incerto: registra
+ * e sai com erro, para a plataforma (Fly.io: restart "always") reiniciar.
+ */
+let _guardsInstalled = false;
+function installProcessGuards(): void {
+  if (_guardsInstalled) return;
+  _guardsInstalled = true;
+  process.on('unhandledRejection', (reason: any) => {
+    console.error(`[erro não tratado] ${reason?.name || 'Error'}: ${String(reason?.message || reason).slice(0, 300)}`
+      + (reason?.stack ? `\n${String(reason.stack).split('\n').slice(1, 6).join('\n')}` : ''));
+  });
+  process.on('uncaughtException', (err: any) => {
+    console.error(`[falha grave] ${err?.name || 'Error'}: ${String(err?.message || err).slice(0, 300)}`
+      + (err?.stack ? `\n${String(err.stack).split('\n').slice(1, 6).join('\n')}` : ''));
+    process.exit(1);
+  });
+}
+
 export async function start(opts: StartOptions = {}): Promise<{ server: http.Server; port: number; close: () => Promise<void> }> {
+  installProcessGuards();
   loadEnv();
   initDb(opts.dbPath);
   bootstrapAdmin();
