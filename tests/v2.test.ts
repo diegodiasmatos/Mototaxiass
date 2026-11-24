@@ -1215,7 +1215,7 @@ test('páginas: cada área tem seu endereço e a entrada mostra a Visão Geral',
   const home = await page('/');
   assert.equal(home.status, 200);
   assert.match(home.html, /data-area="visao"/);
-  assert.match(home.html, /Mobilidade, Entregas &amp; Lojas/);
+  assert.match(home.html, /<h1>A cidade no seu ritmo<\/h1>/);
   assert.equal((await page('/visao-geral')).html, home.html);
 
   // cada área abre a própria página, sem misturar as opções das outras
