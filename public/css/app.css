@@ -837,3 +837,16 @@ input:focus, textarea:focus, select:focus { scroll-margin-bottom: 140px; }
   padding: 6px 14px; border-radius: 999px; font-weight: 700;
   background: var(--accent); color: var(--accent-ink);
 }
+
+/* confirmação de embarque */
+.boarding-code {
+  margin: 10px auto 8px; text-align: center; font-size: 2.6rem; font-weight: 800;
+  letter-spacing: .4em; padding-left: .4em; font-variant-numeric: tabular-nums;
+  color: var(--accent-ink); background: var(--accent); border-radius: 16px; max-width: 260px;
+}
+.boarding-input { text-align: center; font-size: 1.8rem; letter-spacing: .4em; font-weight: 800; }
+details.rules { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font-size: .85rem; }
+details.rules summary { font-weight: 700; cursor: pointer; }
+details.rules ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.5; }
+details.rules li { margin-bottom: 6px; }
+.err-text { color: var(--red); font-weight: 600; }

@@ -9,6 +9,8 @@ import { splitCommission } from './fares.ts';
 import {
   getRide, rideEvent, etaSeconds, cancelRide, dispatchRide, assertCanTransition,
   rideViewForPassenger, BUSY_STATES, chargeAcceptedRide, ridePaymentOk, chargeAfterAccept,
+  ensureBoardingCode, boardingCodeMatches, openNoBoardingIssue,
+  BOARDING_MAX_ATTEMPTS, BOARDING_LOCK_MS,
 } from './rides.ts';
 import { notify, notifyAdmins, sseSend } from './notify.ts';
 import { driverBalance, getPaymentByRide } from './payments.ts';
@@ -99,6 +101,9 @@ function rideViewForDriver(r: any): any {
     completion_requested_at: r.completion_requested_at, auto_confirm_at: r.auto_confirm_at,
     confirmed_at: r.confirmed_at, confirmed_by: r.confirmed_by,
     pickup_updated_at: r.pickup_updated_at,
+    // o código NÃO vem para cá: o mototaxista precisa pedir ao passageiro
+    boarding_confirmed_at: r.boarding_confirmed_at ?? null,
+    boarding_locked_until: r.boarding_locked_until > now() ? r.boarding_locked_until : null,
     paid_upfront: r.payment_method !== 'dinheiro',
     collect_cash_cents: r.payment_method === 'dinheiro' ? r.price_cents : 0,
     passenger: { name: p?.name?.split(' ')[0] ?? 'Passageiro', photo: p?.photo ?? null },
@@ -259,6 +264,7 @@ export const driverRoutes: Route[] = [
       throw new ApiError(409, 'Esta corrida já foi aceita por outro mototaxista.');
     }
     const r = getRide(params.id);
+    ensureBoardingCode(r);           // o passageiro já vê o código enquanto espera
     rideEvent(r.id, 'accepted', user!.id, undefined, 'requested', 'accepted');
     notify(r.passenger_id, 'ride_accepted', '🏍️ Mototaxista a caminho!',
       { body: `${user!.name.split(' ')[0]} aceitou sua corrida.`, rideId: r.id, url: '/' });
@@ -288,21 +294,65 @@ export const driverRoutes: Route[] = [
     json(res, 200, { ok: true });
   }),
 
-  route('POST /api/driver/rides/:id/start', 'driver', ({ res, user, params }) => {
+  /**
+   * Confirmação de embarque. Depois de "Cheguei", o mototaxista digita o
+   * código de 4 dígitos que aparece no app do passageiro. Só com o código
+   * certo a viagem começa; fica gravado quando, quem e a que distância do
+   * ponto de embarque. Erros seguidos geram uma espera curta e o passageiro
+   * é avisado.
+   */
+  route('POST /api/driver/rides/:id/start', 'driver', async ({ req, res, user, params }) => {
     const r = getRide(params.id);
     if (r.driver_id !== user!.id) throw new ApiError(403, 'Esta corrida não é sua.');
     assertCanTransition(r.status, 'in_progress');
+    if (!r.arrived_at) {
+      throw new ApiError(409, 'Toque em "Cheguei ao passageiro" antes de confirmar o embarque.');
+    }
     // dinheiro garantido: a corrida não começa sem o pagamento confirmado
     if (!ridePaymentOk(r)) {
       throw new ApiError(402, 'O pagamento do passageiro ainda não foi confirmado.');
     }
-    const result = db.prepare(`UPDATE rides SET status = 'in_progress', started_at = ?
-      WHERE id = ? AND status = 'accepted'`).run(now(), r.id);
+    const t = now();
+    if (r.boarding_locked_until && r.boarding_locked_until > t) {
+      const s = Math.ceil((r.boarding_locked_until - t) / 1000);
+      throw new ApiError(429, `Muitos códigos errados. Aguarde ${s} s e peça ao passageiro para mostrar o código no app.`);
+    }
+    const b = await readBody(req);
+    const typed = String(b.code ?? '').replace(/\D/g, '');
+    if (!typed) throw new ApiError(400, 'Digite o código de embarque que aparece no app do passageiro.');
+    const expected = ensureBoardingCode(r)!;
+
+    if (!boardingCodeMatches(expected, typed)) {
+      const attempts = (r.boarding_attempts || 0) + 1;
+      const lock = attempts >= BOARDING_MAX_ATTEMPTS;
+      db.prepare(`UPDATE rides SET boarding_attempts = ?, boarding_locked_until = ? WHERE id = ?`)
+        .run(lock ? 0 : attempts, lock ? t + BOARDING_LOCK_MS : null, r.id);
+      rideEvent(r.id, 'boarding_code_wrong', user!.id, `tentativa ${attempts}${lock ? ' — espera de 2 min' : ''}`);
+      if (lock) {
+        notify(r.passenger_id, 'boarding_code_wrong', 'Código de embarque digitado errado',
+          { body: 'O mototaxista errou o código várias vezes. Só mostre o código quando estiver com ele.', rideId: r.id });
+        notifyRideUpdate(getRide(r.id));
+        throw new ApiError(429, 'Código incorreto. Muitas tentativas: aguarde 2 minutos e confira o código no app do passageiro.');
+      }
+      const left = BOARDING_MAX_ATTEMPTS - attempts;
+      throw new ApiError(422, `Código incorreto. Confira o código no app do passageiro (${left} tentativa${left > 1 ? 's' : ''} antes de uma espera).`);
+    }
+
+    // distância do mototaxista até o ponto de embarque (registro para análise)
+    const d = db.prepare('SELECT last_lat, last_lng FROM drivers WHERE user_id = ?').get(user!.id) as any;
+    const dist = d?.last_lat != null
+      ? Math.round(haversineM(d.last_lat, d.last_lng, r.origin_lat, r.origin_lng)) : null;
+    const result = db.prepare(`UPDATE rides SET status = 'in_progress', started_at = ?,
+        boarding_confirmed_at = ?, boarding_confirmed_by = ?, boarding_method = 'codigo',
+        boarding_dist_m = ?, boarding_code = NULL, boarding_attempts = 0, boarding_locked_until = NULL
+      WHERE id = ? AND status = 'accepted'`).run(t, t, user!.id, dist, r.id);
     if (result.changes !== 1) throw new ApiError(409, 'A corrida mudou de estado.');
-    rideEvent(r.id, 'started', user!.id, undefined, 'accepted', 'in_progress');
-    notify(r.passenger_id, 'ride_started', 'Corrida iniciada', { body: 'Boa viagem!', rideId: r.id });
+    rideEvent(r.id, 'boarding_confirmed', user!.id,
+      `código conferido${dist != null ? ` · mototaxista a ${dist} m do embarque` : ''}`, 'accepted', 'in_progress');
+    notify(r.passenger_id, 'ride_started', 'Embarque confirmado',
+      { body: 'Boa viagem! Se você não embarcou, toque em "Não embarquei" no app.', rideId: r.id });
     notifyRideUpdate(getRide(r.id));
-    json(res, 200, { ok: true });
+    json(res, 200, { ok: true, boarding_confirmed_at: t });
   }),
 
   /**
@@ -324,6 +374,18 @@ export const driverRoutes: Route[] = [
     if (result.changes !== 1) throw new ApiError(409, 'A corrida mudou de estado.');
 
     rideEvent(r.id, 'completion_requested', user!.id, undefined, 'in_progress', 'awaiting_confirmation');
+
+    // O passageiro contestou o embarque durante a viagem: a conclusão não é
+    // confirmada sozinha; vai para análise da central (pagamento retido até lá).
+    if (openNoBoardingIssue(r.id)) {
+      db.prepare(`UPDATE rides SET status = 'disputed' WHERE id = ? AND status = 'awaiting_confirmation'`).run(r.id);
+      rideEvent(r.id, 'disputed', undefined, 'contestação de embarque em aberto', 'awaiting_confirmation', 'disputed');
+      notify(r.passenger_id, 'issue', 'Sua contestação está em análise',
+        { body: 'A corrida foi encerrada pelo mototaxista e o pagamento fica retido até a análise.', rideId: r.id });
+      notifyRideUpdate(getRide(r.id));
+      json(res, 200, { ride: rideViewForDriver(getRide(r.id)), disputed: true, server_time: t });
+      return;
+    }
     notify(r.passenger_id, 'confirm_required', 'Confirme a chegada ao destino',
       {
         body: 'Seu mototaxista informou que a corrida foi concluída.',
@@ -348,7 +410,8 @@ export const driverRoutes: Route[] = [
     if (r.status === 'accepted') {
       // devolve ao estado requested e re-despacha para outros parceiros
       const result = db.prepare(`UPDATE rides SET status = 'requested', driver_id = NULL,
-        accepted_at = NULL, arrived_at = NULL WHERE id = ? AND status = 'accepted'`).run(r.id);
+        accepted_at = NULL, arrived_at = NULL, boarding_code = NULL, boarding_attempts = 0,
+        boarding_locked_until = NULL WHERE id = ? AND status = 'accepted'`).run(r.id);
       if (result.changes !== 1) throw new ApiError(409, 'A corrida mudou de estado.');
       rideEvent(r.id, 'driver_gave_up', user!.id, reason, 'accepted', 'requested');
       notify(r.passenger_id, 'ride_redispatch', 'Procurando outro mototaxista…',

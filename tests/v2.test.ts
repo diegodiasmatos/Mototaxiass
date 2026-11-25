@@ -67,11 +67,22 @@ async function newRide(method: 'pix' | 'dinheiro' | 'cartao' = 'pix'): Promise<s
   return rid;
 }
 
-/** Leva a corrida até "aguardando confirmação". */
-async function driveToCompletion(rid: string): Promise<void> {
+/** Código de embarque que o app do passageiro mostra. */
+async function boardingCode(rid: string): Promise<string> {
+  return (await pax.req('GET', `/api/rides/${rid}`)).data.ride.boarding_code;
+}
+
+/** Aceita, chega e confirma o embarque com o código do passageiro. */
+async function driveToBoarding(rid: string): Promise<void> {
   assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/accept`)).status, 200);
   await drv.req('POST', `/api/driver/rides/${rid}/arrived`);
-  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/start`)).status, 200);
+  const code = await boardingCode(rid);
+  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/start`, { code })).status, 200);
+}
+
+/** Leva a corrida até "aguardando confirmação". */
+async function driveToCompletion(rid: string): Promise<void> {
+  await driveToBoarding(rid);
   assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/complete`)).status, 200);
 }
 
@@ -263,6 +274,172 @@ test('disputa resolvida com estorno cancela a corrida e devolve o valor', async 
     `SELECT COUNT(*) c FROM financial_transactions WHERE ride_id = ? AND kind = 'comissao'`)
     .get(rid) as any;
   assert.equal(com.c, 0);
+});
+
+// ================= confirmação de embarque =================
+
+test('embarque: código certo confirma e registra quando, quem e onde', async () => {
+  const rid = await newRide('pix');
+  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/accept`)).status, 200);
+
+  // o passageiro vê o código; o mototaxista não recebe o código em lugar nenhum
+  const code = await boardingCode(rid);
+  assert.match(code, /^\d{4}$/);
+  const me = await drv.req('GET', '/api/driver/me');
+  assert.ok(!JSON.stringify(me.data).includes(`"boarding_code"`));
+
+  // antes de "Cheguei" não dá para confirmar
+  const early = await drv.req('POST', `/api/driver/rides/${rid}/start`, { code });
+  assert.equal(early.status, 409);
+  assert.match(early.data.error, /Cheguei/);
+  await drv.req('POST', `/api/driver/rides/${rid}/arrived`);
+
+  // sem código
+  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/start`)).status, 400);
+
+  // antes do embarque o passageiro ainda pode cancelar (regra antiga preservada)
+  const cancelRules = db.prepare(`SELECT value FROM app_settings WHERE key = 'passenger_cancel_states'`).get() as any;
+  assert.match(cancelRules.value, /accepted/);
+
+  const ok = await drv.req('POST', `/api/driver/rides/${rid}/start`, { code });
+  assert.equal(ok.status, 200);
+  const row = db.prepare(`SELECT status, boarding_confirmed_at, boarding_confirmed_by, boarding_method,
+    boarding_dist_m, boarding_code FROM rides WHERE id = ?`).get(rid) as any;
+  assert.equal(row.status, 'in_progress');
+  assert.ok(row.boarding_confirmed_at > 0);
+  assert.equal(row.boarding_confirmed_by, driverId);
+  assert.equal(row.boarding_method, 'codigo');
+  assert.equal(typeof row.boarding_dist_m, 'number');
+  assert.equal(row.boarding_code, null);          // código usado é apagado
+  const ev = db.prepare(`SELECT * FROM ride_events WHERE ride_id = ? AND type = 'boarding_confirmed'`).get(rid) as any;
+  assert.equal(ev.actor_id, driverId);
+
+  // o passageiro vê a confirmação e não consegue mais cancelar pelo app
+  const view = (await pax.req('GET', `/api/rides/${rid}`)).data.ride;
+  assert.equal(view.boarding_confirmed_at, row.boarding_confirmed_at);
+  assert.equal(view.boarding_code, null);
+  const cancel = await pax.req('POST', `/api/rides/${rid}/cancel`, {});
+  assert.equal(cancel.status, 409);
+  assert.match(cancel.data.error, /suporte/);
+  // nem se a central liberar o cancelamento em andamento nas configurações
+  db.prepare(`UPDATE app_settings SET value = 'requested,accepted,in_progress' WHERE key = 'passenger_cancel_states'`).run();
+  try {
+    assert.equal((await pax.req('POST', `/api/rides/${rid}/cancel`, {})).status, 409);
+  } finally {
+    db.prepare(`UPDATE app_settings SET value = ? WHERE key = 'passenger_cancel_states'`).run(cancelRules.value);
+  }
+
+  await drv.req('POST', `/api/driver/rides/${rid}/complete`);
+  await pax.req('POST', `/api/rides/${rid}/confirm`);
+});
+
+test('embarque: código errado é recusado e muitos erros dão uma espera', async () => {
+  const rid = await newRide('pix');
+  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/accept`)).status, 200);
+  await drv.req('POST', `/api/driver/rides/${rid}/arrived`);
+  const code = await boardingCode(rid);
+  const wrong = code === '0000' ? '1111' : '0000';
+
+  for (let i = 1; i <= 4; i++) {
+    const r = await drv.req('POST', `/api/driver/rides/${rid}/start`, { code: wrong });
+    assert.equal(r.status, 422);
+    assert.match(r.data.error, /Código incorreto/);
+  }
+  // 5º erro: espera, e o passageiro é avisado
+  const locked = await drv.req('POST', `/api/driver/rides/${rid}/start`, { code: wrong });
+  assert.equal(locked.status, 429);
+  const notes = await pax.req('GET', '/api/notifications');
+  assert.ok(notes.data.notifications.some((n: any) => n.kind === 'boarding_code_wrong' && n.ride_id === rid
+    || n.kind === 'boarding_code_wrong'));
+  // durante a espera nem o código certo passa
+  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/start`, { code })).status, 429);
+  assert.equal((db.prepare('SELECT status FROM rides WHERE id = ?').get(rid) as any).status, 'accepted');
+  assert.equal((db.prepare(`SELECT COUNT(*) n FROM ride_events WHERE ride_id = ? AND type = 'boarding_code_wrong'`)
+    .get(rid) as any).n, 5);
+
+  // passada a espera, o código certo funciona
+  db.prepare('UPDATE rides SET boarding_locked_until = ? WHERE id = ?').run(Date.now() - 1, rid);
+  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/start`, { code })).status, 200);
+  await drv.req('POST', `/api/driver/rides/${rid}/complete`);
+  await pax.req('POST', `/api/rides/${rid}/confirm`);
+});
+
+test('embarque: desistência do mototaxista gera código novo; cancelar antes do embarque continua igual', async () => {
+  const rid = await newRide('pix');
+  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/accept`)).status, 200);
+  await boardingCode(rid);
+  db.prepare('UPDATE rides SET boarding_attempts = 3 WHERE id = ?').run(rid);
+  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/cancel`, { reason: 'pneu furou' })).status, 200);
+  const back = db.prepare('SELECT status, boarding_code, boarding_attempts FROM rides WHERE id = ?').get(rid) as any;
+  assert.equal(back.status, 'requested');
+  assert.equal(back.boarding_code, null);
+  assert.equal(back.boarding_attempts, 0);
+  assert.equal((await pax.req('GET', `/api/rides/${rid}`)).data.ride.boarding_code, null);
+
+  // aceita de novo: código novo; o passageiro ainda cancela sem custo
+  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/accept`)).status, 200);
+  assert.match(await boardingCode(rid), /^\d{4}$/);
+  assert.equal((await pax.req('POST', `/api/rides/${rid}/cancel`, { reason: 'desisti' })).status, 200);
+  const det = await adm.req('GET', `/api/admin/rides/${rid}`);
+  assert.equal(det.data.ride.status, 'cancelled');
+  assert.equal(det.data.payment.status, 'estornado');
+});
+
+test('embarque: "Não embarquei" fica registrado e vai para análise, sem bloquear ninguém', async () => {
+  const rid = await newRide('pix');
+  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/accept`)).status, 200);
+
+  // antes do embarque, "não embarquei" não faz sentido (o caminho é cancelar)
+  assert.equal((await pax.req('POST', `/api/rides/${rid}/issue`, { kind: 'nao_embarquei' })).status, 409);
+
+  await drv.req('POST', `/api/driver/rides/${rid}/arrived`);
+  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/start`, { code: await boardingCode(rid) })).status, 200);
+
+  const c = await pax.req('POST', `/api/rides/${rid}/issue`,
+    { kind: 'nao_embarquei', description: 'Passei o código por mensagem e ele foi embora' });
+  assert.equal(c.status, 201);
+  // repetir não duplica
+  const again = await pax.req('POST', `/api/rides/${rid}/issue`, { kind: 'nao_embarquei' });
+  assert.equal(again.status, 200);
+  assert.equal(again.data.already, true);
+  assert.equal((db.prepare(`SELECT COUNT(*) n FROM ride_issues WHERE ride_id = ? AND kind = 'nao_embarquei'`)
+    .get(rid) as any).n, 1);
+
+  // o mototaxista encerra: a corrida NÃO é confirmada sozinha, vai para análise
+  const done = await drv.req('POST', `/api/driver/rides/${rid}/complete`);
+  assert.equal(done.status, 200);
+  assert.equal(done.data.disputed, true);
+  await new Promise(r => setTimeout(r, 1500));     // a varredura automática não mexe nela
+  assert.equal((db.prepare('SELECT status FROM rides WHERE id = ?').get(rid) as any).status, 'disputed');
+
+  // ninguém foi bloqueado automaticamente
+  assert.equal((db.prepare('SELECT blocked FROM users WHERE id = ?').get(driverId) as any).blocked, 0);
+  const paxId = (db.prepare('SELECT passenger_id FROM rides WHERE id = ?').get(rid) as any).passenger_id;
+  assert.equal((db.prepare('SELECT blocked FROM users WHERE id = ?').get(paxId) as any).blocked, 0);
+
+  // a central vê o registro do embarque e pode estornar
+  const list = await adm.req('GET', '/api/admin/issues?status=aberta');
+  const issue = list.data.issues.find((i: any) => i.ride_id === rid);
+  assert.equal(issue.kind, 'nao_embarquei');
+  assert.ok(issue.boarding_confirmed_at > 0);
+  assert.equal(issue.boarding_method, 'codigo');
+  assert.ok(issue.boarding_confirmed_by_name);
+  assert.equal((await adm.req('POST', `/api/admin/issues/${issue.id}/resolve`,
+    { action: 'estornar', note: 'GPS mostra o mototaxista parado no embarque' })).status, 200);
+  const det = await adm.req('GET', `/api/admin/rides/${rid}`);
+  assert.equal(det.data.ride.status, 'cancelled');
+  assert.equal(det.data.payment.status, 'estornado');
+});
+
+test('embarque: contestação depois da corrida concluída também é registrada', async () => {
+  const rid = await newRide('pix');
+  await driveToCompletion(rid);
+  await pax.req('POST', `/api/rides/${rid}/confirm`);
+  assert.equal((db.prepare('SELECT status FROM rides WHERE id = ?').get(rid) as any).status, 'completed');
+  const c = await pax.req('POST', `/api/rides/${rid}/issue`, { kind: 'nao_embarquei' });
+  assert.equal(c.status, 201);
+  const row = db.prepare(`SELECT status FROM ride_issues WHERE id = ?`).get(c.data.id) as any;
+  assert.equal(row.status, 'aberta');
 });
 
 // ================= GPS =================
@@ -718,7 +895,8 @@ test('cobrança após o aceite: corrida inicia só com pagamento confirmado', as
 
     // pago → inicia normalmente
     await pax.req('POST', `/api/rides/${rid}/payment/test-approve`);
-    assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/start`)).status, 200);
+    assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/start`,
+      { code: await boardingCode(rid) })).status, 200);
 
     await drv.req('POST', `/api/driver/rides/${rid}/complete`);
     await pax.req('POST', `/api/rides/${rid}/confirm`);

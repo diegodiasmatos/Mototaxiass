@@ -563,7 +563,9 @@ function renderDrive() {
   if (r.status === 'accepted' && !r.arrived_at) {
     actions += `<button class="btn btn-primary btn-lg" id="act-arrived">Cheguei ao passageiro 📍</button>`;
   } else if (r.status === 'accepted') {
-    actions += `<button class="btn btn-primary btn-lg" id="act-start">Iniciar corrida ▶</button>`;
+    actions += `<button class="btn btn-primary btn-lg" id="act-start">Confirmar embarque 🔑</button>
+      <p class="muted small mt">Peça ao passageiro o código de 4 dígitos que aparece no app dele.
+      A viagem só começa com o código certo.</p>`;
   } else if (r.status === 'in_progress') {
     actions += `<button class="btn btn-green btn-lg" id="act-complete">Finalizar corrida ✓</button>`;
   } else if (r.status === 'awaiting_confirmation') {
@@ -579,11 +581,7 @@ function renderDrive() {
 
   $('#act-arrived') && ($('#act-arrived').onclick = () =>
     withLoading($('#act-arrived'), () => rideAction('arrived')));
-  $('#act-start') && ($('#act-start').onclick = async () => {
-    if (await confirmModal('Iniciar corrida?', 'O passageiro embarcou na moto?', 'Sim, iniciar')) {
-      await withLoading($('#act-start'), () => rideAction('start'));
-    }
-  });
+  $('#act-start') && ($('#act-start').onclick = boardingFlow);
   $('#act-complete') && ($('#act-complete').onclick = completeFlow);
   $('#act-cancel') && ($('#act-cancel').onclick = cancelFlow);
 
@@ -591,6 +589,46 @@ function renderDrive() {
   $('#dchat-input').onkeydown = e => { if (e.key === 'Enter') sendDChat(); };
   loadDChat();
   renderDriveMap();
+}
+
+/**
+ * Confirmação de embarque: o mototaxista digita o código que aparece no app
+ * do passageiro. Código errado mostra o erro e deixa tentar de novo; o
+ * servidor conta os erros e impõe uma espera depois de vários.
+ */
+function boardingFlow() {
+  const r = S.activeRide;
+  const m = openModal(`
+    <h3>Confirmar embarque</h3>
+    <p class="muted mb">Com o passageiro <b>junto da moto</b>, peça o código de 4 dígitos que aparece no app dele.</p>
+    <div class="field"><input class="input boarding-input" id="bd-code" inputmode="numeric" autocomplete="one-time-code"
+      pattern="[0-9]*" maxlength="4" placeholder="0000" aria-label="Código de embarque"></div>
+    <p class="err-text small" id="bd-err" hidden></p>
+    <button class="btn btn-primary btn-lg" data-ok>Confirmar e iniciar viagem ▶</button>
+    <p class="muted small mt">Só confirme com o passageiro presente. Data, hora e local da confirmação ficam registrados.</p>`);
+  const input = $('#bd-code', m), err = $('#bd-err', m), ok = $('[data-ok]', m);
+  const showErr = msg => { err.textContent = msg; err.hidden = false; };
+  if (r.boarding_locked_until && r.boarding_locked_until > Date.now()) {
+    showErr('Muitos códigos errados. Aguarde um pouco e confira o código no app do passageiro.');
+  }
+  input.focus();
+  input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, '').slice(0, 4); err.hidden = true; });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') ok.click(); });
+  ok.onclick = async () => {
+    if (input.value.length !== 4) { showErr('Digite os 4 dígitos do código.'); return; }
+    ok.disabled = true;
+    try {
+      await api(`/api/driver/rides/${r.id}/start`, { method: 'POST', body: { code: input.value } });
+      m.close();
+      toast('Embarque confirmado. Boa viagem!', 'ok');
+      await refreshActive();
+    } catch (e) {
+      showErr(e.message);
+      input.value = '';
+      input.focus();
+      if (e.status === 409 || e.status === 402) await refreshActive();
+    } finally { ok.disabled = false; }
+  };
 }
 
 async function rideAction(action, body = {}) {

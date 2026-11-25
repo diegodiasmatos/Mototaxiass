@@ -695,11 +695,14 @@ export const adminRoutes: Route[] = [
   route('GET /api/admin/issues', 'admin', ({ res, query }) => {
     const status = query.get('status');
     const rows = db.prepare(`SELECT i.*, u.name user_name, r.origin_text, r.dest_text,
-        r.price_cents, r.status ride_status, du.name driver_name
+        r.price_cents, r.status ride_status, du.name driver_name,
+        r.boarding_confirmed_at, r.boarding_method, r.boarding_dist_m, r.arrived_at,
+        bu.name boarding_confirmed_by_name
       FROM ride_issues i
       JOIN users u ON u.id = i.user_id
       JOIN rides r ON r.id = i.ride_id
       LEFT JOIN users du ON du.id = r.driver_id
+      LEFT JOIN users bu ON bu.id = r.boarding_confirmed_by
       ${status ? 'WHERE i.status = ?' : ''}
       ORDER BY i.created_at DESC LIMIT 200`).all(...(status ? [status] : []));
     json(res, 200, { issues: rows });

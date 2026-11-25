@@ -908,6 +908,8 @@ function renderRide() {
   setGpsState(S.gps.state, S.gps.state === 'ok' ? `GPS ativo (±${Math.round(S.gps.accuracy || 0)} m)`
     : S.gps.state === 'weak' ? 'Sinal fraco' : 'GPS indisponível');
 
+  renderBoarding(r);
+
   $('#ride-chat').hidden = !['accepted', 'in_progress'].includes(r.status);
   if (!$('#ride-chat').hidden) loadChat();
   $('#btn-cancel-ride').hidden = !['pending_payment', 'requested', 'accepted'].includes(r.status);
@@ -916,6 +918,102 @@ function renderRide() {
   if (r.status === 'pending_payment') startPaymentPolling(); else stopPaymentPolling();
 
   renderRideMap();
+}
+
+/* ---------- confirmação de embarque ---------- */
+/**
+ * Antes do embarque: o código que o passageiro mostra ao mototaxista e as
+ * regras de cancelamento e cobrança. Depois: quando o embarque foi
+ * confirmado, que não dá mais para cancelar pelo app, e o caminho para
+ * pedir ajuda ou dizer que não embarcou.
+ */
+function renderBoarding(r) {
+  const box = $('#ride-boarding');
+  const PAY_HOW = r.payment_method === 'dinheiro'
+    ? `pago em dinheiro ao mototaxista`
+    : `já pago por ${PAY_PT[r.payment_method]}`;
+
+  if (r.status === 'accepted' && r.boarding_code) {
+    box.hidden = false;
+    box.innerHTML = `
+      <h3>🔑 Código de embarque</h3>
+      <div class="boarding-code" aria-label="Código ${r.boarding_code.split('').join(' ')}">${escapeHtml(r.boarding_code)}</div>
+      <p class="muted small center">Mostre ou diga este código ao mototaxista <b>só quando estiver com ele, junto da moto</b>.
+        É com ele que o mototaxista confirma que você embarcou.</p>
+      ${r.boarding_locked_until ? `<p class="warn-text small mt">⚠️ O código foi digitado errado várias vezes.
+        Confira se o mototaxista é mesmo o da placa ${escapeHtml(r.driver?.moto?.plate || 'informada')}.</p>` : ''}
+      <details class="rules mt" open>
+        <summary>Regras de cancelamento e cobrança</summary>
+        <ul>
+          <li><b>Antes do embarque</b> você pode cancelar pelo app, sem custo. O que já foi pago é estornado.</li>
+          <li>Se o mototaxista desistir antes do embarque, procuramos outro, sem custo para você.</li>
+          <li><b>Quando o mototaxista digita o seu código</b>, o embarque é confirmado e a viagem começa.
+            A partir daí a corrida <b>não pode mais ser cancelada pelo app</b> e vale o valor combinado:
+            <b>${fmt.money(r.price_cents)}</b>, ${PAY_HOW}.</li>
+          <li>Se houver algum problema depois do embarque, ou se ele foi confirmado sem você ter embarcado,
+            toque em <b>"Não embarquei"</b> ou fale com o suporte. Cada caso é analisado pela equipe
+            e, se for o caso, o valor é devolvido.</li>
+        </ul>
+      </details>`;
+    return;
+  }
+
+  if (r.boarding_confirmed_at && ['in_progress', 'awaiting_confirmation', 'disputed'].includes(r.status)) {
+    const contested = r.issue?.kind === 'nao_embarquei' && ['aberta', 'em_analise'].includes(r.issue.status);
+    box.hidden = false;
+    box.innerHTML = `
+      <h3>✅ Embarque confirmado</h3>
+      <p class="muted small">Confirmado pelo mototaxista com o seu código em
+        <b>${fmt.date(r.boarding_confirmed_at)} às ${fmt.time(r.boarding_confirmed_at)}</b>.</p>
+      <p class="small mt">A corrida não pode mais ser cancelada pelo app. Para pedir ajuda ou
+        contestar a cobrança, fale com o suporte.</p>
+      ${contested
+        ? `<p class="small mt"><span class="pill yellow">em análise</span> Você informou que não embarcou.
+            A equipe vai analisar o caso e entrar em contato.</p>`
+        : ''}
+      <div class="row mt" style="gap:8px;flex-wrap:wrap">
+        <button class="btn btn-outline btn-sm" id="btn-board-support">🛟 Falar com o suporte</button>
+        ${contested ? '' : '<button class="btn btn-outline btn-sm" id="btn-not-boarded">Não embarquei</button>'}
+      </div>`;
+    $('#btn-board-support').onclick = () => openSupportAbout(r);
+    const nb = $('#btn-not-boarded');
+    if (nb) nb.onclick = () => openNotBoardedModal(r);
+    return;
+  }
+  box.hidden = true;
+}
+
+/** Abre o atendimento já com o assunto da corrida. */
+function openSupportAbout(r) {
+  showScreen('screen-profile');
+  const f = $('#form-support');
+  if (!f) return;
+  f.subject.value = `Corrida de ${fmt.date(r.requested_at)} — ${r.origin.text}`.slice(0, 150);
+  f.subject.dataset.typed = '1';
+  f.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  f.body.focus();
+}
+
+/** "Não embarquei": registra para análise. Não acusa ninguém nem decide nada sozinho. */
+function openNotBoardedModal(r) {
+  const m = openModal(`
+    <h3>Não embarquei</h3>
+    <p class="muted mb">O embarque desta corrida foi confirmado com o seu código, mas você diz que não embarcou.
+      Vamos registrar para a equipe analisar o horário, o local e o trajeto da corrida.
+      Isso não acusa ninguém. Se a análise mostrar que você tem razão, o valor é devolvido.</p>
+    <div class="field"><textarea class="input" id="nb-desc" maxlength="1000"
+      placeholder="Conte o que aconteceu (ex.: passei o código por mensagem, o mototaxista foi embora)"></textarea></div>
+    <button class="btn btn-danger" data-send>Enviar para análise</button>
+    <button class="btn btn-outline mt" data-cancel>Voltar</button>`);
+  $('[data-cancel]', m).onclick = () => m.close();
+  $('[data-send]', m).onclick = () => withLoading($('[data-send]', m), async () => {
+    await api(`/api/rides/${r.id}/issue`, {
+      method: 'POST', body: { kind: 'nao_embarquei', description: $('#nb-desc', m).value },
+    });
+    m.close();
+    toast('Registrado. A equipe vai analisar e falar com você.', 'ok');
+    await refreshActiveRide();
+  });
 }
 
 /* ---------- pagamento ---------- */
@@ -1018,6 +1116,7 @@ function closeConfirmModal() {
 
 function openIssueModal(r) {
   const KINDS = [
+    ...(r.boarding_confirmed_at ? [['nao_embarquei', 'Não embarquei']] : []),
     ['nao_cheguei_ao_destino', 'Não cheguei ao destino'],
     ['corrida_nao_realizada', 'A corrida não aconteceu'],
     ['cobranca_incorreta', 'Valor cobrado errado'],

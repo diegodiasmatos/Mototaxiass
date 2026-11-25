@@ -286,7 +286,11 @@ test('corrida: solicitação, aceite atômico, fluxo até conclusão', async () 
   assert.equal((await winner.req('POST', `/api/driver/rides/${rideId}/arrived`)).status, 200);
   // concluir antes de iniciar é inválido
   assert.equal((await winner.req('POST', `/api/driver/rides/${rideId}/complete`)).status, 409);
-  assert.equal((await winner.req('POST', `/api/driver/rides/${rideId}/start`)).status, 200);
+  // embarque: o código só aparece para o passageiro
+  const code = (await passenger.req('GET', `/api/rides/${rideId}`)).data.ride.boarding_code;
+  assert.match(code, /^\d{4}$/);
+  assert.equal((await winner.req('GET', '/api/driver/me')).data.active_ride?.boarding_code, undefined);
+  assert.equal((await winner.req('POST', `/api/driver/rides/${rideId}/start`, { code })).status, 200);
   // passageiro não cancela corrida em andamento
   assert.equal((await passenger.req('POST', `/api/rides/${rideId}/cancel`, {})).status, 409);
 

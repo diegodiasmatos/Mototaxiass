@@ -492,13 +492,16 @@ async function secIssues(filter = '') {
       ${issues.length ? issues.map(i => `
         <div class="list-item">
           <div class="li-main">
-            <div class="li-title">${escapeHtml(i.kind)}
+            <div class="li-title">${escapeHtml(i.kind === 'nao_embarquei' ? 'Não embarquei (contestação)' : i.kind)}
               <span class="pill ${i.status === 'aberta' ? 'red' : i.status === 'resolvida' ? 'green' : 'yellow'}">${i.status}</span>
               <span class="pill gray">${STATUS_PT[i.ride_status] || i.ride_status}</span></div>
             <div class="li-sub">
               ${escapeHtml(i.user_name)} · ${fmt.dt(i.created_at)}<br>
               ${escapeHtml(i.origin_text)} → ${escapeHtml(i.dest_text)} · ${fmt.money(i.price_cents)}
               · mototaxista: ${escapeHtml(i.driver_name || '—')}<br>
+              ${i.boarding_confirmed_at ? `Embarque confirmado ${i.boarding_method === 'codigo' ? 'com o código do passageiro' : ''}
+                em ${fmt.dt(i.boarding_confirmed_at)} por ${escapeHtml(i.boarding_confirmed_by_name || '—')}
+                ${i.boarding_dist_m != null ? `· mototaxista a ${i.boarding_dist_m} m do ponto de embarque` : '· sem GPS do mototaxista'}<br>` : ''}
               ${i.description ? `"${escapeHtml(i.description)}"` : '<i>sem descrição</i>'}
               ${i.resolution ? `<br><b>Resolução:</b> ${escapeHtml(i.resolution)}` : ''}
             </div>
