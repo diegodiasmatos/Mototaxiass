@@ -42,7 +42,8 @@ Atendemos Assis Chateaubriand e região próxima.
 ## Categoria e contato
 
 - Categoria sugerida: **Viagens e local** (alternativa: Mapas e navegação).
-- E-mail de contato (obrigatório e público): **[seu e-mail de suporte]**.
+- E-mail de contato (obrigatório e público): **vairoapp1@gmail.com**.
+- Telefone (opcional na loja): +55 44 98828-5423.
 - Site: `https://assis-mototaxi.fly.dev`.
 - Política de privacidade: `https://assis-mototaxi.fly.dev/privacidade`.
 

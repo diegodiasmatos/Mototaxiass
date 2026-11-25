@@ -1,6 +1,6 @@
 # Termos de Uso da Vairo
 
-**Última atualização:** [dia/mês/ano]
+**Última atualização:** 25/11/2026
 
 Estes Termos de Uso regulam o acesso e o uso do aplicativo Vairo por passageiros e motoristas.
 
@@ -8,15 +8,15 @@ Ao criar uma conta ou usar o aplicativo, você declara que leu e aceitou estes T
 
 ## 1. Quem opera a Vairo
 
-A Vairo é operada por **[razão social]**, inscrita no CNPJ sob nº **[CNPJ]**, com sede em **[endereço completo]**.
+A Vairo é operada por **Miguel Antonio Navarro**, pessoa física, CPF nº 712.122.512-37, com endereço na Avenida Radial Leste, 840, Assis Chateaubriand – PR, e por **Diego Dias de Matos**, pessoa física, CPF nº 133.126.469-36, com endereço na Avenida Tupãssi, 4440, Jardim América, Assis Chateaubriand – PR.
 
-**Contato e suporte:** [e-mail, telefone ou canal no app].
+A Vairo presta o serviço de transporte de passageiros por motocicleta, realizado por motoristas cadastrados e aprovados pela Vairo, por meio deste aplicativo.
 
-> **Completar antes de publicar:** confirmar quem é a empresa responsável pelo app e descrever corretamente se a Vairo atua como plataforma de conexão, prestadora do transporte ou em outro modelo. Essa definição pode afetar as responsabilidades legais.
+**Contato e suporte:** e-mail vairoapp1@gmail.com, WhatsApp +55 (44) 98828-5423 ou pelo suporte disponível no aplicativo (Perfil → Atendimento).
 
 ## 2. O que o aplicativo oferece
 
-O aplicativo permite que passageiros solicitem corridas de motocicleta e que motoristas cadastrados recebam e aceitem solicitações, conforme a disponibilidade e as áreas atendidas.
+O aplicativo permite que passageiros solicitem corridas de motocicleta e que motoristas cadastrados recebam e aceitem solicitações, conforme a disponibilidade e as áreas atendidas (atualmente, Assis Chateaubriand – PR, dentro da área de atendimento indicada no aplicativo).
 
 A solicitação da corrida não garante que haverá motorista disponível. A corrida será confirmada quando um motorista aceitar o pedido e essa confirmação aparecer no aplicativo.
 
@@ -48,15 +48,15 @@ Não inicie ou continue uma corrida se as condições de segurança não forem a
 
 O preço, a forma de pagamento e eventuais taxas devem ser apresentados ao passageiro antes da confirmação da corrida, sempre que aplicável.
 
-**Regras comerciais da Vairo:** [descrever como o preço é calculado, quais taxas existem, como motoristas recebem e quais meios de pagamento são aceitos].
+**Regras comerciais da Vairo:** o preço de cada corrida é calculado pelo aplicativo antes da confirmação, com base na distância do trajeto e na tarifa da categoria escolhida (valor inicial, que inclui os primeiros quilômetros, mais um valor por quilômetro adicional). As tarifas vigentes são as exibidas no aplicativo no momento da solicitação. O passageiro não paga taxa de cancelamento nem outras taxas além do preço exibido. Os meios de pagamento aceitos são Pix, cartão de crédito e dinheiro, conforme a disponibilidade exibida no aplicativo. Do valor de cada corrida concluída, a Vairo retém uma comissão, informada ao motorista no aplicativo, e o restante cabe ao motorista: nas corridas pagas por Pix ou cartão, esse valor é repassado ao motorista pela Vairo ou creditado diretamente na conta de pagamento do motorista, quando ele a tiver conectado; nas corridas pagas em dinheiro, o motorista recebe o valor do passageiro e a comissão fica registrada como débito do motorista com a Vairo.
 
 Se o preço puder mudar por alteração solicitada pelo passageiro, espera, rota ou outra situação, o app deve informar como essa mudança será calculada. A Vairo deve disponibilizar informações da cobrança e um canal para contestação.
 
-Os pagamentos podem ser processados por **[nome do provedor, se aplicável]**, conforme as condições e a Política de Privacidade desse serviço.
+Os pagamentos podem ser processados por **Mercado Pago**, conforme as condições e a Política de Privacidade desse serviço.
 
 ## 7. Cancelamentos e contestações
 
-**Regras de cancelamento:** [informar quando passageiro e motorista podem cancelar, se há cobrança, como o valor é calculado e em quais situações pode haver reembolso].
+**Regras de cancelamento:** até a confirmação do embarque, o passageiro pode cancelar a corrida pelo aplicativo, sem custo, e o valor já pago é estornado. Se o pagamento por Pix não for confirmado no prazo, ou se nenhum motorista aceitar a solicitação no prazo indicado no aplicativo, a corrida é cancelada automaticamente e o valor pago, se houver, é estornado. Se o motorista desistir antes do embarque, o aplicativo procura outro motorista, sem custo para o passageiro. Depois que o motorista confirma o embarque com o código exibido no aplicativo do passageiro, a corrida não pode mais ser cancelada pelo aplicativo e é cobrado o valor exibido na confirmação; pedidos de ajuda ou de reembolso a partir desse momento são feitos pelo suporte ou pela opção "Não embarquei", e cada caso é analisado. O motorista pode cancelar uma corrida aceita antes do embarque; depois do embarque, o cancelamento pelo motorista gera o estorno integral do valor pago pelo passageiro.
 
 As regras devem ser exibidas de forma clara antes da solicitação da corrida. Uma cobrança contestada poderá ser analisada pelo suporte com base nas informações disponíveis, como registros da corrida e comunicações feitas pelo aplicativo.
 
@@ -70,7 +70,7 @@ A Vairo poderá analisar denúncias e aplicar medidas proporcionais, como solici
 
 ## 9. Dados pessoais e localização
 
-O uso de dados pessoais, localização, documentos e informações da corrida é explicado na **Política de Privacidade da Vairo**, disponível em **[link público da Política de Privacidade]**.
+O uso de dados pessoais, localização, documentos e informações da corrida é explicado na **Política de Privacidade da Vairo**, disponível em **https://assis-mototaxi.fly.dev/privacidade**.
 
 A Política de Privacidade deve informar, entre outros pontos, quais dados são coletados, para que são usados, por quanto tempo são mantidos, com quem podem ser compartilhados e como o usuário pode exercer seus direitos.
 
@@ -84,14 +84,10 @@ A Vairo informará alterações relevantes destes Termos e indicará a data de a
 
 Para dúvidas, reclamações, solicitações relacionadas à conta ou contestação de corrida, entre em contato pelo canal indicado na seção 1 ou pelo suporte disponível no aplicativo.
 
-**Prazo e horário de atendimento:** [informar, se houver].
+**Prazo e horário de atendimento:** o suporte recebe mensagens pelo aplicativo a qualquer hora, todos os dias, e responde em até 2 dias úteis.
 
 ## 12. Disposições finais
 
 Estes Termos não retiram direitos garantidos ao usuário pela legislação aplicável. Se alguma disposição for considerada inválida, as demais continuarão em vigor na medida permitida por lei.
 
 Estes Termos são regidos pelas leis brasileiras. Eventuais conflitos serão tratados pelas autoridades e pelo foro competente conforme a legislação aplicável.
-
----
-
-**Antes de publicar, preencher e validar:** dados da empresa, modelo de operação da Vairo, cidades atendidas, requisitos municipais, política de preço, taxas, pagamentos, cancelamentos, reembolsos, suporte e link da Política de Privacidade.

@@ -693,6 +693,20 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     ALTER TABLE drivers ADD COLUMN decl_course INTEGER;
     `,
   },
+
+  // ----------------------------------------------------------------
+  // V10 — prazos de guarda da Política de Privacidade: GPS e chat de
+  // corridas encerradas são apagados 180 dias depois (corridas com ocorrência
+  // aberta ficam). Só muda quem ainda estava no padrão antigo (0 = nunca);
+  // um prazo já escolhido na central é mantido.
+  // ----------------------------------------------------------------
+  {
+    version: 10,
+    sql: `
+    UPDATE app_settings SET value = '180'
+      WHERE key IN ('gps_retention_days', 'messages_retention_days') AND value = '0';
+    `,
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {
@@ -706,8 +720,8 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   request_timeout_min: '15',
   min_driver_age: '21',
   backup_keep: '7',                // cópias diárias guardadas no disco
-  gps_retention_days: '0',         // GPS de corridas encerradas: apagar após N dias (0 = nunca)
-  messages_retention_days: '0',    // chat de corridas encerradas: apagar após N dias (0 = nunca)            // idade mínima do mototaxista (0 = não confere)
+  gps_retention_days: '180',       // GPS de corridas encerradas: apagar após N dias (0 = nunca) — Política de Privacidade
+  messages_retention_days: '180',  // chat de corridas encerradas: apagar após N dias (0 = nunca) — Política de Privacidade            // idade mínima do mototaxista (0 = não confere)
   min_cnh_years: '2',              // anos mínimos de habilitação (0 = não confere)       // procurando mototaxista: cancela e estorna depois disso (0 = nunca)
   driver_debt_limit_cents: '5000', // dívida de comissão (corridas em dinheiro) que bloqueia novas corridas
   pickup_move_alert_m: '80',       // distância que dispara "você mudou de local?"

@@ -16,6 +16,8 @@ primary_region = 'gru'
   APP_ENV = 'production'
   # o IP real do cliente vem do proxy da Fly (Fly-Client-IP)
   TRUST_PROXY = '1'
+  # contato exigido pelo serviço de notificações (Web Push)
+  PUSH_CONTACT = 'mailto:vairoapp1@gmail.com'
   # App Android (Google Play): impressão digital SHA-256 da CHAVE DE ENVIO (pública,
   # não é segredo). A da chave de assinatura do Google (Play App Signing) entra
   # depois em Configurações da central → App Android.
