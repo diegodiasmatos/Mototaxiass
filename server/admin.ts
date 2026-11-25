@@ -222,6 +222,8 @@ export const adminRoutes: Route[] = [
     const b = await readBody(req);
     const EDITABLE = ['city_name', 'center_lat', 'center_lng', 'coverage_radius_km',
       'dispatch_radius_km', 'commission_pct', 'quote_ttl_min', 'loc_fresh_s', 'request_timeout_min',
+      // dados da empresa nos Termos e na Política de Privacidade
+      'company_name', 'company_cnpj', 'company_address', 'company_contact', 'dpo_contact', 'legal_reviewed',
       'welcome_message', 'review_sla_hours',
       // apareciam na tela de configurações, mas o servidor não gravava
       'confirm_window_s', 'driver_debt_limit_cents', 'gps_max_accuracy_m'];
@@ -229,6 +231,7 @@ export const adminRoutes: Route[] = [
       confirm_window_s: [1, 120],
       driver_debt_limit_cents: [0, 10_000_000],
       gps_max_accuracy_m: [10, 5000],
+      request_timeout_min: [0, 240],
     };
     for (const [k, [min, max]] of Object.entries(RANGES)) {
       if (b.settings?.[k] === undefined) continue;

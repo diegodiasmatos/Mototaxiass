@@ -48,18 +48,23 @@
         <button class="btn btn-primary" type="submit">Entrar na VAIRO</button>
         <p class="auth-switch">Não tem uma conta? <button type="button" class="linkbtn" id="tab-register">Cadastre-se</button></p>
       </div>
+      <p class="auth-switch"><button type="button" class="linkbtn" data-forgot>Esqueci minha senha</button></p>
     </form>
     <form id="form-register" class="auth-form" hidden>
       <div class="field"><label for="reg-name">Nome completo</label><input class="input" id="reg-name" name="name" required autocomplete="name"></div>
       <div class="field"><label for="reg-phone">Telefone (WhatsApp)</label><input class="input" id="reg-phone" name="phone" type="tel" required placeholder="(44) 99999-9999"></div>
       <div class="field"><label for="reg-email">E-mail</label><input class="input" id="reg-email" name="email" type="email" required autocomplete="email"></div>
       <div class="field"><label for="reg-password">Senha (mín. 8 caracteres)</label><input class="input" id="reg-password" name="password" type="password" minlength="8" required autocomplete="new-password"></div>
+            <label class="check-row"><input type="checkbox" name="accept_terms" required>
+        <span>Li e aceito os <a href="/termos" target="_blank" rel="noopener">Termos de Uso</a> e a
+        <a href="/privacidade" target="_blank" rel="noopener">Política de Privacidade</a>.</span></label>
       <div class="auth-foot">
         <button class="btn btn-primary" type="submit">Criar minha conta</button>
         <p class="auth-switch">Já tem uma conta? <button type="button" class="linkbtn" id="tab-login">Entrar</button></p>
       </div>
     </form>
     <div id="google-slot" class="mt center"></div>
+    <p class="auth-note legal-links"><a href="/termos">Termos de Uso</a> · <a href="/privacidade">Privacidade</a></p>
     <p class="auth-note">É motorista? <a href="/motorista">Acesse a área do Motorista</a></p>
   </section>
 
@@ -156,6 +161,7 @@
       </form>
     </div>
     <div class="card"><h3>🔔 Notificações</h3><div id="notif-status"></div></div>
+    <div class="card" id="account-card"></div>
     <button class="btn btn-danger mt" id="btn-logout">Sair da conta</button>
   </section>
 </main>

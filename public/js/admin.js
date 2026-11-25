@@ -66,7 +66,7 @@ const SECTIONS = {
   dashboard: secDashboard, drivers: secDrivers, passengers: secPassengers,
   rides: secRides, finance: secFinance, issues: secIssues,
   payments: secPayments, maps: secMaps, settings: secSettings,
-  audit: secAudit, support: secSupport,
+  audit: secAudit, support: secSupport, privacy: secPrivacy,
 };
 
 function go(sec) {
@@ -207,6 +207,7 @@ async function openDriver(idd) {
         <button class="btn ${d.blocked ? 'btn-green' : 'btn-danger'} btn-sm" data-block="${d.blocked ? 0 : 1}">
           ${d.blocked ? 'Desbloquear conta' : 'Bloquear conta'}</button>
       </div>`}
+    <div class="row mt"><button class="btn btn-outline btn-sm" data-reset="${idd}">🔑 Link de nova senha</button></div>
     <h3 class="mt">Últimas corridas</h3>
     ${rides.map(r => `<div class="list-item"><div class="li-main">
       <div class="li-title">${escapeHtml(r.origin_text)} → ${escapeHtml(r.dest_text)}</div>
@@ -232,6 +233,8 @@ async function openDriver(idd) {
     }, { okMsg: 'Decisão registrada e parceiro notificado.' }).catch(() => { });
   });
 
+  const rb = $('[data-reset]', m);
+  if (rb) rb.onclick = () => resetLink(rb, idd);
   const bb = $('[data-block]', m);
   if (bb) bb.onclick = async () => {
     const block = bb.dataset.block === '1';
@@ -242,6 +245,66 @@ async function openDriver(idd) {
       m.close(); secDrivers();
     }, { okMsg: block ? 'Conta bloqueada.' : 'Conta desbloqueada.' }).catch(() => { });
   };
+}
+
+/**
+ * Link de nova senha: uso único, vale 60 min. Mostrado uma vez para a
+ * central enviar pelo WhatsApp do titular, depois de conferir a identidade.
+ */
+async function resetLink(btn, userId) {
+  const ok = await confirmModal('Gerar link de nova senha?',
+    'Confira antes que é mesmo o titular da conta pedindo (por exemplo, ligando para o telefone cadastrado). '
+    + 'O link vale por 60 minutos e só pode ser usado uma vez.', 'Gerar link');
+  if (!ok) return;
+  await withLoading(btn, async () => {
+    const r = await api(`/api/admin/users/${userId}/reset-link`, { method: 'POST' });
+    const phone = String(r.phone || '').replace(/\D/g, '');
+    const wa = phone ? `https://wa.me/55${phone.replace(/^55/, '')}?text=${encodeURIComponent(
+      `Olá, ${r.name.split(' ')[0]}! Para criar uma nova senha na VAIRO, abra este link (vale por 60 minutos): ${r.url}`)}` : '';
+    const m = openModal(`
+      <h3>Link de nova senha</h3>
+      <p class="muted small mb">Para ${escapeHtml(r.name)} · vale até ${fmt.time(r.expires_at)} · uso único.
+        Ele não aparece de novo depois de fechar esta janela.</p>
+      <div class="pix-code" style="word-break:break-all">${escapeHtml(r.url)}</div>
+      <button class="btn btn-outline btn-sm mt" data-copy>📋 Copiar link</button>
+      ${wa ? `<a class="btn btn-green btn-sm mt" href="${wa}" target="_blank" rel="noopener">Enviar pelo WhatsApp</a>` : ''}`);
+    m.querySelector('[data-copy]').onclick = async () => {
+      try { await navigator.clipboard.writeText(r.url); toast('Link copiado.', 'ok'); }
+      catch { toast('Copie o link manualmente.', 'err'); }
+    };
+  }).catch(() => { });
+}
+
+/* ============ privacidade (LGPD) ============ */
+async function secPrivacy() {
+  const { requests } = await api('/api/admin/deletion-requests');
+  const ST = { pendente: 'yellow', concluido: 'green', cancelado: 'gray' };
+  main().innerHTML = `
+    <h2 class="mb">🔒 Privacidade (LGPD)</h2>
+    <div class="card">
+      <h3>Pedidos de exclusão de conta</h3>
+      <p class="muted small mb">A anonimização apaga nome, e-mail, telefone, CPF, foto, documentos, mensagens,
+        GPS e endereços. Corridas, pagamentos e livro-caixa ficam guardados sem identificar a pessoa.
+        Antes, confira se não há valores a pagar ou receber. <b>Não pode ser desfeita.</b></p>
+      ${requests.length ? requests.map(r => `
+        <div class="list-item"><div class="li-main">
+          <div class="li-title">${escapeHtml(r.user_name)} · ${r.user_role === 'driver' ? 'motorista' : 'passageiro'}
+            <span class="pill ${ST[r.status]}">${r.status}</span>
+            ${r.active_ride ? '<span class="pill red">corrida em andamento</span>' : ''}</div>
+          <div class="li-sub">Pedido em ${fmt.dt(r.created_at)} · ${escapeHtml(r.user_email)} · ${escapeHtml(r.user_phone || '')}
+            ${r.reason ? `<br>Motivo: ${escapeHtml(r.reason)}` : ''}</div></div>
+          ${r.status === 'pendente' ? `<button class="btn btn-danger btn-sm" data-anon="${r.user_id}" ${r.active_ride ? 'disabled' : ''}>Anonimizar</button>` : ''}
+        </div>`).join('') : '<div class="empty"><div class="eico">✅</div>Nenhum pedido de exclusão.</div>'}
+    </div>`;
+  $$('[data-anon]').forEach(b => b.onclick = async () => {
+    const word = await askText('Anonimizar conta (LGPD)', 'Esta ação NÃO pode ser desfeita. Digite ANONIMIZAR para confirmar');
+    if (!word) return;
+    if (word.trim() !== 'ANONIMIZAR') { toast('Confirmação incorreta. Nada foi alterado.', 'err'); return; }
+    await withLoading(b, async () => {
+      await api(`/api/admin/users/${b.dataset.anon}/anonymize`, { method: 'POST', body: { confirm: 'ANONIMIZAR' } });
+      secPrivacy();
+    }, { okMsg: 'Conta anonimizada e registrada na auditoria.' }).catch(() => { });
+  });
 }
 
 /** Caixa de texto em modal (substitui `prompt`, que é bloqueado em vários celulares). */
@@ -278,10 +341,12 @@ async function secPassengers() {
         <td data-l="Cancelamentos">${p.cancels_count}</td>
         <td data-l="Desde" class="small">${fmt.date(p.created_at)}</td>
         <td><button class="btn ${p.blocked ? 'btn-green' : 'btn-danger'} btn-sm" data-block="${p.id}" data-to="${p.blocked ? 0 : 1}">
-          ${p.blocked ? 'Desbloquear' : 'Bloquear'}</button></td>
+          ${p.blocked ? 'Desbloquear' : 'Bloquear'}</button>
+          <button class="btn btn-outline btn-sm" data-reset="${p.id}">🔑 Nova senha</button></td>
       </tr>`).join('') || '<tr><td class="muted center">Nenhum passageiro.</td></tr>'}
       </tbody></table>
     </div>`;
+  $$('[data-reset]').forEach(b => b.onclick = () => resetLink(b, b.dataset.reset));
   $$('[data-block]').forEach(b => b.onclick = async () => {
     const block = b.dataset.to === '1';
     const reason = block ? await askText('Bloquear passageiro', 'Motivo do bloqueio') : '';
@@ -1032,6 +1097,22 @@ async function secSettings() {
       <p class="muted small">Alterações de tarifa e comissão valem apenas para corridas novas — o histórico financeiro é preservado.</p>
     </div>
     ${fares.map(fareRow).join('')}
+    <div class="card">
+      <h3>📄 Empresa nos Termos e na Política de Privacidade</h3>
+      <p class="muted small mb">Aparecem nas páginas <a href="/termos" target="_blank">Termos de Uso</a> e
+        <a href="/privacidade" target="_blank">Política de Privacidade</a>. Enquanto um advogado não revisar os textos,
+        as páginas mostram o aviso de versão preliminar.</p>
+      <div class="grid2">
+        <div class="field"><label>Razão social</label><input class="input" id="lg-name" value="${escapeHtml(st.company_name || '')}"></div>
+        <div class="field"><label>CNPJ</label><input class="input" id="lg-cnpj" value="${escapeHtml(st.company_cnpj || '')}"></div>
+        <div class="field"><label>Endereço</label><input class="input" id="lg-addr" value="${escapeHtml(st.company_address || '')}"></div>
+        <div class="field"><label>Contato (e-mail ou WhatsApp)</label><input class="input" id="lg-contact" value="${escapeHtml(st.company_contact || '')}"></div>
+        <div class="field"><label>Encarregado de dados (LGPD): nome e contato</label><input class="input" id="lg-dpo" value="${escapeHtml(st.dpo_contact || '')}"></div>
+        <div class="field"><label>Corrida sem aceite: cancelar após (min, 0 = nunca)</label><input class="input" id="st-reqto" type="number" min="0" max="240" value="${st.request_timeout_min ?? 15}"></div>
+      </div>
+      <label class="check-row"><input type="checkbox" id="lg-reviewed" ${st.legal_reviewed === '1' ? 'checked' : ''}>
+        <span>Os textos foram revisados por um advogado (tira o aviso de versão preliminar).</span></label>
+    </div>
     <button class="btn btn-primary" id="st-save" style="max-width:340px">Salvar configurações</button>
     <p class="muted small mt">Versão do app publicada: <b>${escapeHtml(window.APP_VERSION || '—')}</b>.
       Quem já tem o app instalado recebe a versão nova ao abrir ou voltar para o app.</p>
@@ -1066,6 +1147,10 @@ async function secSettings() {
           driver_debt_limit_cents: String(Math.round(parseFloat($('#st-debt').value) * 100)),
           gps_max_accuracy_m: $('#st-acc').value, loc_fresh_s: $('#st-fresh').value,
           welcome_message: $('#st-welcome').value,
+          company_name: $('#lg-name').value, company_cnpj: $('#lg-cnpj').value,
+          company_address: $('#lg-addr').value, company_contact: $('#lg-contact').value,
+          dpo_contact: $('#lg-dpo').value, legal_reviewed: $('#lg-reviewed').checked ? '1' : '0',
+          request_timeout_min: $('#st-reqto').value,
         },
         fares: faresBody,
       },

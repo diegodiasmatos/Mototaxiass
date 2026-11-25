@@ -654,6 +654,40 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     ALTER TABLE rides ADD COLUMN boarding_dist_m INTEGER;
     `,
   },
+
+  // ----------------------------------------------------------------
+  // V9 — conta do usuário: aceite dos termos (versão e data), links de
+  // nova senha (só o hash do token é guardado) e pedidos de exclusão.
+  // Só adiciona colunas e tabelas.
+  // ----------------------------------------------------------------
+  {
+    version: 9,
+    sql: `
+    ALTER TABLE users ADD COLUMN terms_version TEXT;
+    ALTER TABLE users ADD COLUMN terms_accepted_at INTEGER;
+    CREATE TABLE password_resets (
+      token_hash TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_by TEXT,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at    INTEGER
+    );
+    CREATE INDEX idx_pwreset_user ON password_resets(user_id);
+    CREATE TABLE account_deletion_requests (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id),
+      reason     TEXT,
+      status     TEXT NOT NULL DEFAULT 'pendente'
+                 CHECK (status IN ('pendente','concluido','cancelado')),
+      created_at INTEGER NOT NULL,
+      handled_by TEXT,
+      handled_at INTEGER,
+      note       TEXT
+    );
+    CREATE INDEX idx_delreq_user ON account_deletion_requests(user_id);
+    `,
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {

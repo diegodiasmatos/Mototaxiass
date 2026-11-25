@@ -4,6 +4,7 @@ import {
   ApiError, hashPassword, verifyPassword, id, now, json, readBody, rateExceeded, rateHit,
   isValidEmail, isValidCpf, reqStr, rateLimit, setSessionCookie, clearSessionCookie,
 } from './util.ts';
+import { termsOk, recordTermsAcceptance, TERMS_VERSION } from './account.ts';
 import { route, type Route, type SessionUser } from './router.ts';
 import { notifyAdmins } from './notify.ts';
 
@@ -57,6 +58,9 @@ export const authRoutes: Route[] = [
     if (password.length < 8) throw new ApiError(400, 'A senha deve ter pelo menos 8 caracteres.');
     if (!isValidEmail(b.email)) throw new ApiError(400, 'E-mail inválido.');
     if (b.cpf !== undefined && b.cpf !== '' && !isValidCpf(b.cpf)) throw new ApiError(400, 'CPF inválido.');
+    if (b.accept_terms !== true) {
+      throw new ApiError(400, 'Para criar a conta, leia e aceite os Termos de Uso e a Política de Privacidade.');
+    }
 
     const exists = db.prepare('SELECT id FROM users WHERE email = ?').get(b.email) as any;
     if (exists) throw new ApiError(409, 'Já existe uma conta com este e-mail.');
@@ -66,6 +70,7 @@ export const authRoutes: Route[] = [
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(uid, roleIn, name, b.email, phone, b.cpf ? String(b.cpf).replace(/\D/g, '') : null,
         hashPassword(password), sanitizePhoto(b.photo), now());
+    recordTermsAcceptance(uid);
 
     if (roleIn === 'passenger') notifyAdmins('new_passenger', 'Novo passageiro cadastrado', `${name} (${b.email})`);
     const token = createSession(uid);
@@ -143,7 +148,15 @@ export const authRoutes: Route[] = [
         moto_color, submitted_at, deadline_at, review_reason, rating_sum, rating_count, rides_count
         FROM drivers WHERE user_id = ?`).get(user!.id) ?? null;
     }
-    json(res, 200, { user: publicUser(user!), driver, unread: unread.c });
+    const extra = db.prepare('SELECT terms_version FROM users WHERE id = ?').get(user!.id) as any;
+    const del = db.prepare(`SELECT created_at FROM account_deletion_requests
+      WHERE user_id = ? AND status = 'pendente'`).get(user!.id) as any;
+    json(res, 200, {
+      user: publicUser(user!), driver, unread: unread.c,
+      terms_ok: termsOk({ role: user!.role, terms_version: extra?.terms_version }),
+      terms_version: TERMS_VERSION,
+      deletion_requested_at: del?.created_at ?? null,
+    });
   }),
 
   route('PATCH /api/me', 'any', async ({ req, res, user }) => {

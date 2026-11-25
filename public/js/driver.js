@@ -39,6 +39,7 @@ async function init() {
 function bindAuth() {
   $('#tab-login').onclick = () => authTab(true);
   $('#tab-register').onclick = () => authTab(false);
+  bindForgotPassword();
   $('#form-login').onsubmit = async e => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -54,7 +55,7 @@ function bindAuth() {
     try {
       const r = await api('/api/auth/register', {
         method: 'POST',
-        body: { role: 'driver', name: f.get('name'), cpf: f.get('cpf'), phone: f.get('phone'), email: f.get('email'), password: f.get('password') },
+        body: { role: 'driver', name: f.get('name'), cpf: f.get('cpf'), phone: f.get('phone'), email: f.get('email'), password: f.get('password'), accept_terms: f.get('accept_terms') === 'on' },
       });
       S.user = r.user;
       toast('Conta criada! Agora envie seus documentos.', 'ok');
@@ -157,6 +158,8 @@ function bindScreenMenu() {
 
 /* ================= roteamento pós-login ================= */
 async function enterApp() {
+  ensureTermsAccepted();
+  renderAccountCard($('#account-card'));
   $('#btn-notifs').hidden = false;
   $('#btn-notifs').onclick = openNotifications;
   refreshPushSubscription();

@@ -56,6 +56,7 @@ async function init() {
 function bindAuth() {
   $('#tab-login').onclick = () => authTab(true);
   $('#tab-register').onclick = () => authTab(false);
+  bindForgotPassword();
   $('#form-login').onsubmit = async e => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -75,7 +76,7 @@ function bindAuth() {
         method: 'POST',
         body: {
           role: 'passenger', name: f.get('name'), phone: f.get('phone'),
-          email: f.get('email'), password: f.get('password'),
+          email: f.get('email'), password: f.get('password'), accept_terms: f.get('accept_terms') === 'on',
         },
       });
       S.user = r.user; toast('Conta criada! Bem-vindo(a) 🎉', 'ok'); enterApp();
@@ -183,6 +184,8 @@ function setupGoogleButton() {
 
 /* ================= entrada no app ================= */
 async function enterApp() {
+  ensureTermsAccepted();
+  renderAccountCard($('#account-card'));
   $('#bottomnav').hidden = false;
   $('#btn-notifs').hidden = false;
   $('#btn-notifs').onclick = openNotifications;

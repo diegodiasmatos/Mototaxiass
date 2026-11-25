@@ -4,6 +4,7 @@ import {
   ApiError, id, now, json, readBody, reqStr, reqNum, haversineM, rateLimit,
 } from './util.ts';
 import { route, type Route, type SessionUser } from './router.ts';
+import { assertTermsAccepted } from './account.ts';
 import { getFare, allFares, computePriceCents, splitCommission } from './fares.ts';
 import {
   route as computeRoute, searchAddress, reverseGeocode, assertInCoverage, resolvePlace,
@@ -618,6 +619,7 @@ export const rideRoutes: Route[] = [
 
   // Orçamento: rota real e preço calculados NO SERVIDOR; uma cotação por categoria.
   route('POST /api/quotes', 'passenger', async ({ req, res, user }) => {
+    assertTermsAccepted(user!);
     const b = await readBody(req);
     const origin = {
       lat: reqNum(b.origin?.lat, 'origem.lat'), lng: reqNum(b.origin?.lng, 'origem.lng'),
@@ -675,6 +677,7 @@ export const rideRoutes: Route[] = [
    * mototaxistas quando o provedor confirmar. Dinheiro: despacha na hora.
    */
   route('POST /api/rides', 'passenger', async ({ req, res, user }) => {
+    assertTermsAccepted(user!);
     const b = await readBody(req);
     const quoteId = reqStr(b.quote_id, 'cotação', 60);
     const method = (['dinheiro', 'pix', 'cartao'].includes(b.payment_method)

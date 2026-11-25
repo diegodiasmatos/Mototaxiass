@@ -89,7 +89,7 @@ test('divisão de comissão 15/85 em centavos inteiros', () => {
 
 test('cadastro e login do passageiro', async () => {
   const r = await passenger.req('POST', '/api/auth/register', {
-    role: 'passenger', name: 'Maria Silva', phone: '(44) 99999-0001',
+    role: 'passenger', accept_terms: true, name: 'Maria Silva', phone: '(44) 99999-0001',
     email: 'maria@teste.com', password: 'senha12345',
   });
   assert.equal(r.status, 201);
@@ -101,9 +101,9 @@ test('cadastro e login do passageiro', async () => {
 test('senha curta e e-mail inválido são rejeitados', async () => {
   const a = actor();
   assert.equal((await a.req('POST', '/api/auth/register',
-    { role: 'passenger', name: 'X', phone: '1', email: 'x@x.com', password: '123' })).status, 400);
+    { role: 'passenger', accept_terms: true, name: 'X', phone: '1', email: 'x@x.com', password: '123' })).status, 400);
   assert.equal((await a.req('POST', '/api/auth/register',
-    { role: 'passenger', name: 'X', phone: '1', email: 'nao-email', password: 'senha12345' })).status, 400);
+    { role: 'passenger', accept_terms: true, name: 'X', phone: '1', email: 'nao-email', password: 'senha12345' })).status, 400);
 });
 
 test('login admin via credenciais de bootstrap', async () => {
@@ -146,7 +146,7 @@ test('fora da área de cobertura é recusado', async () => {
 
 test('fluxo de cadastro do mototaxista até aprovação', async () => {
   assert.equal((await driver.req('POST', '/api/auth/register', {
-    role: 'driver', name: 'João Pereira', cpf: '529.982.247-25',
+    role: 'driver', accept_terms: true, name: 'João Pereira', cpf: '529.982.247-25',
     phone: '(44) 98888-0001', email: 'joao@teste.com', password: 'senha12345',
   })).status, 201);
 
@@ -210,7 +210,7 @@ let rideId = '';
 test('corrida: solicitação, aceite atômico, fluxo até conclusão', async () => {
   // segundo mototaxista aprovado e online (para o teste de aceite simultâneo)
   await driver2.req('POST', '/api/auth/register', {
-    role: 'driver', name: 'Carlos Souza', cpf: '111.444.777-35',
+    role: 'driver', accept_terms: true, name: 'Carlos Souza', cpf: '111.444.777-35',
     phone: '(44) 97777-0002', email: 'carlos@teste.com', password: 'senha12345',
   });
   await driver2.req('POST', '/api/driver/apply', {
@@ -276,7 +276,7 @@ test('corrida: solicitação, aceite atômico, fluxo até conclusão', async () 
   assert.equal((await passenger.req('POST', `/api/rides/${rideId}/messages`, { body: 'Estou de blusa azul' })).status, 201);
   assert.equal((await winner.req('GET', `/api/rides/${rideId}/messages`)).data.messages.length, 1);
   await passenger2.req('POST', '/api/auth/register', {
-    role: 'passenger', name: 'Ana Souza', phone: '(44) 90000-0003',
+    role: 'passenger', accept_terms: true, name: 'Ana Souza', phone: '(44) 90000-0003',
     email: 'ana@teste.com', password: 'senha12345',
   });
   assert.equal((await passenger2.req('GET', `/api/rides/${rideId}`)).status, 403);

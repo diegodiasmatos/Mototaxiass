@@ -5,6 +5,7 @@ import {
   ApiError, id, now, json, readBody, reqStr, reqNum, dataDir, haversineM,
 } from './util.ts';
 import { route, type Route } from './router.ts';
+import { assertTermsAccepted } from './account.ts';
 import { splitCommission } from './fares.ts';
 import {
   getRide, rideEvent, etaSeconds, cancelRide, dispatchRide, assertCanTransition,
@@ -121,6 +122,7 @@ export const driverRoutes: Route[] = [
 
   // Cadastro profissional completo (etapas enviadas de uma vez ao final do wizard).
   route('POST /api/driver/apply', 'driver', async ({ req, res, user }) => {
+    assertTermsAccepted(user!);
     const b = await readBody(req);
     const existing = db.prepare('SELECT status FROM drivers WHERE user_id = ?').get(user!.id) as any;
     if (existing && !['correction', 'rejected'].includes(existing.status)) {
@@ -177,6 +179,7 @@ export const driverRoutes: Route[] = [
   }),
 
   route('POST /api/driver/online', 'driver', async ({ req, res, user }) => {
+    assertTermsAccepted(user!);
     requireApprovedDriver(user!.id);
     const b = await readBody(req);
     const online = b.online ? 1 : 0;

@@ -850,3 +850,16 @@ details.rules summary { font-weight: 700; cursor: pointer; }
 details.rules ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.5; }
 details.rules li { margin-bottom: 6px; }
 .err-text { color: var(--red); font-weight: 600; }
+
+/* aceite dos termos e páginas legais */
+.check-row { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0 4px; font-size: .85rem; line-height: 1.45; cursor: pointer; }
+.check-row input { margin-top: 3px; width: 18px; height: 18px; flex: none; }
+.check-row a, .legal-links a { color: var(--accent); }
+.legal { padding-bottom: 40px; }
+.legal h1 { margin: 8px 0 2px; }
+.legal h2 { font-size: 1.05rem; margin: 22px 0 6px; }
+.legal p, .legal li { line-height: 1.55; font-size: .92rem; }
+.legal ul { padding-left: 20px; }
+.legal a { color: var(--accent); }
+.legal-note { color: var(--amber); font-size: .85rem; }
+.legal-missing { color: var(--amber); }

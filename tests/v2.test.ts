@@ -92,11 +92,11 @@ before(async () => {
   close = s.close;
 
   await pax.req('POST', '/api/auth/register', {
-    role: 'passenger', name: 'Ana Passageira', phone: '(44) 90000-1111',
+    role: 'passenger', accept_terms: true, name: 'Ana Passageira', phone: '(44) 90000-1111',
     email: 'ana@v2.test', password: 'senha12345',
   });
   await drv.req('POST', '/api/auth/register', {
-    role: 'driver', name: 'Beto Motoboy', cpf: '529.982.247-25',
+    role: 'driver', accept_terms: true, name: 'Beto Motoboy', cpf: '529.982.247-25',
     phone: '(44) 90000-2222', email: 'beto@v2.test', password: 'senha12345',
   });
   await drv.req('POST', '/api/driver/apply', {

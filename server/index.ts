@@ -14,6 +14,7 @@ import { rideRoutes, startAutoConfirmSweeper, startRideDeadlineSweeper } from '.
 import { driverRoutes } from './drivers.ts';
 import { adminRoutes } from './admin.ts';
 import { integrationRoutes } from './integrations.ts';
+import { accountRoutes } from './account.ts';
 import { sseConnect } from './notify.ts';
 import { appVersion, injectSwVersion, injectHtmlVersion } from './version.ts';
 
@@ -34,6 +35,9 @@ function serveStatic(res: http.ServerResponse, urlPath: string): boolean {
   if (rel === '/motorista' || rel === '/mototaxista') rel = '/motorista.html';
   if (rel === '/empresa') rel = '/empresa.html';
   if (rel === '/admin') rel = '/admin.html';
+  if (rel === '/termos') rel = '/termos.html';
+  if (rel === '/privacidade') rel = '/privacidade.html';
+  if (rel === '/redefinir-senha') rel = '/redefinir-senha.html';
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR)) return false; // path traversal
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return false;
@@ -89,7 +93,7 @@ function bootstrapAdmin(): void {
 }
 
 const ALL_ROUTES: Route[] = [
-  ...authRoutes, ...rideRoutes, ...driverRoutes, ...adminRoutes, ...integrationRoutes,
+  ...authRoutes, ...accountRoutes, ...rideRoutes, ...driverRoutes, ...adminRoutes, ...integrationRoutes,
 ];
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {

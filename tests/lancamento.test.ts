@@ -192,3 +192,159 @@ test('C4: no app publicado sem Mercado Pago, só dinheiro; pagamento de teste re
   }
   await pax.req('POST', `/api/rides/${old}/cancel`, {});
 });
+
+// ================= C5: termos =================
+
+test('C5: cadastro exige aceite dos termos e grava versão e data', async () => {
+  const a = actor('200.6.6.6');
+  const no = await a.req('POST', '/api/auth/register', {
+    role: 'passenger', name: 'Sem Aceite', phone: '(44) 90000-5555', email: 'semaceite@lanc.test', password: 'senha12345',
+  });
+  assert.equal(no.status, 400);
+  assert.match(no.data.error, /Termos de Uso/);
+  const ok = await a.req('POST', '/api/auth/register', {
+    role: 'passenger', name: 'Com Aceite', phone: '(44) 90000-5555', email: 'comaceite@lanc.test',
+    password: 'senha12345', accept_terms: true,
+  });
+  assert.equal(ok.status, 201);
+  const row = db.prepare(`SELECT terms_version, terms_accepted_at FROM users WHERE email = 'comaceite@lanc.test'`).get() as any;
+  const legal = await a.req('GET', '/api/legal');
+  assert.equal(row.terms_version, legal.data.version);
+  assert.ok(row.terms_accepted_at > 0);
+  assert.equal((await a.req('GET', '/api/me')).data.terms_ok, true);
+  // páginas públicas existem
+  for (const p of ['/termos', '/privacidade']) {
+    const r = await fetch(base + p);
+    assert.equal(r.status, 200);
+    assert.match(await r.text(), /legal\.js/);
+  }
+  assert.equal(legal.data.reviewed, false);          // aviso de versão preliminar ligado
+});
+
+test('C5: conta antiga sem aceite não pede corrida até aceitar', async () => {
+  const a = actor('200.7.7.7');
+  await a.req('POST', '/api/auth/register', {
+    role: 'passenger', name: 'Antiga', phone: '(44) 90000-6666', email: 'antiga@lanc.test',
+    password: 'senha12345', accept_terms: true,
+  });
+  db.prepare(`UPDATE users SET terms_version = NULL WHERE email = 'antiga@lanc.test'`).run();
+  const me = await a.req('GET', '/api/me');
+  assert.equal(me.data.terms_ok, false);
+  const q = await a.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+  assert.equal(q.status, 428);
+  assert.equal((await a.req('POST', '/api/me/accept-terms', { version: 'velha' })).status, 409);
+  assert.equal((await a.req('POST', '/api/me/accept-terms', { version: me.data.terms_version })).status, 200);
+  assert.equal((await a.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST })).status, 200);
+});
+
+// ================= C6: senha =================
+
+const adm = actor('200.9.9.9');
+
+test('C6: trocar senha pede a atual e encerra as outras sessões', async () => {
+  const a1 = actor('200.8.8.1'), a2 = actor('200.8.8.2');
+  await a1.req('POST', '/api/auth/register', {
+    role: 'passenger', name: 'Troca', phone: '(44) 90000-7777', email: 'troca@lanc.test',
+    password: 'senha12345', accept_terms: true,
+  });
+  await a2.req('POST', '/api/auth/login', { email: 'troca@lanc.test', password: 'senha12345' });
+  assert.equal((await a1.req('POST', '/api/me/password',
+    { current_password: 'errada000', new_password: 'novasenha1' })).status, 400);
+  const ok = await a1.req('POST', '/api/me/password', { current_password: 'senha12345', new_password: 'novasenha1' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.other_sessions_closed, 1);
+  assert.equal((await a1.req('GET', '/api/me')).status, 200);   // este aparelho continua
+  assert.equal((await a2.req('GET', '/api/me')).status, 401);   // o outro saiu
+  assert.equal((await actor('200.8.8.3').req('POST', '/api/auth/login',
+    { email: 'troca@lanc.test', password: 'novasenha1' })).status, 200);
+});
+
+test('C6: esqueci a senha → central gera link de uso único → nova senha', async () => {
+  await adm.req('POST', '/api/auth/login', { email: 'dono-lanc@teste.com', password: 'senha-admin-lanc-teste' });
+  // a resposta é igual para e-mail que existe e que não existe
+  const f1 = await actor('200.10.0.1').req('POST', '/api/auth/forgot', { email: 'paula@lanc.test' });
+  const f2 = await actor('200.10.0.2').req('POST', '/api/auth/forgot', { email: 'ninguem@lanc.test' });
+  assert.equal(f1.status, 200);
+  assert.deepEqual(f1.data, f2.data);
+  const notes = await adm.req('GET', '/api/notifications');
+  assert.ok(notes.data.notifications.some((n: any) => n.kind === 'password_reset_request'));
+
+  const paulaId = (db.prepare(`SELECT id FROM users WHERE email = 'paula@lanc.test'`).get() as any).id;
+  assert.equal((await pax.req('POST', `/api/admin/users/${paulaId}/reset-link`)).status, 403);  // só a central
+  const link = await adm.req('POST', `/api/admin/users/${paulaId}/reset-link`);
+  assert.equal(link.status, 201);
+  const token = /#t=(.+)$/.exec(link.data.url)![1];
+  // o banco guarda só o hash
+  assert.equal((db.prepare('SELECT COUNT(*) n FROM password_resets WHERE token_hash = ?').get(token) as any).n, 0);
+
+  const r = await actor('200.10.0.3').req('POST', '/api/auth/reset', { token, password: 'outrasenha9' });
+  assert.equal(r.status, 200);
+  assert.equal((await pax.req('GET', '/api/me')).status, 401);  // sessões antigas encerradas
+  assert.equal((await actor('200.10.0.4').req('POST', '/api/auth/reset', { token, password: 'denovo1234' })).status, 410);
+  assert.equal((await pax.req('POST', '/api/auth/login', { email: 'paula@lanc.test', password: 'outrasenha9' })).status, 200);
+  const aud = await adm.req('GET', '/api/admin/audit');
+  assert.ok(aud.data.logs.some((l: any) => l.action === 'password_reset_link'));
+});
+
+test('C6: link vencido não funciona', async () => {
+  const paulaId = (db.prepare(`SELECT id FROM users WHERE email = 'paula@lanc.test'`).get() as any).id;
+  const link = await adm.req('POST', `/api/admin/users/${paulaId}/reset-link`);
+  const token = /#t=(.+)$/.exec(link.data.url)![1];
+  db.prepare('UPDATE password_resets SET expires_at = ? WHERE user_id = ? AND used_at IS NULL').run(Date.now() - 1, paulaId);
+  assert.equal((await actor('200.10.0.5').req('POST', '/api/auth/reset', { token, password: 'qualquer123' })).status, 410);
+});
+
+// ================= C7: exclusão de conta =================
+
+test('C7: pedido de exclusão com senha → central anonimiza, corridas ficam sem identificar', async () => {
+  const a = actor('200.11.0.1');
+  await a.req('POST', '/api/auth/register', {
+    role: 'passenger', name: 'Quero Sair', phone: '(44) 90000-8888', email: 'sair@lanc.test',
+    password: 'senha12345', accept_terms: true,
+  });
+  const uid = (db.prepare(`SELECT id FROM users WHERE email = 'sair@lanc.test'`).get() as any).id;
+  // uma corrida cancelada no histórico
+  const q = await a.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+  const rid = (await a.req('POST', '/api/rides', { quote_id: q.data.quotes[0].id, payment_method: 'dinheiro' })).data.ride.id;
+  await a.req('POST', `/api/rides/${rid}/cancel`, {});
+
+  assert.equal((await a.req('POST', '/api/me/delete-request', { password: 'errada000' })).status, 400);
+  assert.equal((await a.req('POST', '/api/me/delete-request', { password: 'senha12345', reason: 'não uso mais' })).status, 201);
+  assert.ok((await a.req('GET', '/api/me')).data.deletion_requested_at > 0);
+  // pode desistir e pedir de novo
+  assert.equal((await a.req('DELETE', '/api/me/delete-request')).data.cancelled, 1);
+  await a.req('POST', '/api/me/delete-request', { password: 'senha12345' });
+
+  const list = await adm.req('GET', '/api/admin/deletion-requests');
+  assert.ok(list.data.requests.some((r: any) => r.user_id === uid && r.status === 'pendente'));
+  assert.equal((await adm.req('POST', `/api/admin/users/${uid}/anonymize`, { confirm: 'sim' })).status, 400);
+  const an = await adm.req('POST', `/api/admin/users/${uid}/anonymize`, { confirm: 'ANONIMIZAR' });
+  assert.equal(an.status, 200);
+
+  const u = db.prepare('SELECT name, email, phone, blocked FROM users WHERE id = ?').get(uid) as any;
+  assert.equal(u.name, 'Usuário removido');
+  assert.match(u.email, /@anonimizado\.invalid$/);
+  assert.equal(u.phone, null);
+  assert.equal(u.blocked, 1);
+  const ride = db.prepare('SELECT origin_text, price_cents FROM rides WHERE id = ?').get(rid) as any;
+  assert.equal(ride.origin_text, '[endereço removido]');
+  assert.ok(ride.price_cents > 0);                      // valores preservados
+  assert.equal((db.prepare(`SELECT status FROM account_deletion_requests WHERE user_id = ? ORDER BY created_at DESC`)
+    .get(uid) as any).status, 'concluido');
+  assert.equal((await a.req('GET', '/api/me')).status, 401);
+});
+
+test('C7: com corrida em andamento a anonimização espera', async () => {
+  const a = actor('200.11.0.2');
+  await a.req('POST', '/api/auth/register', {
+    role: 'passenger', name: 'Em Corrida', phone: '(44) 90000-9999', email: 'emcorrida@lanc.test',
+    password: 'senha12345', accept_terms: true,
+  });
+  const uid = (db.prepare(`SELECT id FROM users WHERE email = 'emcorrida@lanc.test'`).get() as any).id;
+  const q = await a.req('POST', '/api/quotes', { origin: ORIGIN, dest: DEST });
+  const rid = (await a.req('POST', '/api/rides', { quote_id: q.data.quotes[0].id, payment_method: 'dinheiro' })).data.ride.id;
+  const r = await a.req('POST', '/api/me/delete-request', { password: 'senha12345' });
+  assert.equal(r.data.active_ride, true);
+  assert.equal((await adm.req('POST', `/api/admin/users/${uid}/anonymize`, { confirm: 'ANONIMIZAR' })).status, 409);
+  await a.req('POST', `/api/rides/${rid}/cancel`, {});
+});

@@ -47,6 +47,7 @@
         <button class="btn btn-primary" type="submit">Entrar como Motorista</button>
         <p class="auth-switch">Novo na VAIRO? <button type="button" class="linkbtn" id="tab-register">Cadastre sua Moto</button></p>
       </div>
+      <p class="auth-switch"><button type="button" class="linkbtn" data-forgot>Esqueci minha senha</button></p>
     </form>
     <form id="form-register" class="auth-form" hidden>
       <p class="muted small mb">Crie sua conta de motorista. Depois você envia seus documentos para análise.</p>
@@ -55,11 +56,15 @@
       <div class="field"><label for="reg-phone">Telefone (WhatsApp)</label><input class="input" id="reg-phone" name="phone" type="tel" required></div>
       <div class="field"><label for="reg-email">E-mail</label><input class="input" id="reg-email" name="email" type="email" required autocomplete="email"></div>
       <div class="field"><label for="reg-password">Senha (mín. 8 caracteres)</label><input class="input" id="reg-password" name="password" type="password" minlength="8" required autocomplete="new-password"></div>
+            <label class="check-row"><input type="checkbox" name="accept_terms" required>
+        <span>Li e aceito os <a href="/termos" target="_blank" rel="noopener">Termos de Uso</a> e a
+        <a href="/privacidade" target="_blank" rel="noopener">Política de Privacidade</a>.</span></label>
       <div class="auth-foot">
         <button class="btn btn-primary" type="submit">Criar conta de motorista</button>
         <p class="auth-switch">Já tem uma conta? <button type="button" class="linkbtn" id="tab-login">Entrar</button></p>
       </div>
     </form>
+    <p class="auth-note legal-links"><a href="/termos">Termos de Uso</a> · <a href="/privacidade">Privacidade</a></p>
     <p class="auth-note">É passageiro? <a href="/passageiro">Peça sua corrida aqui</a></p>
   </section>
 
@@ -184,6 +189,7 @@
       </form>
     </div>
     <button class="btn btn-outline" id="btn-notif-perm">🔔 Ativar notificações do navegador</button>
+    <div class="card" id="account-card"></div>
     <button class="btn btn-danger mt" id="btn-logout">Sair da conta</button>
   </section>
 </main>
