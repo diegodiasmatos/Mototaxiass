@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { db, getSettingNum, getSetting } from './db.ts';
 import {
   ApiError, id, now, json, readBody, reqStr, reqNum, haversineM, rateLimit,
@@ -105,6 +106,42 @@ function paymentView(p: any): any {
   };
 }
 
+// ---------------------------------------------------------------
+// Confirmação de embarque
+// ---------------------------------------------------------------
+
+/** Erros de código seguidos antes da espera, e quanto tempo dura a espera. */
+export const BOARDING_MAX_ATTEMPTS = 5;
+export const BOARDING_LOCK_MS = 2 * 60 * 1000;
+
+/**
+ * Código de 4 dígitos da corrida aceita. Nasce no aceite (ou na primeira vez
+ * que alguém precisa dele, para corridas aceitas antes desta versão) e só é
+ * mostrado ao passageiro. Gerado com crypto (não dá para prever).
+ */
+export function ensureBoardingCode(r: any): string | null {
+  if (r.status !== 'accepted') return null;
+  if (r.boarding_code) return r.boarding_code;
+  const code = String(crypto.randomInt(0, 10000)).padStart(4, '0');
+  db.prepare(`UPDATE rides SET boarding_code = ? WHERE id = ? AND boarding_code IS NULL`)
+    .run(code, r.id);
+  const fresh = db.prepare('SELECT boarding_code FROM rides WHERE id = ?').get(r.id) as any;
+  r.boarding_code = fresh?.boarding_code ?? code;
+  return r.boarding_code;
+}
+
+/** Compara o código digitado com o da corrida sem vazar tempo de comparação. */
+export function boardingCodeMatches(expected: string, typed: string): boolean {
+  const a = Buffer.from(expected.padEnd(8, ' ')), b = Buffer.from(typed.slice(0, 8).padEnd(8, ' '));
+  return crypto.timingSafeEqual(a, b) && typed.length === expected.length;
+}
+
+/** Há contestação "não embarquei" ainda em aberto nesta corrida? */
+export function openNoBoardingIssue(rideId: string): any {
+  return db.prepare(`SELECT id, status FROM ride_issues WHERE ride_id = ? AND kind = 'nao_embarquei'
+    AND status IN ('aberta','em_analise') LIMIT 1`).get(rideId);
+}
+
 /** Visão da corrida para o passageiro (cartão do mototaxista, ETA e pagamento). */
 export function rideViewForPassenger(r: any): any {
   let driver = null, eta_s = null;
@@ -135,6 +172,12 @@ export function rideViewForPassenger(r: any): any {
     pickup_updated_at: r.pickup_updated_at,
     driver, eta_s, rated: rated ? rated.stars : null,
     issue: issue ?? null,
+    // código só enquanto o embarque não foi confirmado (o mototaxista nunca recebe)
+    boarding_code: r.status === 'accepted' ? ensureBoardingCode(r) : null,
+    boarding_locked_until: r.status === 'accepted' && r.boarding_locked_until > now()
+      ? r.boarding_locked_until : null,
+    boarding_confirmed_at: r.boarding_confirmed_at ?? null,
+    boarding_method: r.boarding_method ?? null,
   };
 }
 
@@ -378,6 +421,13 @@ export function startAutoConfirmSweeper(): NodeJS.Timeout {
 // ---------------------------------------------------------------
 
 export async function cancelRide(r: any, user: SessionUser, reason: string): Promise<void> {
+  // Depois do embarque confirmado o passageiro não cancela pelo app: ajuda e
+  // contestação de cobrança vão para o suporte (ou "Não embarquei").
+  if (user.role === 'passenger' && r.boarding_confirmed_at) {
+    throw new ApiError(409, 'O embarque já foi confirmado, então a corrida não pode mais ser '
+      + 'cancelada pelo app. Para pedir ajuda ou contestar a cobrança, fale com o suporte. '
+      + 'Se você não embarcou, toque em "Não embarquei".');
+  }
   assertCanTransition(r.status, 'cancelled');
   const states = (user.role === 'driver'
     ? getSetting('driver_cancel_states') : getSetting('passenger_cancel_states'))
@@ -737,6 +787,17 @@ export const rideRoutes: Route[] = [
     const b = await readBody(req);
     const kind = reqStr(b.kind, 'tipo do problema', 40);
     const description = typeof b.description === 'string' ? b.description.slice(0, 1000) : '';
+
+    // "Não embarquei": só faz sentido depois de um embarque confirmado. Vai
+    // para análise da central como qualquer ocorrência: ninguém é bloqueado
+    // nem acusado de fraude automaticamente, e o estorno continua possível.
+    if (kind === 'nao_embarquei') {
+      if (!r.boarding_confirmed_at) {
+        throw new ApiError(409, 'O embarque ainda não foi confirmado. Se quiser desistir, use "Cancelar corrida".');
+      }
+      const open = openNoBoardingIssue(r.id);
+      if (open) { json(res, 200, { ok: true, id: open.id, already: true }); return; }
+    }
 
     if (r.status === 'awaiting_confirmation') {
       const res2 = db.prepare(`UPDATE rides SET status = 'disputed'

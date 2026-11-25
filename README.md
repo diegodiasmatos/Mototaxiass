@@ -308,6 +308,19 @@ data/            banco, segredo de sessão e uploads privados (criado em runtime
 - **Cancelamento**: passageiro (requested/accepted), mototaxista
   (accepted/in_progress), com registro de quem/quando/motivo/estado anterior.
   Corrida concluída é imutável. Cancelada não gera comissão nem ganhos.
+- **Confirmação de embarque por código**:
+  - Ao aceitar a corrida, o servidor gera um código de 4 dígitos (`crypto.randomInt`), que aparece **só no app do passageiro**.
+  - Depois de "Cheguei ao passageiro", o mototaxista toca em "Confirmar embarque" e digita o código. Só com o código certo a viagem começa.
+  - Código errado é recusado (`422`). No 5º erro seguido há uma espera de 2 minutos (`429`) e o passageiro é avisado.
+  - Ficam gravados em `rides`: quando (`boarding_confirmed_at`), quem (`boarding_confirmed_by`), como (`boarding_method = 'codigo'`) e a que distância do ponto de embarque estava o mototaxista (`boarding_dist_m`). Também há um registro em `ride_events`. O código usado é apagado.
+  - Se o mototaxista desistir antes do embarque, o código é descartado e o próximo mototaxista recebe outro.
+- **Depois do embarque confirmado**:
+  - O passageiro **não cancela mais pelo app**, mesmo que a central libere o cancelamento em andamento nas configurações.
+  - O app explica que ajuda e contestação de cobrança são com o suporte.
+  - O passageiro pode tocar em **"Não embarquei"**. A contestação vira uma ocorrência (`ride_issues`, tipo `nao_embarquei`) para a central analisar, com os dados do embarque ao lado.
+  - Se a contestação for feita durante a viagem, a conclusão não é confirmada sozinha: a corrida vai para análise e o pagamento fica retido.
+  - Ninguém é bloqueado nem tratado como fraude automaticamente. A central pode concluir, estornar ou rejeitar.
+- **Antes do embarque** (regras de sempre): o passageiro cancela sem custo, com estorno integral. As regras de cancelamento e cobrança aparecem na tela da corrida junto com o código.
 - **"Mototaxistas online agora"**: conta apenas aprovados, online, não
   bloqueados, com localização dos últimos 2 min e sem corrida ativa.
 - **Área de cobertura**: origem e destino validados no servidor contra o

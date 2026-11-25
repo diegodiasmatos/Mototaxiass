@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
+import fs from 'node:fs';
 import { dataDir, now, encryptSecret, decryptSecret } from './util.ts';
 
 export let db: DatabaseSync;
@@ -630,6 +631,29 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     CREATE INDEX idx_addr_pts_street ON address_points(street_norm);
     `,
   },
+
+  // ----------------------------------------------------------------
+  // V8 — confirmação de embarque por código.
+  // Só ADICIONA colunas (nenhum dado existente é alterado ou apagado).
+  //  - boarding_code: 4 dígitos, mostrado só no app do passageiro;
+  //    apagado depois de usado;
+  //  - boarding_attempts / boarding_locked_until: erros de digitação e
+  //    espera depois de muitos erros;
+  //  - boarding_confirmed_at / _by / _method / _dist_m: quando, quem, como e
+  //    a que distância do ponto de embarque o embarque foi confirmado.
+  // ----------------------------------------------------------------
+  {
+    version: 8,
+    sql: `
+    ALTER TABLE rides ADD COLUMN boarding_code TEXT;
+    ALTER TABLE rides ADD COLUMN boarding_attempts INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE rides ADD COLUMN boarding_locked_until INTEGER;
+    ALTER TABLE rides ADD COLUMN boarding_confirmed_at INTEGER;
+    ALTER TABLE rides ADD COLUMN boarding_confirmed_by TEXT;
+    ALTER TABLE rides ADD COLUMN boarding_method TEXT;
+    ALTER TABLE rides ADD COLUMN boarding_dist_m INTEGER;
+    `,
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {
@@ -667,6 +691,22 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   driver_cancel_states: 'accepted,in_progress',
 };
 
+/**
+ * Cópia de segurança do banco antes de aplicar migrações pendentes num banco
+ * que já está em uso. Fica em <pasta do banco>/backups/. Banco novo (sem
+ * migração nenhuma) não precisa de cópia.
+ */
+function backupBeforeMigrations(file: string, applied: Set<number>): void {
+  const pending = MIGRATIONS.filter(m => !applied.has(m.version));
+  if (!pending.length || !applied.size || file === ':memory:') return;
+  const dir = path.join(path.dirname(file), 'backups');
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const target = path.join(dir, `antes-da-migracao-v${pending[0].version}-${stamp}.db`);
+  db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+  console.log(`[banco] cópia de segurança antes da migração: ${target}`);
+}
+
 export function initDb(dbPath?: string): DatabaseSync {
   const file = dbPath || process.env.DB_PATH || path.join(dataDir(), 'assis.db');
   db = new DatabaseSync(file);
@@ -678,6 +718,7 @@ export function initDb(dbPath?: string): DatabaseSync {
   const applied = new Set(
     (db.prepare('SELECT version FROM schema_migrations').all() as any[]).map(r => r.version),
   );
+  backupBeforeMigrations(file, applied);
   for (const m of MIGRATIONS) {
     if (applied.has(m.version)) continue;
     // Rebuild de tabela: as chaves estrangeiras precisam ficar desligadas
