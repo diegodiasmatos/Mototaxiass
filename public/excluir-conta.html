@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101014">
+  <title>Excluir conta — VAIRO</title>
+  <link rel="icon" href="/img/icon.svg?v=2" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/app.css">
+  <script>try{if(localStorage.getItem('vairo-theme')==='light')document.documentElement.dataset.theme='light'}catch(e){}</script>
+</head>
+<body class="legal-page">
+<main class="app legal">
+  <p><a href="/" class="linkbtn">← Voltar ao app</a></p>
+  <h1>Excluir sua conta VAIRO</h1>
+  <p>Você pode pedir a exclusão da sua conta do app <b>VAIRO</b> (passageiro ou motorista) de duas formas:</p>
+
+  <h2>1. Pelo app</h2>
+  <p>Entre na sua conta, abra <b>Perfil → Conta e privacidade → Excluir minha conta</b> e confirme com a sua senha.</p>
+
+  <h2>2. Por esta página</h2>
+  <p>Se você não consegue entrar no app, informe o e-mail da conta. A central confirma a sua identidade
+    pelo telefone cadastrado antes de excluir.</p>
+  <form id="form-del" class="card">
+    <div class="field"><label for="del-email">E-mail da conta</label>
+      <input class="input" id="del-email" type="email" required autocomplete="email"></div>
+    <div class="field"><label for="del-reason">Motivo (opcional)</label>
+      <textarea class="input" id="del-reason" maxlength="500"></textarea></div>
+    <p class="err-text small" id="del-msg" hidden></p>
+    <button class="btn btn-danger" type="submit">Pedir exclusão da conta</button>
+  </form>
+  <p class="card" id="del-ok" hidden></p>
+
+  <h2>O que é apagado</h2>
+  <ul>
+    <li>Nome, e-mail, telefone, CPF e foto.</li>
+    <li>Documentos e dados da moto (motoristas).</li>
+    <li>Endereços das corridas, mensagens do chat, localização, favoritos e notificações.</li>
+  </ul>
+  <h2>O que é guardado, sem identificar você</h2>
+  <ul>
+    <li>Registros de corridas (datas e valores), pagamentos e o livro-caixa, quando a lei exigir a guarda.
+      Eles deixam de estar ligados ao seu nome, e-mail ou telefone.</li>
+  </ul>
+  <p class="muted small">Se houver uma corrida em andamento ou valores a acertar, a exclusão é concluída depois
+    que isso for resolvido. Saiba mais na <a href="/privacidade">Política de Privacidade</a>.</p>
+</main>
+<script src="/js/delete-account.js"></script>
+</body>
+</html>

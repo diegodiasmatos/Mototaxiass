@@ -224,6 +224,7 @@ export const adminRoutes: Route[] = [
       'dispatch_radius_km', 'commission_pct', 'quote_ttl_min', 'loc_fresh_s', 'request_timeout_min',
       // dados da empresa nos Termos e na Política de Privacidade
       'company_name', 'company_cnpj', 'company_address', 'company_contact', 'dpo_contact', 'legal_reviewed',
+      'android_package', 'android_cert_fingerprints',
       'backup_keep', 'gps_retention_days', 'messages_retention_days', 'min_driver_age', 'min_cnh_years',
       'welcome_message', 'review_sla_hours',
       // apareciam na tela de configurações, mas o servidor não gravava

@@ -1,0 +1,13 @@
+# chave de assinatura e senhas: NUNCA versionar
+*.jks
+*.keystore
+keystore.properties
+senha*.txt
+# saídas do build
+*.aab
+*.apk
+*.idsig
+build/
+.gradle/
+app/build/
+local.properties

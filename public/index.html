@@ -104,6 +104,18 @@
       <div id="quote-cards"></div>
       <h3 class="mt">Forma de pagamento</h3>
       <div id="pay-options"></div>
+      <details class="rules mt" id="quote-rules" open>
+        <summary>Regras de cancelamento e cobrança</summary>
+        <ul>
+          <li>Você paga o preço mostrado na categoria escolhida. Não há taxa de cancelamento.</li>
+          <li><b>Até o embarque ser confirmado</b>, você pode cancelar pelo app, sem custo. O que já foi pago é estornado.</li>
+          <li>Se o Pix não for pago no prazo, ou se nenhum mototaxista aceitar em <span id="rule-timeout">alguns</span> minutos,
+            a corrida é cancelada sozinha e o valor pago, se houver, é estornado.</li>
+          <li><b>Quando o mototaxista digita o seu código de embarque</b>, a viagem começa e não pode mais ser cancelada pelo app.
+            Para pedir ajuda ou contestar a cobrança, use o suporte ou "Não embarquei".</li>
+        </ul>
+        <p class="small mt"><a href="/termos" target="_blank" rel="noopener">Termos de Uso</a></p>
+      </details>
       <button class="btn btn-primary btn-lg mt" id="btn-request" disabled>Confirmar corrida</button>
       <p class="muted small center mt" id="quote-expire"></p>
     </div>

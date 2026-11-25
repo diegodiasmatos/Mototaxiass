@@ -16,6 +16,10 @@ primary_region = 'gru'
   APP_ENV = 'production'
   # o IP real do cliente vem do proxy da Fly (Fly-Client-IP)
   TRUST_PROXY = '1'
+  # App Android (Google Play): impressão digital SHA-256 da CHAVE DE ENVIO (pública,
+  # não é segredo). A da chave de assinatura do Google (Play App Signing) entra
+  # depois em Configurações da central → App Android.
+  ANDROID_CERT_FINGERPRINTS = 'AD:30:27:2C:95:A0:77:8E:29:ED:8A:27:C5:B7:8B:29:A1:61:4B:36:0D:A4:62:28:88:BC:78:5D:71:B6:96:A2'
 
 [[mounts]]
   source = 'dados'

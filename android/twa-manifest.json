@@ -1,0 +1,58 @@
+{
+  "packageId": "br.com.vairo.app",
+  "host": "assis-mototaxi.fly.dev",
+  "name": "VAIRO",
+  "launcherName": "VAIRO",
+  "display": "standalone",
+  "orientation": "portrait",
+  "themeColor": "#101014",
+  "themeColorDark": "#101014",
+  "navigationColor": "#090909",
+  "navigationColorDark": "#090909",
+  "navigationDividerColor": "#090909",
+  "navigationDividerColorDark": "#090909",
+  "backgroundColor": "#090909",
+  "enableNotifications": true,
+  "startUrl": "/",
+  "iconUrl": "https://assis-mototaxi.fly.dev/img/icon-512.png?v=2",
+  "maskableIconUrl": "https://assis-mototaxi.fly.dev/img/icon-maskable-512.png?v=2",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "./upload-key.jks",
+    "alias": "upload"
+  },
+  "appVersionCode": 1,
+  "appVersion": "1.0.0",
+  "shortcuts": [
+    {
+      "name": "Pedir corrida",
+      "shortName": "Pedir",
+      "url": "/passageiro",
+      "chosenIconUrl": "https://assis-mototaxi.fly.dev/img/icon-192.png?v=2"
+    },
+    {
+      "name": "Painel do motorista",
+      "shortName": "Motorista",
+      "url": "/motorista",
+      "chosenIconUrl": "https://assis-mototaxi.fly.dev/img/icon-192.png?v=2"
+    }
+  ],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://assis-mototaxi.fly.dev/manifest.webmanifest",
+  "fallbackType": "customtabs",
+  "features": {
+    "locationDelegation": { "enabled": true }
+  },
+  "alphaDependencies": { "enabled": false },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "fullScopeUrl": "https://assis-mototaxi.fly.dev/",
+  "minSdkVersion": 24,
+  "fingerprints": [],
+  "additionalTrustedOrigins": [],
+  "retainedBundles": [],
+  "protocolHandlers": [],
+  "fileHandlers": [],
+  "appVersionName": "1.0.0"
+}

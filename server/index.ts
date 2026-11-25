@@ -14,7 +14,7 @@ import { rideRoutes, startAutoConfirmSweeper, startRideDeadlineSweeper } from '.
 import { driverRoutes } from './drivers.ts';
 import { adminRoutes } from './admin.ts';
 import { integrationRoutes } from './integrations.ts';
-import { accountRoutes } from './account.ts';
+import { accountRoutes, assetLinks } from './account.ts';
 import { startMaintenance } from './maintenance.ts';
 import { sseConnect } from './notify.ts';
 import { appVersion, injectSwVersion, injectHtmlVersion } from './version.ts';
@@ -25,7 +25,7 @@ const MIME: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8', '.json': 'application/json',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json',
-  '.woff2': 'font/woff2',
+  '.woff2': 'font/woff2', '.md': 'text/markdown; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
 };
 
 // ================= cabeçalhos de segurança =================
@@ -93,6 +93,7 @@ function serveStatic(res: http.ServerResponse, urlPath: string): boolean {
   if (rel === '/termos') rel = '/termos.html';
   if (rel === '/privacidade') rel = '/privacidade.html';
   if (rel === '/redefinir-senha') rel = '/redefinir-senha.html';
+  if (rel === '/excluir-conta') rel = '/excluir-conta.html';
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR)) return false; // path traversal
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return false;
@@ -170,6 +171,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (docMatch && req.method === 'GET') { serveSignedDoc(res, docMatch[1], url.searchParams); return; }
 
     const user = userFromToken(parseCookies(req)['amt_session']);
+
+    // Digital Asset Links: prova para o Android que o app da Play Store
+    // (pacote + impressão digital da chave) pertence a este site. Sem isso o
+    // app abre com a barra de endereço do navegador.
+    if (pathname === '/.well-known/assetlinks.json' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=300' });
+      res.end(JSON.stringify(assetLinks()));
+      return;
+    }
 
     // saúde do serviço para monitores externos (UptimeRobot, Better Stack etc.):
     // 200 quando o banco responde, 503 quando não. Sem dados pessoais.

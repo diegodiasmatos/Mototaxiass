@@ -10,6 +10,9 @@ automática de 15%.
 > **Antes do lançamento:** veja [docs/LANCAMENTO.md](docs/LANCAMENTO.md) — o que já foi
 > corrigido e o que ainda depende de configuração, advogado ou teste em celular.
 > A pasta `data/` não é mais versionada: copie-a antes de um `git pull`.
+>
+> **Google Play:** o app Android (TWA) está em `android/` e o passo a passo em
+> [docs/play-store/README.md](docs/play-store/README.md).
 
 ## Como executar
 
