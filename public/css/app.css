@@ -863,3 +863,9 @@ details.rules li { margin-bottom: 6px; }
 .legal a { color: var(--accent); }
 .legal-note { color: var(--amber); font-size: .85rem; }
 .legal-missing { color: var(--amber); }
+
+/* textos legais aprovados: campos a preencher e notas */
+.legal mark.legal-fill { background: rgba(255, 184, 0, .18); color: var(--amber); padding: 0 2px; border-radius: 3px; }
+.legal blockquote { margin: 10px 0; padding: 8px 12px; border-left: 3px solid var(--amber); }
+.legal hr { border: 0; border-top: 1px solid var(--line); margin: 22px 0; }
+.legal h1 { font-size: 1.5rem; }

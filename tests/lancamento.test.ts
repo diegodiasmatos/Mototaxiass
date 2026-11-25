@@ -487,3 +487,62 @@ test('M3: /api/health responde para monitores externos, sem dados pessoais', asy
   assert.equal(d.ok, true);
   assert.deepEqual(Object.keys(d).sort(), ['ok', 'time', 'version']);
 });
+
+// ================= Google Play =================
+
+test('Play: Termos de Uso aprovados são servidos sem nenhuma alteração', async () => {
+  const crypto = await import('node:crypto');
+  // impressão digital do texto aprovado pelo advogado (não alterar este número sem um texto novo aprovado)
+  const APPROVED = '9d55ff9707d5bcf7a08083dcfcdb48bcb269fc88a77a25c5b5b0b6887632d700';
+  const local = fs.readFileSync(path.join(import.meta.dirname, '..', 'public', 'legal', 'termos-de-uso.md'));
+  assert.equal(crypto.createHash('sha256').update(local).digest('hex'), APPROVED, 'o arquivo aprovado foi modificado');
+  const r = await fetch(base + '/legal/termos-de-uso.md');
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get('content-type') || '', /charset=utf-8/);
+  const served = Buffer.from(await r.arrayBuffer());
+  assert.equal(crypto.createHash('sha256').update(served).digest('hex'), APPROVED, 'o servidor alterou o texto');
+  // a versão aceita pelos usuários é a do próprio arquivo
+  const legal = await (await fetch(base + '/api/legal')).json() as any;
+  assert.equal(legal.version, 'termos-' + APPROVED.slice(0, 12));
+  const page = await (await fetch(base + '/termos')).text();
+  assert.match(page, /data-src="\/legal\/termos-de-uso\.md"/);
+});
+
+test('Play: exclusão de conta pela web, sem login, com resposta igual para qualquer e-mail', async () => {
+  const page = await fetch(base + '/excluir-conta');
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /Excluir sua conta VAIRO/);
+  const a = await actor('200.30.0.1').req('POST', '/api/account-deletion', { email: 'troca@lanc.test', reason: 'sem acesso' });
+  const b = await actor('200.30.0.2').req('POST', '/api/account-deletion', { email: 'naoexiste@lanc.test' });
+  assert.equal(a.status, 200);
+  assert.deepEqual(a.data, b.data);
+  const req = db.prepare(`SELECT status, note FROM account_deletion_requests WHERE user_id =
+    (SELECT id FROM users WHERE email = 'troca@lanc.test')`).get() as any;
+  assert.equal(req.status, 'pendente');
+  assert.match(req.note, /confirmar a identidade/);
+});
+
+test('Play: assetlinks.json liga o pacote às impressões digitais configuradas', async () => {
+  assert.deepEqual(await (await fetch(base + '/.well-known/assetlinks.json')).json(), []);
+  const FP = Array.from({ length: 32 }, (_, i) => (i + 16).toString(16).toUpperCase().padStart(2, '0')).join(':');
+  db.prepare(`INSERT OR REPLACE INTO app_settings (key, value) VALUES ('android_cert_fingerprints', ?)`).run(`${FP.toLowerCase()}, lixo`);
+  try {
+    const r = await fetch(base + '/.well-known/assetlinks.json');
+    assert.match(r.headers.get('content-type') || '', /application\/json/);
+    const d = await r.json() as any;
+    assert.equal(d[0].target.package_name, 'br.com.vairo.app');
+    assert.deepEqual(d[0].target.sha256_cert_fingerprints, [FP]);
+    assert.deepEqual(d[0].relation, ['delegate_permission/common.handle_all_urls']);
+  } finally {
+    db.prepare(`DELETE FROM app_settings WHERE key = 'android_cert_fingerprints'`).run();
+  }
+});
+
+test('Play: regras de cancelamento aparecem antes de confirmar a corrida', async () => {
+  const html = await (await fetch(base + '/passageiro')).text();
+  const rules = html.indexOf('id="quote-rules"'), btn = html.indexOf('id="btn-request"');
+  assert.ok(rules > 0 && rules < btn, 'as regras devem vir antes do botão de confirmar');
+  const manifest = await (await fetch(base + '/manifest.webmanifest')).json() as any;
+  assert.equal(manifest.id, '/');
+  assert.ok(manifest.icons.some((i: any) => i.sizes === '512x512' && i.purpose === 'maskable'));
+});

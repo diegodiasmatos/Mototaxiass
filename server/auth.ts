@@ -196,6 +196,7 @@ export const authRoutes: Route[] = [
       welcome_message: getSetting('welcome_message'),
       google_client_id: process.env.GOOGLE_CLIENT_ID || null,
       review_sla_hours: Number(getSetting('review_sla_hours')),
+      request_timeout_min: Number(getSetting('request_timeout_min')) || 0,
       maps: {
         google_key: gk,                 // pública por natureza; restrinja por site
         mapbox_token: tk,               // público por natureza; restrinja por URL

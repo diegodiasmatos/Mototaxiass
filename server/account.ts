@@ -4,6 +4,8 @@
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { db, getSetting, getCredential, audit } from './db.ts';
 import {
   ApiError, id, now, json, readBody, reqStr, hashPassword, verifyPassword, rateLimit,
@@ -21,7 +23,30 @@ import { notify, notifyAdmins } from './notify.ts';
  * este valor quando o texto mudar de forma relevante: todos precisam aceitar
  * de novo na próxima vez que abrirem o app.
  */
-export const TERMS_VERSION = '2026-11-25';
+export const TERMS_VERSION = termsVersionFromFile();
+
+/**
+ * A versão é a impressão digital do arquivo aprovado (public/legal/termos-de-uso.md):
+ * qualquer mudança no texto gera uma versão nova e todos aceitam de novo.
+ */
+function termsVersionFromFile(): string {
+  try {
+    const f = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'legal', 'termos-de-uso.md');
+    return 'termos-' + crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex').slice(0, 12);
+  } catch { return 'termos-indisponivel'; }
+}
+
+/** Pacote do app Android (Play Store) e impressões digitais das chaves que o assinam. */
+export function assetLinks(): object[] {
+  const pkg = getSetting('android_package') || process.env.ANDROID_PACKAGE || 'br.com.vairo.app';
+  const fps = [process.env.ANDROID_CERT_FINGERPRINTS || '', getSetting('android_cert_fingerprints') || '']
+    .join(',').split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(s => /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/.test(s));
+  if (!fps.length) return [];
+  return [{
+    relation: ['delegate_permission/common.handle_all_urls'],
+    target: { namespace: 'android_app', package_name: pkg, sha256_cert_fingerprints: [...new Set(fps)] },
+  }];
+}
 
 /** O usuário aceitou a versão atual? (a central não precisa) */
 export function termsOk(u: { role: string; terms_version?: string | null }): boolean {
@@ -175,6 +200,34 @@ export const accountRoutes: Route[] = [
     notifyAdmins('deletion_request', '🗑️ Pedido de exclusão de conta',
       { body: `${user!.name} (${user!.role === 'driver' ? 'motorista' : 'passageiro'}) pediu a exclusão da conta.` });
     json(res, 201, { ok: true, id: rid, active_ride: hasActiveRide(user!.id) });
+  }),
+
+  /**
+   * Pedido de exclusão pela web, para quem não consegue entrar no app
+   * (exigência da Google Play: link de exclusão fora do app). A resposta é
+   * sempre a mesma; se a conta existir, a central recebe o pedido e confirma
+   * a identidade pelo telefone cadastrado antes de anonimizar.
+   */
+  route('POST /api/account-deletion', null, async ({ req, res, ip }) => {
+    if (!rateLimit(`delweb:${ip}`, 5, 60 * 60_000)) throw new ApiError(429, 'Muitas tentativas. Aguarde um pouco.');
+    const b = await readBody(req);
+    const email = reqStr(b.email, 'e-mail', 160);
+    const reason = typeof b.reason === 'string' ? b.reason.slice(0, 500) : null;
+    const u = db.prepare(`SELECT id, role, name FROM users WHERE email = ?`).get(email) as any;
+    if (u && u.role !== 'admin' && !/@anonimizado\.invalid$/.test(email)) {
+      const open = db.prepare(`SELECT id FROM account_deletion_requests WHERE user_id = ? AND status = 'pendente'`).get(u.id);
+      if (!open) {
+        db.prepare(`INSERT INTO account_deletion_requests (id, user_id, reason, created_at, note) VALUES (?,?,?,?,?)`)
+          .run(id('del'), u.id, reason, now(), 'pedido pela página web (sem login): confirmar a identidade antes');
+        notifyAdmins('deletion_request', '🗑️ Pedido de exclusão pela página web',
+          { body: `${u.name}: confirme a identidade pelo telefone cadastrado antes de anonimizar.` });
+      }
+    }
+    json(res, 200, {
+      ok: true,
+      message: 'Pedido recebido. Se houver uma conta com este e-mail, a central vai confirmar sua identidade '
+        + 'pelo telefone cadastrado e concluir a exclusão.',
+    });
   }),
 
   /** Desistir do pedido de exclusão. */

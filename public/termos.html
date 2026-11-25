@@ -12,64 +12,15 @@
 <body class="legal-page">
 <main class="app legal">
   <p><a href="/" class="linkbtn">← Voltar ao app</a></p>
-  <h1>Termos de Uso</h1>
-  <p class="muted">Versão de <span id="legal-version">—</span></p>
-
-  <div class="testbar" id="legal-draft">⚠️ Versão preliminar. Este texto descreve como o app funciona hoje,
-    mas ainda precisa ser revisado por um advogado antes de valer como contrato.</div>
-
-  <h2>1. Quem somos</h2>
-  <p>A VAIRO é um aplicativo de corridas de moto em <span data-legal="city_name"></span>, operado por
-    <b data-legal="company_name"></b>, CNPJ <span data-legal="company_cnpj"></span>,
-    com endereço em <span data-legal="company_address"></span>.
-    Contato: <span data-legal="company_contact"></span>.</p>
-  <p class="legal-note">[Definir com o advogado: se a empresa presta o serviço de transporte ou apenas
-    intermedeia o contato entre passageiros e mototaxistas autônomos, e as responsabilidades de cada parte.]</p>
-
-  <h2>2. Cadastro</h2>
-  <ul>
-    <li>Para usar o app é preciso criar uma conta com nome, telefone, e-mail e senha. Os dados devem ser verdadeiros.</li>
-    <li>A conta é pessoal. Não compartilhe sua senha. Se suspeitar de uso indevido, troque a senha no Perfil e avise o suporte.</li>
-    <li>Mototaxistas enviam também CPF, data de nascimento, endereço, dados da moto e fotos da CNH,
-      do documento da moto e uma selfie. A conta só recebe corridas depois de aprovada pela central.</li>
-    <li class="legal-note">[Definir idade mínima para passageiros e regras para menores de idade.]</li>
-  </ul>
-
-  <h2>3. Como funciona uma corrida</h2>
-  <ul>
-    <li>O preço é calculado pelo app antes de você pedir, pela distância e pela tarifa da categoria escolhida.</li>
-    <li>Ao aceitar, o mototaxista vai até o ponto de embarque. O app mostra um <b>código de embarque</b> ao passageiro;
-      o mototaxista só inicia a viagem digitando esse código.</li>
-    <li>Ao final, o mototaxista informa a chegada e o passageiro confirma. Sem resposta, a confirmação é automática em poucos segundos.</li>
-  </ul>
-
-  <h2>4. Cancelamento e cobrança</h2>
-  <ul>
-    <li><b>Antes do embarque</b> o passageiro pode cancelar pelo app, sem custo. O que já foi pago é estornado.</li>
-    <li>Se o pagamento por Pix não for confirmado no prazo, ou se nenhum mototaxista aceitar a corrida em alguns minutos,
-      a corrida é cancelada automaticamente e o valor pago, se houver, é estornado.</li>
-    <li>Se o mototaxista desistir antes do embarque, o app procura outro, sem custo para o passageiro.</li>
-    <li><b>Depois do embarque confirmado</b> a corrida não pode ser cancelada pelo app e vale o valor combinado.
-      Para pedir ajuda ou contestar a cobrança, use o suporte ou a opção "Não embarquei". Cada caso é analisado pela equipe.</li>
-    <li>Pagamentos por Pix e cartão são processados pelo Mercado Pago. Em dinheiro, o passageiro paga direto ao mototaxista.</li>
-    <li>A empresa cobra do mototaxista uma comissão sobre o valor de cada corrida concluída.</li>
-  </ul>
-
-  <h2>5. Conduta</h2>
-  <ul>
-    <li>É proibido usar o app para fraude, para assediar ou ameaçar outras pessoas, ou para fins ilegais.</li>
-    <li>A central pode bloquear contas que descumprirem estes termos, informando o motivo.</li>
-    <li class="legal-note">[Definir com o advogado as regras de segurança, uso de capacete e equipamentos,
-      e as responsabilidades em caso de acidente ou dano.]</li>
-  </ul>
-
-  <h2>6. Seus dados</h2>
-  <p>O uso dos seus dados pessoais e da sua localização está descrito na
-    <a href="/privacidade">Política de Privacidade</a>. Você pode pedir a exclusão da conta no Perfil do app.</p>
-
-  <h2>7. Alterações e foro</h2>
-  <p>Quando estes termos mudarem, o app pede um novo aceite antes de você continuar usando.</p>
-  <p class="legal-note">[Definir o foro e a lei aplicável com o advogado.]</p>
+  <!-- O texto vem de /legal/termos-de-uso.md, aprovado pelo advogado, exibido
+       sem nenhuma alteração. Para mudar o texto, troque o arquivo inteiro pela
+       nova versão aprovada (e a versão em server/account.ts). -->
+  <article id="legal-doc" data-src="/legal/termos-de-uso.md">
+    <p class="muted">Carregando os Termos de Uso…</p>
+  </article>
+  <noscript><p><a href="/legal/termos-de-uso.md">Abrir o texto dos Termos de Uso</a></p></noscript>
+  <p class="muted small mt"><a href="/privacidade">Política de Privacidade</a> ·
+    <a href="/excluir-conta">Excluir minha conta</a></p>
 </main>
 <script src="/js/legal.js"></script>
 </body>

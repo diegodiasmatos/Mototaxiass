@@ -181,6 +181,12 @@ function setupGoogleButton() {
 
 /* ================= entrada no app ================= */
 async function enterApp() {
+  const rt = $('#rule-timeout');
+  if (rt && S.config?.request_timeout_min > 0) rt.textContent = String(S.config.request_timeout_min);
+  else if (rt && S.config?.request_timeout_min === 0) {
+    // a central desligou o prazo de aceite: a regra fala só do Pix
+    rt.closest('li').textContent = 'Se o Pix não for pago no prazo, a corrida é cancelada sozinha.';
+  }
   ensureTermsAccepted();
   renderAccountCard($('#account-card'));
   $('#bottomnav').hidden = false;

@@ -1161,8 +1161,8 @@ async function secSettings() {
         <a href="/privacidade" target="_blank">Política de Privacidade</a>. Enquanto um advogado não revisar os textos,
         as páginas mostram o aviso de versão preliminar.</p>
       <div class="grid2">
-        <div class="field"><label>Razão social</label><input class="input" id="lg-name" value="${escapeHtml(st.company_name || '')}"></div>
-        <div class="field"><label>CNPJ</label><input class="input" id="lg-cnpj" value="${escapeHtml(st.company_cnpj || '')}"></div>
+        <div class="field"><label>Responsável: nome (pessoa física) ou razão social</label><input class="input" id="lg-name" value="${escapeHtml(st.company_name || '')}"></div>
+        <div class="field"><label>CNPJ (deixe vazio se for pessoa física)</label><input class="input" id="lg-cnpj" value="${escapeHtml(st.company_cnpj || '')}"></div>
         <div class="field"><label>Endereço</label><input class="input" id="lg-addr" value="${escapeHtml(st.company_address || '')}"></div>
         <div class="field"><label>Contato (e-mail ou WhatsApp)</label><input class="input" id="lg-contact" value="${escapeHtml(st.company_contact || '')}"></div>
         <div class="field"><label>Encarregado de dados (LGPD): nome e contato</label><input class="input" id="lg-dpo" value="${escapeHtml(st.dpo_contact || '')}"></div>
@@ -1170,6 +1170,16 @@ async function secSettings() {
       </div>
       <label class="check-row"><input type="checkbox" id="lg-reviewed" ${st.legal_reviewed === '1' ? 'checked' : ''}>
         <span>Os textos foram revisados por um advogado (tira o aviso de versão preliminar).</span></label>
+    </div>
+    <div class="card">
+      <h3>🤖 App Android (Google Play)</h3>
+      <p class="muted small mb">Liga o app da Play Store a este site (<a href="/.well-known/assetlinks.json" target="_blank">assetlinks.json</a>).
+        Depois do primeiro envio, copie em Play Console → <i>Integridade do app → Assinatura de apps</i> a
+        <b>impressão digital SHA-256 da chave de assinatura do app</b> e cole aqui (separe várias por vírgula).
+        Sem ela, o app abre com a barra de endereço do navegador.</p>
+      <div class="field"><label>Pacote</label><input class="input" id="an-pkg" value="${escapeHtml(st.android_package || 'br.com.vairo.app')}" readonly></div>
+      <div class="field"><label>Impressões digitais SHA-256 adicionais</label>
+        <textarea class="input" id="an-fps" rows="2" placeholder="AB:CD:…">${escapeHtml(st.android_cert_fingerprints || '')}</textarea></div>
     </div>
     <div class="card">
       <h3>🗂️ Guarda de dados e requisitos do mototaxista</h3>
@@ -1222,6 +1232,7 @@ async function secSettings() {
           company_address: $('#lg-addr').value, company_contact: $('#lg-contact').value,
           dpo_contact: $('#lg-dpo').value, legal_reviewed: $('#lg-reviewed').checked ? '1' : '0',
           request_timeout_min: $('#st-reqto').value,
+          android_cert_fingerprints: $('#an-fps').value.trim(),
           gps_retention_days: $('#rt-gps').value, messages_retention_days: $('#rt-msg').value,
           backup_keep: $('#rt-bkp').value, min_driver_age: $('#rq-age').value, min_cnh_years: $('#rq-cnh').value,
         },

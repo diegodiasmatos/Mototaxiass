@@ -434,10 +434,18 @@ window.addEventListener('appinstalled', () => {
 });
 
 function isStandalone() {
-  return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true || isAndroidApp();
 }
 
 /** Botão flutuante de instalação; no iPhone mostra as instruções manuais. */
+/** Aberto pelo app da Google Play (Trusted Web Activity)? Guardado para a sessão toda. */
+function isAndroidApp() {
+  try {
+    if (document.referrer.startsWith('android-app://')) sessionStorage.setItem('vairo-android-app', '1');
+    return sessionStorage.getItem('vairo-android-app') === '1';
+  } catch { return false; }
+}
+
 function showInstallButton() {
   if (isStandalone() || $('#install-btn')) return;
   const b = document.createElement('button');
@@ -1079,6 +1087,9 @@ let _screenMenu = null;
 function setupScreenMenu(items, fallback) {
   const sel = $('#screen-select');
   if (!sel) return;
+  // no app instalado (Play Store ou tela de início) a navegação é pela barra
+  // de baixo; o menu de telas fica só na versão de navegador
+  if (isStandalone()) { const bar = $('#screenbar'); if (bar) bar.hidden = true; return; }
   _screenMenu = { items, fallback, picked: -1 };
   sel.innerHTML = '<option value="" hidden></option>' + items.map((it, i) =>
     `<option value="${i}"${it.soon ? ' disabled' : ''}>${i + 1}. ${escapeHtml(it.label)}${it.soon ? ' — em breve' : ''}</option>`).join('');
