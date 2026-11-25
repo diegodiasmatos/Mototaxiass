@@ -664,6 +664,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   card_enabled: '1',
   cash_enabled: '1',
   pix_expires_min: '15',
+  request_timeout_min: '15',       // procurando mototaxista: cancela e estorna depois disso (0 = nunca)
   driver_debt_limit_cents: '5000', // dívida de comissão (corridas em dinheiro) que bloqueia novas corridas
   pickup_move_alert_m: '80',       // distância que dispara "você mudou de local?"
   gps_max_accuracy_m: '150',       // acima disso a posição é considerada imprecisa

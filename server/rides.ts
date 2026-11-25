@@ -13,7 +13,7 @@ import { notify, notifyAdmins, sseSend, sseSendMany } from './notify.ts';
 import {
   createCharge, getPaymentByRide, capturePayment, refundPayment, syncPayment,
   isReleasable, availableMethods, isTestMode, providerName, ledger, driverBalance,
-  applyPaymentStatus, splitAvailable, connectedSeller, type Method,
+  applyPaymentStatus, splitAvailable, connectedSeller, testPaymentsBlocked, type Method,
 } from './payments.ts';
 
 /** Cobra antes de despachar ou depois do aceite (necessário para o split). */
@@ -420,7 +420,11 @@ export function startAutoConfirmSweeper(): NodeJS.Timeout {
 // Cancelamento
 // ---------------------------------------------------------------
 
+/** Quem o sistema usa para cancelar sozinho (prazo vencido). */
+export const SYSTEM_ACTOR = { id: '', role: 'sistema', name: 'Sistema' } as unknown as SessionUser;
+
 export async function cancelRide(r: any, user: SessionUser, reason: string): Promise<void> {
+  const system = (user.role as string) === 'sistema';
   // Depois do embarque confirmado o passageiro não cancela pelo app: ajuda e
   // contestação de cobrança vão para o suporte (ou "Não embarquei").
   if (user.role === 'passenger' && r.boarding_confirmed_at) {
@@ -432,7 +436,10 @@ export async function cancelRide(r: any, user: SessionUser, reason: string): Pro
   const states = (user.role === 'driver'
     ? getSetting('driver_cancel_states') : getSetting('passenger_cancel_states'))
     .split(',').map(s => s.trim());
-  if (user.role !== 'admin' && !states.includes(r.status)) {
+  // aguardando pagamento: o passageiro sempre pode desistir (nada foi cobrado
+  // ainda; se o Pix cair depois, o estorno abaixo devolve)
+  if (user.role === 'passenger' && r.status === 'pending_payment') states.push('pending_payment');
+  if (user.role !== 'admin' && !system && !states.includes(r.status)) {
     throw new ApiError(409, `Não é possível cancelar uma corrida em estado "${r.status}".`);
   }
   const result = db.prepare(`
@@ -458,7 +465,7 @@ export async function cancelRide(r: any, user: SessionUser, reason: string): Pro
         { body: `Corrida ${r.id}: ${e?.message || e}`, rideId: r.id });
     }
   }
-  rideEvent(r.id, 'cancelled', user.id, `por ${user.role}: ${reason}`, r.status, 'cancelled');
+  rideEvent(r.id, 'cancelled', user.id || undefined, `por ${user.role}: ${reason}`, r.status, 'cancelled');
 
   if (user.role !== 'driver' && r.driver_id) {
     notify(r.driver_id, 'ride_cancelled', 'Corrida cancelada pelo passageiro',
@@ -472,6 +479,60 @@ export async function cancelRide(r: any, user: SessionUser, reason: string): Pro
   if (r.driver_id) sseSend(r.driver_id, 'ride_update', { id: r.id });
   notifyAdmins('ride_cancelled', 'Corrida cancelada',
     { body: `${r.origin_text} → ${r.dest_text} (por ${user.role}: ${reason})`, rideId: r.id, push: false });
+}
+
+// ---------------------------------------------------------------
+// Prazos: corrida não fica parada para sempre
+// ---------------------------------------------------------------
+
+/**
+ * Cancela sozinho, com estorno do que tiver sido pago:
+ *  - aguardando pagamento depois do vencimento do Pix (+5 min de folga).
+ *    Antes, reconsulta o provedor: se o pagamento caiu, a corrida segue;
+ *  - procurando mototaxista há mais de `request_timeout_min` sem aceite.
+ * O passageiro é avisado e pode pedir de novo.
+ */
+export async function expireStaleRides(t = now()): Promise<{ payment: number; request: number }> {
+  const out = { payment: 0, request: 0 };
+  const payMin = Math.max(1, getSettingNum('pix_expires_min')) + 5;
+  const unpaid = db.prepare(`SELECT * FROM rides WHERE status = 'pending_payment' AND requested_at < ?`)
+    .all(t - payMin * 60_000) as any[];
+  for (const r of unpaid) {
+    try {
+      const p = getPaymentByRide(r.id);
+      if (p && !p.test_mode && ['criado', 'aguardando_pagamento'].includes(p.status)) {
+        const fresh = await syncPayment(p).catch(() => p);
+        if (isReleasable(fresh)) { releaseRideForDispatch(r.id); continue; }
+      }
+      const cur = getRide(r.id);
+      if (cur.status !== 'pending_payment') continue;
+      await cancelRide(cur, SYSTEM_ACTOR, 'Pagamento não confirmado dentro do prazo');
+      out.payment++;
+    } catch (e: any) {
+      console.error(`[prazos] corrida ${r.id}: ${e?.message || e}`);
+    }
+  }
+  const reqMin = getSettingNum('request_timeout_min');
+  if (reqMin > 0) {
+    const waiting = db.prepare(`SELECT * FROM rides WHERE status = 'requested' AND driver_id IS NULL
+      AND requested_at < ?`).all(t - reqMin * 60_000) as any[];
+    for (const r of waiting) {
+      try {
+        await cancelRide(r, SYSTEM_ACTOR,
+          `Nenhum mototaxista aceitou em ${reqMin} minutos. O valor pago, se houver, foi estornado.`);
+        out.request++;
+      } catch (e: any) {
+        console.error(`[prazos] corrida ${r.id}: ${e?.message || e}`);
+      }
+    }
+  }
+  return out;
+}
+
+export function startRideDeadlineSweeper(): NodeJS.Timeout {
+  const timer = setInterval(() => { expireStaleRides().catch(() => { }); }, 60_000);
+  timer.unref();
+  return timer;
 }
 
 // ---------------------------------------------------------------
@@ -497,7 +558,7 @@ export const rideRoutes: Route[] = [
       fares: allFares(),
       commission_pct: getSettingNum('commission_pct'),
       payment_methods: availableMethods(),
-      test_mode: isTestMode(),
+      test_mode: isTestMode() && !testPaymentsBlocked(),
       provider: providerName(),
     });
   }),
@@ -604,7 +665,7 @@ export const rideRoutes: Route[] = [
       },
       online_drivers: eligibleDrivers(origin.lat, origin.lng).length,
       payment_methods: availableMethods(),
-      test_mode: isTestMode(),
+      test_mode: isTestMode() && !testPaymentsBlocked(),
     });
   }),
 
@@ -738,6 +799,7 @@ export const rideRoutes: Route[] = [
    */
   route('POST /api/rides/:id/payment/test-approve', 'passenger', ({ res, user, params }) => {
     if (!isTestMode()) throw new ApiError(403, 'Indisponível: o provedor real está configurado.');
+    if (testPaymentsBlocked()) throw new ApiError(403, 'Pagamento de teste não é aceito no app publicado.');
     const r = getRide(params.id);
     if (r.passenger_id !== user!.id) throw new ApiError(403, 'Esta corrida não é sua.');
     const payment = getPaymentByRide(r.id);

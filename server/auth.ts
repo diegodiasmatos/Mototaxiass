@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { db, getSetting } from './db.ts';
 import {
-  ApiError, hashPassword, verifyPassword, id, now, json, readBody,
+  ApiError, hashPassword, verifyPassword, id, now, json, readBody, rateExceeded, rateHit,
   isValidEmail, isValidCpf, reqStr, rateLimit, setSessionCookie, clearSessionCookie,
 } from './util.ts';
 import { route, type Route, type SessionUser } from './router.ts';
@@ -73,13 +73,22 @@ export const authRoutes: Route[] = [
     json(res, 201, { ok: true, user: { id: uid, role: roleIn, name, email: b.email, phone, photo: null } });
   }),
 
+  /**
+   * Login. Só as tentativas ERRADAS contam: 20 por IP e 8 por conta a cada
+   * 15 minutos. Quem acerta a senha nunca é barrado por causa dos outros.
+   */
   route('POST /api/auth/login', null, async ({ req, res, ip }) => {
-    if (!rateLimit(`login:${ip}`, 25, 10 * 60_000)) throw new ApiError(429, 'Muitas tentativas. Aguarde alguns minutos.');
     const b = await readBody(req);
     const email = reqStr(b.email, 'e-mail', 160);
     const password = reqStr(b.password, 'senha', 200);
+    const ipKey = `loginfail-ip:${ip}`, accKey = `loginfail-acc:${email.toLowerCase()}`;
+    if (rateExceeded(ipKey, 20) || rateExceeded(accKey, 8)) {
+      throw new ApiError(429, 'Muitas tentativas com senha errada. Aguarde 15 minutos ou use "Esqueci minha senha".');
+    }
     const u = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
     if (!u || !verifyPassword(password, u.password_hash)) {
+      rateHit(ipKey, 15 * 60_000);
+      rateHit(accKey, 15 * 60_000);
       throw new ApiError(401, 'E-mail ou senha incorretos.');
     }
     await loginUser(res, u);

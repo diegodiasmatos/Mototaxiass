@@ -79,6 +79,10 @@ function go(sec) {
 }
 
 function testBanner(on) {
+  if (on && S.testBlocked) {
+    return `<div class="testbar">💵 SÓ DINHEIRO POR ENQUANTO — Pix e cartão ficam desligados no app publicado
+      até o Mercado Pago ser configurado em 💳 Pagamentos.</div>`;
+  }
   return on ? `<div class="testbar">🧪 PAGAMENTOS EM MODO DE TESTE — nenhum valor real é movimentado.
     Configure MP_ACCESS_TOKEN para operar de verdade.</div>` : '';
 }
@@ -87,6 +91,7 @@ function testBanner(on) {
 async function secDashboard() {
   const { totals: t, series } = await api('/api/admin/dashboard');
   S.testMode = t.test_mode;
+  S.testBlocked = !!t.test_blocked;
   const stat = (v, l, cls = '') => `<div class="stat"><div class="sv ${cls}">${v}</div><div class="sl">${l}</div></div>`;
   const days = Object.entries(series);
   const maxRides = Math.max(1, ...days.map(([, d]) => d.rides));

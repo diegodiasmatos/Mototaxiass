@@ -5,12 +5,12 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
   ROOT, loadEnv, json, parseCookies, ApiError, verifySignedDoc,
-  hashPassword, id, now,
+  hashPassword, id, now, clientIp,
 } from './util.ts';
 import { initDb, db } from './db.ts';
 import { matchRoute, type Route, type Ctx } from './router.ts';
 import { authRoutes, userFromToken } from './auth.ts';
-import { rideRoutes, startAutoConfirmSweeper } from './rides.ts';
+import { rideRoutes, startAutoConfirmSweeper, startRideDeadlineSweeper } from './rides.ts';
 import { driverRoutes } from './drivers.ts';
 import { adminRoutes } from './admin.ts';
 import { integrationRoutes } from './integrations.ts';
@@ -95,7 +95,7 @@ const ALL_ROUTES: Route[] = [
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const url = new URL(req.url || '/', 'http://localhost');
   const pathname = url.pathname;
-  const ip = (req.socket.remoteAddress || '0.0.0.0').replace('::ffff:', '');
+  const ip = clientIp(req);
 
   try {
     // documentos privados assinados
@@ -190,6 +190,8 @@ export async function start(opts: StartOptions = {}): Promise<{ server: http.Ser
 
   // confirma automaticamente as corridas cujo prazo de 5 s expirou (no servidor)
   startAutoConfirmSweeper();
+  // corridas sem pagamento ou sem aceite não ficam paradas para sempre
+  startRideDeadlineSweeper();
 
   // base de endereços baixada num formato antigo: baixa de novo, em segundo
   // plano, sem atrasar a subida (não roda nos testes / modo sem rede)

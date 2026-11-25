@@ -210,6 +210,58 @@ export function reqNum(v: unknown, field: string): number {
 
 // ---------- rate limiting simples (em memória) ----------
 const buckets = new Map<string, { count: number; resetAt: number }>();
+/**
+ * O app roda atrás do proxy da hospedagem (Fly.io): a conexão vem do proxy,
+ * não do celular. Com TRUST_PROXY=1 o IP real vem do cabeçalho do proxy
+ * (Fly-Client-IP, que a Fly sempre reescreve). Sem isso o cabeçalho é
+ * ignorado, porque qualquer cliente poderia forjá-lo.
+ */
+export function trustProxy(): boolean {
+  return process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true';
+}
+
+/** IP real do cliente (usado nos limites de tentativas). */
+export function clientIp(req: IncomingMessage): string {
+  if (trustProxy()) {
+    const fly = req.headers['fly-client-ip'];
+    if (typeof fly === 'string' && fly.trim()) return fly.trim().slice(0, 64);
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.trim()) {
+      // o último endereço foi posto pelo proxy de confiança
+      const parts = xff.split(',').map(x => x.trim()).filter(Boolean);
+      if (parts.length) return parts[parts.length - 1].slice(0, 64);
+    }
+  }
+  return (req.socket.remoteAddress || '0.0.0.0').replace('::ffff:', '');
+}
+
+/** A requisição chegou por HTTPS (direto ou pelo proxy de confiança)? */
+export function isSecureRequest(req: IncomingMessage): boolean {
+  if ((req.socket as any).encrypted) return true;
+  if (trustProxy()) {
+    return String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase() === 'https';
+  }
+  return false;
+}
+
+/** Já passou do limite? (só olha, não conta) */
+export function rateExceeded(key: string, max: number): boolean {
+  const b = buckets.get(key);
+  return !!b && b.resetAt >= now() && b.count >= max;
+}
+/** Conta uma ocorrência (ex.: senha errada). */
+export function rateHit(key: string, windowMs: number): void {
+  const t = now();
+  const b = buckets.get(key);
+  if (!b || b.resetAt < t) buckets.set(key, { count: 1, resetAt: t + windowMs });
+  else b.count++;
+}
+/** Remove contadores vencidos. */
+export function pruneRateLimits(): void {
+  const t = now();
+  for (const [k, b] of buckets) if (b.resetAt < t) buckets.delete(k);
+}
+
 export function rateLimit(key: string, max: number, windowMs: number): boolean {
   const t = now();
   const b = buckets.get(key);

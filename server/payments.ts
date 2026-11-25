@@ -35,6 +35,16 @@ export function providerName(): 'mercadopago' | 'teste' {
 }
 export function isTestMode(): boolean { return providerName() === 'teste'; }
 
+/** Servidor publicado para o público (APP_ENV=production, definido no fly.toml). */
+export function isProduction(): boolean { return process.env.APP_ENV === 'production'; }
+
+/**
+ * Em produção o modo de teste NÃO vale: sem Mercado Pago configurado, Pix e
+ * cartão ficam indisponíveis (só dinheiro). Evita corrida "paga" sem dinheiro
+ * de verdade, com o mototaxista instruído a não cobrar.
+ */
+export function testPaymentsBlocked(): boolean { return isProduction() && isTestMode(); }
+
 /** O split automático exige o app OAuth do Mercado Pago configurado. */
 export function splitAvailable(): boolean {
   return !!(getCredential('MP_CLIENT_ID') && getCredential('MP_CLIENT_SECRET')
@@ -90,6 +100,17 @@ async function refreshSellerToken(driverId: string, refreshToken: string | null)
 export function availableMethods(): { method: Method; label: string; enabled: boolean; note?: string }[] {
   const test = isTestMode();
   const hasPublicKey = !!getCredential('MP_PUBLIC_KEY');
+  if (testPaymentsBlocked()) {
+    const note = 'indisponível por enquanto: a central ainda não configurou o Mercado Pago';
+    return [
+      { method: 'pix', label: 'Pix', enabled: false, note },
+      { method: 'cartao', label: 'Cartão de crédito', enabled: false, note },
+      {
+        method: 'dinheiro', label: 'Dinheiro', enabled: getSetting('cash_enabled') === '1',
+        note: 'pago direto ao mototaxista; a comissão fica registrada como dívida sua na plataforma',
+      },
+    ];
+  }
   return [
     {
       method: 'pix', label: 'Pix', enabled: getSetting('pix_enabled') === '1',

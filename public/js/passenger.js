@@ -844,8 +844,9 @@ async function refreshActiveRide() {
       closeConfirmModal();
       if (final?.ride?.status === 'completed' && !final.ride.rated) promptRating(final.ride);
       else if (final?.ride?.status === 'cancelled') {
-        toast(final.ride.cancelled_by === 'driver'
-          ? 'O mototaxista cancelou a corrida.' : 'Corrida cancelada.');
+        toast(final.ride.cancelled_by === 'driver' ? 'O mototaxista cancelou a corrida.'
+          : final.ride.cancelled_by === 'sistema' ? `Corrida cancelada: ${final.ride.cancel_reason}`
+            : 'Corrida cancelada.', final.ride.cancelled_by === 'sistema' ? 'err' : undefined);
       }
       showScreen('screen-home');
       refreshStats();

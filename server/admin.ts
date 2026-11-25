@@ -11,7 +11,7 @@ import { eligibleDrivers, finalizeRide, getRide, rideEvent, cancelRide } from '.
 import { notify, notifyAdmins, sseSend } from './notify.ts';
 import {
   driverBalance, ledger, getPaymentByRide, refundPayment, syncPayment,
-  isTestMode, providerName, splitAvailable,
+  isTestMode, providerName, splitAvailable, testPaymentsBlocked,
 } from './payments.ts';
 
 const CREDENTIAL_KEYS = [
@@ -67,6 +67,7 @@ export const adminRoutes: Route[] = [
         c(`SELECT COALESCE(SUM(amount_cents),0) v FROM financial_transactions WHERE kind='repasse_devido'`).v
         - c(`SELECT COALESCE(SUM(amount_cents),0) v FROM financial_transactions WHERE kind='repasse_pago'`).v),
       test_mode: isTestMode(),
+      test_blocked: testPaymentsBlocked(),
       provider: providerName(),
     };
 
@@ -220,7 +221,7 @@ export const adminRoutes: Route[] = [
   route('PUT /api/admin/settings', 'admin', async ({ req, res, user }) => {
     const b = await readBody(req);
     const EDITABLE = ['city_name', 'center_lat', 'center_lng', 'coverage_radius_km',
-      'dispatch_radius_km', 'commission_pct', 'quote_ttl_min', 'loc_fresh_s',
+      'dispatch_radius_km', 'commission_pct', 'quote_ttl_min', 'loc_fresh_s', 'request_timeout_min',
       'welcome_message', 'review_sla_hours',
       // apareciam na tela de configurações, mas o servidor não gravava
       'confirm_window_s', 'driver_debt_limit_cents', 'gps_max_accuracy_m'];
