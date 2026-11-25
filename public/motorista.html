@@ -103,6 +103,12 @@
       <div id="apply-step-3" hidden>
         <h3>3 · Documentos</h3>
         <p class="muted small mb">Exigências: CNH válida <b>categoria A</b> com observação <b>EAR</b> (exerce atividade remunerada) e CRLV da moto em dia. Os arquivos ficam em área privada — somente a administração acessa.</p>
+        <div class="grid2">
+          <div class="field"><label for="ap-cnh-exp">Validade da CNH</label><input class="input" id="ap-cnh-exp" type="date" required></div>
+          <div class="field"><label for="ap-cnh-first">Data da 1ª habilitação</label><input class="input" id="ap-cnh-first" type="date" required></div>
+        </div>
+        <label class="check-row"><input type="checkbox" id="ap-decl-ear"> <span>Minha CNH é <b>categoria A</b> e tem a observação <b>EAR</b>.</span></label>
+        <label class="check-row mb"><input type="checkbox" id="ap-decl-course"> <span>Tenho o curso especializado para mototaxista.</span></label>
         <div class="upload-slot" id="slot-cnh"><div class="uico">🪪</div><div class="ulabel">CNH (frente, com EAR)</div><div class="usub">Foto nítida ou PDF</div></div>
         <input type="file" id="file-cnh" accept="image/*,application/pdf" hidden>
         <div class="upload-slot" id="slot-crlv"><div class="uico">📄</div><div class="ulabel">CRLV do veículo</div><div class="usub">Documento da moto</div></div>

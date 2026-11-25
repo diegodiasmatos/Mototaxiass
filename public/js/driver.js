@@ -105,7 +105,7 @@ function bindScreenMenu() {
       },
     },
     {
-      label: 'Mapa de Calor & Online',
+      label: 'Ficar online & corridas',
       match: () => currentScreen() === 'screen-panel',
       go: () => {
         if (!S.user) return needLogin;
@@ -252,6 +252,8 @@ function bindApply() {
   $('#ap-back-3').onclick = () => show(2);
 
   $('#ap-submit').onclick = async () => {
+    if (!$('#ap-cnh-exp').value || !$('#ap-cnh-first').value) { toast('Informe a validade da CNH e a data da 1ª habilitação.', 'err'); return; }
+    if (!$('#ap-decl-ear').checked) { toast('Confirme que sua CNH é categoria A com EAR.', 'err'); return; }
     for (const k of ['cnh', 'crlv', 'selfie']) {
       if (!S.files[k]) { toast(`Documento pendente: ${k.toUpperCase()}.`, 'err'); return; }
     }
@@ -270,6 +272,8 @@ function bindApply() {
           moto_year: $('#ap-year').value.trim(),
           moto_color: $('#ap-color').value.trim(),
           moto_plate: $('#ap-plate').value.trim().toUpperCase(),
+          cnh_expiry: $('#ap-cnh-exp').value, cnh_first_date: $('#ap-cnh-first').value,
+          decl_cat_a_ear: $('#ap-decl-ear').checked, decl_course: $('#ap-decl-course').checked,
           documents: { cnh: S.files.cnh, crlv: S.files.crlv, selfie: S.files.selfie },
         },
       });
@@ -349,7 +353,7 @@ function paintToggle() {
   t.classList.toggle('on', S.online);
   t.querySelector('.ot-label').textContent = S.online ? 'Você está ONLINE' : 'Você está offline';
   t.querySelector('.ot-sub').textContent = S.online
-    ? 'Compartilhando localização · aguardando corridas'
+    ? 'Compartilhando localização · mantenha a tela ligada'
     : 'Toque para ficar online e receber corridas';
 }
 
@@ -377,8 +381,31 @@ async function toggleOnline() {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+/**
+ * Tela ligada enquanto o motorista está online. Pelo navegador, o celular
+ * para de mandar o GPS quando a tela apaga, e o servidor só oferece corridas
+ * a quem mandou a posição nos últimos 2 minutos.
+ */
+let _wakeLock = null;
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return false;
+  try {
+    _wakeLock = await navigator.wakeLock.request('screen');
+    _wakeLock.addEventListener('release', () => { _wakeLock = null; });
+    return true;
+  } catch { return false; }
+}
+function releaseWakeLock() { _wakeLock?.release().catch(() => { }); _wakeLock = null; }
+document.addEventListener('visibilitychange', () => {
+  // o sistema solta a trava quando o app sai da tela; pega de novo na volta
+  if (document.visibilityState === 'visible' && S.online && !_wakeLock) requestWakeLock();
+});
+
 function startLocationWatch() {
   stopLocationWatch();
+  requestWakeLock().then(ok => {
+    if (!ok) toast('Deixe a tela ligada e o app aberto enquanto estiver online: com a tela apagada o GPS para e você deixa de receber corridas.');
+  });
   if (!navigator.geolocation) { toast('GPS indisponível neste navegador.', 'err'); return; }
   S.watchId = navigator.geolocation.watchPosition(
     p => {
@@ -402,6 +429,7 @@ function startLocationWatch() {
 }
 function stopLocationWatch() {
   if (S.watchId != null) { navigator.geolocation.clearWatch(S.watchId); S.watchId = null; }
+  releaseWakeLock();
   setDriverGps('off', 'desligado');
 }
 function setDriverGps(state, label) {

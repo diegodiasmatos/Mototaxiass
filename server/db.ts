@@ -686,6 +686,11 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
       note       TEXT
     );
     CREATE INDEX idx_delreq_user ON account_deletion_requests(user_id);
+    -- requisitos do mototaxista informados no cadastro (conferidos pela central)
+    ALTER TABLE drivers ADD COLUMN cnh_expiry TEXT;
+    ALTER TABLE drivers ADD COLUMN cnh_first_date TEXT;
+    ALTER TABLE drivers ADD COLUMN decl_cat_a_ear INTEGER;
+    ALTER TABLE drivers ADD COLUMN decl_course INTEGER;
     `,
   },
 ];
@@ -698,7 +703,9 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   card_enabled: '1',
   cash_enabled: '1',
   pix_expires_min: '15',
-  request_timeout_min: '15',       // procurando mototaxista: cancela e estorna depois disso (0 = nunca)
+  request_timeout_min: '15',
+  min_driver_age: '21',            // idade mínima do mototaxista (0 = não confere)
+  min_cnh_years: '2',              // anos mínimos de habilitação (0 = não confere)       // procurando mototaxista: cancela e estorna depois disso (0 = nunca)
   driver_debt_limit_cents: '5000', // dívida de comissão (corridas em dinheiro) que bloqueia novas corridas
   pickup_move_alert_m: '80',       // distância que dispara "você mudou de local?"
   gps_max_accuracy_m: '150',       // acima disso a posição é considerada imprecisa

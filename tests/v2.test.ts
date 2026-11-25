@@ -100,7 +100,7 @@ before(async () => {
     phone: '(44) 90000-2222', email: 'beto@v2.test', password: 'senha12345',
   });
   await drv.req('POST', '/api/driver/apply', {
-    birth_date: '1990-01-01', address: 'Rua A, 10', moto_plate: 'ABC-1D23',
+    birth_date: '1990-01-01', cnh_expiry: '2031-01-01', cnh_first_date: '2012-05-10', decl_cat_a_ear: true, address: 'Rua A, 10', moto_plate: 'ABC-1D23',
     moto_brand: 'Honda', moto_model: 'CG 160', moto_year: '2022', moto_color: 'Preta',
     documents: { cnh: fakeDoc(), crlv: fakeDoc(), selfie: fakeDoc() },
   });

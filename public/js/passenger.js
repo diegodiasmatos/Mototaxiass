@@ -123,9 +123,6 @@ function bindScreenMenu() {
         showScreen('screen-home');
       },
     },
-    { label: 'Vitrine de Lojas (Compre de Empresas)', soon: true },
-    { label: 'Cardápio & Carrinho de Produtos', soon: true },
-    { label: 'Central de Segurança & SOS', soon: true },
     {
       label: 'Busca de Motociclista',
       match: () => onRide('pending_payment', 'requested'),
@@ -913,6 +910,7 @@ function renderRide() {
     : S.gps.state === 'weak' ? 'Sinal fraco' : 'GPS indisponível');
 
   renderBoarding(r);
+  renderSafety(r);
 
   $('#ride-chat').hidden = !['accepted', 'in_progress'].includes(r.status);
   if (!$('#ride-chat').hidden) loadChat();
@@ -922,6 +920,34 @@ function renderRide() {
   if (r.status === 'pending_payment') startPaymentPolling(); else stopPaymentPolling();
 
   renderRideMap();
+}
+
+/* ---------- segurança durante a corrida ---------- */
+/** Emergência (190) e compartilhar os dados da corrida com alguém de confiança. */
+function renderSafety(r) {
+  const box = $('#ride-safety');
+  if (!box) return;
+  if (!r.driver || !['accepted', 'in_progress'].includes(r.status)) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <a class="btn btn-danger btn-sm" href="tel:190" aria-label="Ligar para a polícia, 190">🆘 Emergência · 190</a>
+      <button class="btn btn-outline btn-sm" id="btn-share-ride">📤 Compartilhar corrida</button>
+    </div>
+    <p class="muted small mt">Envie a alguém de confiança o nome, a moto, a placa e o trajeto.
+      O compartilhamento manda os dados da corrida, não a localização ao vivo.</p>`;
+  $('#btn-share-ride').onclick = async () => {
+    const d = r.driver;
+    const text = `Estou numa corrida VAIRO. Mototaxista: ${d.name}, ${[d.moto.brand, d.moto.model, d.moto.color].filter(Boolean).join(' ')}, `
+      + `placa ${d.moto.plate || '—'}. De ${r.origin.text} para ${r.dest.text}. `
+      + `${r.started_at ? `Saída às ${fmt.time(r.started_at)}.` : `Pedido às ${fmt.time(r.requested_at)}.`}`;
+    try {
+      if (navigator.share) await navigator.share({ title: 'Minha corrida VAIRO', text });
+      else { await navigator.clipboard.writeText(text); toast('Dados copiados. Cole numa conversa.', 'ok'); }
+    } catch (e) {
+      if (e?.name !== 'AbortError') toast('Não foi possível compartilhar. Copie os dados da tela.', 'err');
+    }
+  };
 }
 
 /* ---------- confirmação de embarque ---------- */

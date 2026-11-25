@@ -348,3 +348,40 @@ test('C7: com corrida em andamento a anonimização espera', async () => {
   assert.equal((await adm.req('POST', `/api/admin/users/${uid}/anonymize`, { confirm: 'ANONIMIZAR' })).status, 409);
   await a.req('POST', `/api/rides/${rid}/cancel`, {});
 });
+
+// ================= I3: requisitos do mototaxista =================
+
+test('I3: cadastro do mototaxista confere idade, validade e tempo de CNH e a categoria A/EAR', async () => {
+  const d = actor('200.12.0.1');
+  await d.req('POST', '/api/auth/register', {
+    role: 'driver', name: 'Moto Teste', cpf: '529.982.247-25', phone: '(44) 90000-1212',
+    email: 'moto@lanc.test', password: 'senha12345', accept_terms: true,
+  });
+  const doc = `data:image/jpeg;base64,${Buffer.alloc(4000, 7).toString('base64')}`;
+  const iso = (yearsAgo: number) => { const t = new Date(); t.setFullYear(t.getFullYear() - yearsAgo); return t.toISOString().slice(0, 10); };
+  const body = (over: any = {}) => ({
+    birth_date: iso(30), address: 'Rua A, 10', moto_plate: 'ABC-1D23', moto_brand: 'Honda',
+    moto_model: 'CG 160', moto_year: '2022', moto_color: 'Preta',
+    cnh_expiry: iso(-3), cnh_first_date: iso(5), decl_cat_a_ear: true, decl_course: true,
+    documents: { cnh: doc, crlv: doc, selfie: doc }, ...over,
+  });
+  const cases: [any, RegExp][] = [
+    [{ birth_date: iso(20) }, /21 anos/],
+    [{ cnh_expiry: iso(1) }, /vencida/],
+    [{ cnh_first_date: iso(1) }, /2 anos/],
+    [{ decl_cat_a_ear: false }, /categoria A/],
+    [{ cnh_expiry: '2030-02-31' }, /Data inválida/],
+  ];
+  for (const [over, re] of cases) {
+    const r = await d.req('POST', '/api/driver/apply', body(over));
+    assert.equal(r.status, 400, JSON.stringify(over));
+    assert.match(r.data.error, re);
+  }
+  const ok = await d.req('POST', '/api/driver/apply', body());
+  assert.equal(ok.status, 201, JSON.stringify(ok.data));
+  const row = db.prepare(`SELECT cnh_expiry, cnh_first_date, decl_cat_a_ear, decl_course FROM drivers
+    WHERE user_id = (SELECT id FROM users WHERE email = 'moto@lanc.test')`).get() as any;
+  assert.equal(row.decl_cat_a_ear, 1);
+  assert.equal(row.decl_course, 1);
+  assert.equal(row.cnh_expiry, iso(-3));
+});

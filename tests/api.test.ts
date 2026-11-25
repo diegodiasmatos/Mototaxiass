@@ -155,13 +155,13 @@ test('fluxo de cadastro do mototaxista até aprovação', async () => {
 
   // documentos incompletos → recusado
   assert.equal((await driver.req('POST', '/api/driver/apply', {
-    birth_date: '1990-05-10', address: 'Rua A, 100', moto_plate: 'ABC-1D23',
+    birth_date: '1990-05-10', cnh_expiry: '2031-01-01', cnh_first_date: '2012-05-10', decl_cat_a_ear: true, address: 'Rua A, 100', moto_plate: 'ABC-1D23',
     moto_brand: 'Honda', moto_model: 'CG 160', moto_year: '2022', moto_color: 'Vermelha',
     documents: { cnh: fakeDoc() },
   })).status, 400);
 
   const apply = await driver.req('POST', '/api/driver/apply', {
-    birth_date: '1990-05-10', address: 'Rua A, 100', moto_plate: 'ABC-1D23',
+    birth_date: '1990-05-10', cnh_expiry: '2031-01-01', cnh_first_date: '2012-05-10', decl_cat_a_ear: true, address: 'Rua A, 100', moto_plate: 'ABC-1D23',
     moto_brand: 'Honda', moto_model: 'CG 160', moto_year: '2022', moto_color: 'Vermelha',
     documents: { cnh: fakeDoc(), crlv: fakeDoc(), selfie: fakeDoc() },
   });
@@ -214,7 +214,7 @@ test('corrida: solicitação, aceite atômico, fluxo até conclusão', async () 
     phone: '(44) 97777-0002', email: 'carlos@teste.com', password: 'senha12345',
   });
   await driver2.req('POST', '/api/driver/apply', {
-    birth_date: '1985-01-20', address: 'Rua B, 200', moto_plate: 'XYZ-9A87',
+    birth_date: '1985-01-20', cnh_expiry: '2031-01-01', cnh_first_date: '2012-05-10', decl_cat_a_ear: true, address: 'Rua B, 200', moto_plate: 'XYZ-9A87',
     moto_brand: 'Yamaha', moto_model: 'Factor 150', moto_year: '2021', moto_color: 'Preta',
     documents: { cnh: fakeDoc(), crlv: fakeDoc(), selfie: fakeDoc() },
   });

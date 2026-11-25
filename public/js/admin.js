@@ -185,6 +185,9 @@ async function openDriver(idd) {
       Moto: <b>${escapeHtml([d.moto_brand, d.moto_model, d.moto_year].filter(Boolean).join(' '))}</b>,
       ${escapeHtml(d.moto_color || '')} · <span class="plate">${escapeHtml(d.moto_plate || '—')}</span><br>
       Enviado: ${d.submitted_at ? fmt.dt(d.submitted_at) : '—'} · Prazo: ${d.deadline_at ? fmt.dt(d.deadline_at) : '—'}
+    </p>
+    ${driverChecklist(d)}
+    <p class="muted small">
       ${d.review_reason ? `<br>Último parecer: ${escapeHtml(d.review_reason)}` : ''}
     </p>
     <h3 class="mt">Documentos <span class="muted small">(links expiram em 10 min)</span></h3>
@@ -273,6 +276,29 @@ async function resetLink(btn, userId) {
       catch { toast('Copie o link manualmente.', 'err'); }
     };
   }).catch(() => { });
+}
+
+/** Conferência dos requisitos do condutor (o que ele informou x o que a foto da CNH mostra). */
+function driverChecklist(d) {
+  const years = iso => {
+    if (!iso) return null;
+    const b = new Date(iso + 'T00:00:00'), t = new Date();
+    let y = t.getFullYear() - b.getFullYear();
+    if (t < new Date(t.getFullYear(), b.getMonth(), b.getDate())) y--;
+    return y;
+  };
+  const age = years(d.birth_date), cnhYears = years(d.cnh_first_date);
+  const expired = d.cnh_expiry && new Date(d.cnh_expiry + 'T23:59:59') < new Date();
+  const item = (ok, text) => `<li>${ok === null ? '❔' : ok ? '✅' : '❌'} ${text}</li>`;
+  return `<div class="card" style="margin:10px 0">
+    <b>Requisitos informados</b> <span class="muted small">— confira com a foto da CNH antes de aprovar</span>
+    <ul class="small" style="list-style:none;padding:0;margin:8px 0 0;line-height:1.8">
+      ${item(age === null ? null : age >= 21, `Idade: ${age ?? 'não informada'}${age !== null ? ' anos' : ''}`)}
+      ${item(d.cnh_expiry ? !expired : null, `CNH válida até ${d.cnh_expiry ? escapeHtml(d.cnh_expiry.split('-').reverse().join('/')) : 'não informado'}`)}
+      ${item(cnhYears === null ? null : cnhYears >= 2, `Habilitado há ${cnhYears ?? '?'} anos`)}
+      ${item(d.decl_cat_a_ear == null ? null : !!d.decl_cat_a_ear, 'Declarou categoria A com EAR')}
+      ${item(d.decl_course == null ? null : !!d.decl_course, 'Declarou ter o curso de mototaxista')}
+    </ul></div>`;
 }
 
 /* ============ privacidade (LGPD) ============ */

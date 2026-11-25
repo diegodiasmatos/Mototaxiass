@@ -56,16 +56,8 @@
 <script>
   'use strict';
   $('#auth-logo').innerHTML = LOGO_MARK;
-  // telas da área Empresa na referência: nenhuma existe no app ainda
-  setupScreenMenu([
-    'Login Empresa',
-    'Cadastro de Loja & Termos',
-    'Painel de Pedidos em Tempo Real',
-    'Gestão de Cardápio & Estoque',
-    'Vitrine de Loja para Clientes',
-    'Despacho com Motoboy VAIRO',
-    'Estoque',
-  ].map(label => ({ label, soon: true })), () => 'Empresa — em breve');
+  // a área Empresa ainda não tem telas: o menu de telas não aparece
+  document.getElementById('screenbar').hidden = true;
 </script>
 </body>
 </html>
