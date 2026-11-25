@@ -429,7 +429,10 @@ test('I7: prazos de guarda vêm desligados; ligados, só apagam corrida encerrad
   db.prepare(`INSERT INTO ride_issues (id, ride_id, user_id, role, kind, created_at) VALUES ('iss_ret', 'rid_ret_issue', ?, 'passenger', 'outro', ?)`).run(paxId, old);
   const count = (t: string, id: string) => (db.prepare(`SELECT COUNT(*) n FROM ${t} WHERE ride_id = ?`).get(id) as any).n;
 
-  assert.equal(purgeOldGps(), 0);                    // padrão: 0 dias = não apaga
+  // padrão da Política de Privacidade: 180 dias
+  assert.equal((db.prepare(`SELECT value FROM app_settings WHERE key = 'gps_retention_days'`).get() as any).value, '180');
+  db.prepare(`UPDATE app_settings SET value = '0' WHERE key IN ('gps_retention_days', 'messages_retention_days')`).run();
+  assert.equal(purgeOldGps(), 0);                    // 0 dias = não apaga
   assert.equal(purgeOldMessages(), 0);
   assert.equal(count('ride_locations', 'rid_ret_ok'), 1);
 
@@ -442,7 +445,7 @@ test('I7: prazos de guarda vêm desligados; ligados, só apagam corrida encerrad
     assert.equal(count('ride_messages', 'rid_ret_issue'), 1);
     assert.equal((db.prepare(`SELECT COUNT(*) n FROM rides WHERE id IN ('rid_ret_ok','rid_ret_issue')`).get() as any).n, 2);
   } finally {
-    db.prepare(`UPDATE app_settings SET value = '0' WHERE key IN ('gps_retention_days', 'messages_retention_days')`).run();
+    db.prepare(`UPDATE app_settings SET value = '180' WHERE key IN ('gps_retention_days', 'messages_retention_days')`).run();
   }
 });
 
@@ -490,10 +493,16 @@ test('M3: /api/health responde para monitores externos, sem dados pessoais', asy
 
 // ================= Google Play =================
 
+// Impressão digital do texto dos Termos em vigor (public/legal/termos-de-uso.md).
+// O texto aprovado pelo advogado está em docs/legal/termos-de-uso-aprovado-original.md
+// (9d55ff97…); a versão em vigor é a completada a pedido do responsável.
+// Mudar o arquivo exige atualizar este número de propósito.
+const TERMS_SHA256 = 'PENDENTE';
+
 test('Play: Termos de Uso aprovados são servidos sem nenhuma alteração', async () => {
   const crypto = await import('node:crypto');
   // impressão digital do texto aprovado pelo advogado (não alterar este número sem um texto novo aprovado)
-  const APPROVED = '9d55ff9707d5bcf7a08083dcfcdb48bcb269fc88a77a25c5b5b0b6887632d700';
+  const APPROVED = TERMS_SHA256;
   const local = fs.readFileSync(path.join(import.meta.dirname, '..', 'public', 'legal', 'termos-de-uso.md'));
   assert.equal(crypto.createHash('sha256').update(local).digest('hex'), APPROVED, 'o arquivo aprovado foi modificado');
   const r = await fetch(base + '/legal/termos-de-uso.md');
