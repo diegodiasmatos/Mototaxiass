@@ -171,6 +171,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
     const user = userFromToken(parseCookies(req)['amt_session']);
 
+    // saúde do serviço para monitores externos (UptimeRobot, Better Stack etc.):
+    // 200 quando o banco responde, 503 quando não. Sem dados pessoais.
+    if (pathname === '/api/health' && req.method === 'GET') {
+      let dbOk = false;
+      try { dbOk = (db.prepare('SELECT 1 AS ok').get() as any)?.ok === 1; } catch { /* banco fora */ }
+      res.writeHead(dbOk ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: dbOk, version: appVersion(PUBLIC_DIR), time: new Date().toISOString() }));
+      return;
+    }
+
     // versão publicada do app: a página aberta compara com a dela (sem login)
     if (pathname === '/api/version' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });

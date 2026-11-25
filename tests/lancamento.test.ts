@@ -479,3 +479,11 @@ test('I10: biblioteca do mapa servida pelo próprio app', async () => {
   const html = await (await fetch(base + '/passageiro')).text();
   assert.ok(!html.includes('unpkg.com'));
 });
+
+test('M3: /api/health responde para monitores externos, sem dados pessoais', async () => {
+  const r = await fetch(base + '/api/health');
+  assert.equal(r.status, 200);
+  const d = await r.json() as any;
+  assert.equal(d.ok, true);
+  assert.deepEqual(Object.keys(d).sort(), ['ok', 'time', 'version']);
+});
