@@ -77,17 +77,16 @@ maior que o anterior) e rode `android/gerar-aab.sh` com a chave.
 
 ## Pendências que só você pode resolver
 
-- **Termos de Uso**: o texto aprovado tem campos entre colchetes
-  (`[razão social]`, `[CNPJ]`, `[endereço completo]`, regras comerciais, de
-  cancelamento, prazo de atendimento, link da política). Hoje o responsável é
-  **pessoa física**, e a seção 1 fala em razão social e CNPJ: **o advogado
-  precisa adaptar e preencher**. O app exibe o texto como está, sem mudar nada.
+- **Termos de Uso**: completados a pedido dos responsáveis (2 pessoas físicas,
+  modelo "prestadora do transporte", regras reais do app). O texto aprovado
+  original está em `docs/legal/termos-de-uso-aprovado-original.md` para o
+  advogado validar as mudanças.
 - **Termos de cookies**: o texto recebido é o dos Termos de Uso. Não há no
   projeto um texto de cookies aprovado. Os cookies usados (só o de sessão e a
   preferência de tema) estão descritos na Política de Privacidade preliminar.
-- **Política de Privacidade**: ainda é a versão **preliminar** escrita a
-  partir do código; a Play exige uma política válida e pública. Precisa de
-  revisão do advogado, dos dados do responsável e dos prazos de guarda.
+- **Política de Privacidade**: completa (controladores, bases legais, prazos
+  de guarda de 180 dias para GPS e chat, direitos), mas ainda **sem validação
+  de advogado**; a página mostra esse aviso até a central marcar como revisada.
 - **Contas de teste para a análise do Google** (Acesso ao app): criar no app
   publicado um passageiro e um motorista aprovado só para isso, e informar
   e-mail/senha na Play Console. A área de atendimento é Assis Chateaubriand;

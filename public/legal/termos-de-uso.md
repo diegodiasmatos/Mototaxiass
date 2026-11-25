@@ -8,11 +8,11 @@ Ao criar uma conta ou usar o aplicativo, você declara que leu e aceitou estes T
 
 ## 1. Quem opera a Vairo
 
-A Vairo é operada por **{{NOME}}**, pessoa física, inscrita no CPF sob nº **{{CPF}}**, com endereço em **{{ENDERECO}}**.
+A Vairo é operada por **Miguel Antonio Navarro**, pessoa física, CPF nº 712.122.512-37, com endereço na Avenida Radial Leste, 840, Assis Chateaubriand – PR, e por **Diego Dias de Matos**, pessoa física, CPF nº 133.126.469-36, com endereço na Avenida Tupãssi, 4440, Jardim América, Assis Chateaubriand – PR.
 
 A Vairo presta o serviço de transporte de passageiros por motocicleta, realizado por motoristas cadastrados e aprovados pela Vairo, por meio deste aplicativo.
 
-**Contato e suporte:** e-mail {{EMAIL}}, WhatsApp {{WHATSAPP}} ou pelo suporte disponível no aplicativo (Perfil → Atendimento).
+**Contato e suporte:** e-mail vairoapp1@gmail.com, WhatsApp +55 (44) 98828-5423 ou pelo suporte disponível no aplicativo (Perfil → Atendimento).
 
 ## 2. O que o aplicativo oferece
 

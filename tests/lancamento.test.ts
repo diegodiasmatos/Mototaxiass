@@ -497,7 +497,7 @@ test('M3: /api/health responde para monitores externos, sem dados pessoais', asy
 // O texto aprovado pelo advogado está em docs/legal/termos-de-uso-aprovado-original.md
 // (9d55ff97…); a versão em vigor é a completada a pedido do responsável.
 // Mudar o arquivo exige atualizar este número de propósito.
-const TERMS_SHA256 = 'PENDENTE';
+const TERMS_SHA256 = 'e0c66d3e37ee54213075898dd7650c94994be82e74c676bcb65db9416a37dd12';
 
 test('Play: Termos de Uso aprovados são servidos sem nenhuma alteração', async () => {
   const crypto = await import('node:crypto');
