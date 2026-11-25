@@ -385,3 +385,97 @@ test('I3: cadastro do mototaxista confere idade, validade e tempo de CNH e a cat
   assert.equal(row.decl_course, 1);
   assert.equal(row.cnh_expiry, iso(-3));
 });
+
+// ================= I5 / I7: cópia diária e prazos de guarda =================
+
+test('I5: cópia diária do banco, com rotação e download só pela central (auditado)', async () => {
+  const { dailyBackupIfDue, listBackups } = await import('../server/maintenance.ts');
+  const first = dailyBackupIfDue();
+  assert.ok(first && fs.existsSync(first));
+  assert.equal(dailyBackupIfDue(), null);                       // menos de 24 h: não repete
+  const t = Date.now();
+  for (let i = 1; i <= 8; i++) dailyBackupIfDue(t + i * 1000, true);
+  assert.equal(listBackups().length, 7);                        // guarda as 7 mais novas
+  const name = listBackups()[0].name;
+  assert.equal((await pax.req('GET', `/api/admin/backups/${name}`)).status, 403);
+  assert.equal((await adm.req('GET', '/api/admin/backups/..%2F..%2Fetc%2Fpasswd')).status, 404);
+  const r = await fetch(`${base}/api/admin/backups/${name}`, {
+    headers: { Cookie: await (async () => {
+      const x = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Fly-Client-IP': '200.20.0.1' },
+        body: JSON.stringify({ email: 'dono-lanc@teste.com', password: 'senha-admin-lanc-teste' }) });
+      return /amt_session=[^;]+/.exec(x.headers.get('set-cookie') || '')![0];
+    })() },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(Buffer.from(await r.arrayBuffer()).subarray(0, 15).toString(), 'SQLite format 3');
+  const aud = await adm.req('GET', '/api/admin/audit');
+  assert.ok(aud.data.logs.some((l: any) => l.action === 'backup_download'));
+});
+
+test('I7: prazos de guarda vêm desligados; ligados, só apagam corrida encerrada sem ocorrência aberta', async () => {
+  const { purgeOldGps, purgeOldMessages } = await import('../server/maintenance.ts');
+  const paxId = (db.prepare(`SELECT id FROM users WHERE email = 'paula@lanc.test'`).get() as any).id;
+  const old = Date.now() - 400 * 86400_000;
+  const mk = (id: string, status: string) => {
+    db.prepare(`INSERT INTO rides (id, passenger_id, category, status, origin_text, origin_lat, origin_lng,
+      dest_text, dest_lat, dest_lng, distance_m, duration_s, price_cents, commission_pct, payment_method,
+      payment_status, requested_at, completed_at) VALUES (?, ?, 'economica', ?, 'A', -24.41, -53.52, 'B', -24.44, -53.54,
+      1000, 100, 800, 15, 'dinheiro', 'criado', ?, ?)`).run(id, paxId, status, old, old);
+    db.prepare(`INSERT INTO ride_locations (ride_id, who, lat, lng, accuracy_m, at) VALUES (?, 'passenger', -24.41, -53.52, 10, ?)`).run(id, old);
+    db.prepare(`INSERT INTO ride_messages (id, ride_id, sender_id, body, at) VALUES (?, ?, ?, 'oi', ?)`).run(`m_${id}`, id, paxId, old);
+  };
+  mk('rid_ret_ok', 'completed');
+  mk('rid_ret_issue', 'completed');
+  db.prepare(`INSERT INTO ride_issues (id, ride_id, user_id, role, kind, created_at) VALUES ('iss_ret', 'rid_ret_issue', ?, 'passenger', 'outro', ?)`).run(paxId, old);
+  const count = (t: string, id: string) => (db.prepare(`SELECT COUNT(*) n FROM ${t} WHERE ride_id = ?`).get(id) as any).n;
+
+  assert.equal(purgeOldGps(), 0);                    // padrão: 0 dias = não apaga
+  assert.equal(purgeOldMessages(), 0);
+  assert.equal(count('ride_locations', 'rid_ret_ok'), 1);
+
+  db.prepare(`INSERT OR REPLACE INTO app_settings (key, value) VALUES ('gps_retention_days', '90'), ('messages_retention_days', '180')`).run();
+  try {
+    purgeOldGps(); purgeOldMessages();
+    assert.equal(count('ride_locations', 'rid_ret_ok'), 0);
+    assert.equal(count('ride_messages', 'rid_ret_ok'), 0);
+    assert.equal(count('ride_locations', 'rid_ret_issue'), 1);     // ocorrência aberta: guarda a prova
+    assert.equal(count('ride_messages', 'rid_ret_issue'), 1);
+    assert.equal((db.prepare(`SELECT COUNT(*) n FROM rides WHERE id IN ('rid_ret_ok','rid_ret_issue')`).get() as any).n, 2);
+  } finally {
+    db.prepare(`UPDATE app_settings SET value = '0' WHERE key IN ('gps_retention_days', 'messages_retention_days')`).run();
+  }
+});
+
+// ================= I6: cabeçalhos, cookie e sessão da central =================
+
+test('I6: cabeçalhos de segurança, cookie Secure no app publicado e sessão da central de 12 h', async () => {
+  const page = await fetch(base + '/passageiro');
+  assert.equal(page.headers.get('x-frame-options'), 'DENY');
+  assert.match(page.headers.get('content-security-policy') || '', /frame-ancestors 'none'/);
+  assert.match(page.headers.get('content-security-policy-report-only') || '', /script-src 'self' 'sha256-/);
+  assert.match(page.headers.get('permissions-policy') || '', /geolocation=\(self\)/);
+  assert.equal(page.headers.get('strict-transport-security'), null);   // fora de produção
+
+  process.env.APP_ENV = 'production';
+  try {
+    const r = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Fly-Client-IP': '200.21.0.1' },
+      body: JSON.stringify({ email: 'dono-lanc@teste.com', password: 'senha-admin-lanc-teste' }) });
+    const cookie = r.headers.get('set-cookie') || '';
+    assert.match(cookie, /; Secure/);
+    assert.match(cookie, /Max-Age=43200/);                              // central: 12 h
+    assert.match(r.headers.get('strict-transport-security') || '', /max-age=/);
+    const tok = /amt_session=([^;]+)/.exec(cookie)![1];
+    const s = db.prepare('SELECT created_at, expires_at FROM sessions WHERE token = ?').get(tok) as any;
+    assert.ok(s.expires_at - s.created_at <= 12 * 3600_000 + 1000);
+  } finally { delete process.env.APP_ENV; }
+});
+
+// ================= I9 / I10 =================
+
+test('I10: biblioteca do mapa servida pelo próprio app', async () => {
+  const js = await fetch(base + '/vendor/leaflet/leaflet.js');
+  assert.equal(js.status, 200);
+  assert.match(await js.text(), /Leaflet 1\.9\.4/);
+  const html = await (await fetch(base + '/passageiro')).text();
+  assert.ok(!html.includes('unpkg.com'));
+});

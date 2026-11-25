@@ -20,6 +20,7 @@ const PRECACHE = [
   '/css/app.css', '/fonts/inter-latin-var.woff2',
   '/js/icons.js', '/js/common.js', '/js/passenger.js', '/js/driver.js', '/js/admin.js',
   '/img/icon.svg?v=2', '/img/icon-192.png?v=2', '/offline.html',
+  '/vendor/leaflet/leaflet.js', '/vendor/leaflet/leaflet.css',
 ];
 
 self.addEventListener('install', event => {

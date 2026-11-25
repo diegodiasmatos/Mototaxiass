@@ -163,12 +163,16 @@ export function parseCookies(req: IncomingMessage): Record<string, string> {
   return out;
 }
 
+/** No app publicado (sempre HTTPS) o cookie só viaja por conexão cifrada. */
+function cookieSecure(): string {
+  return process.env.APP_ENV === 'production' || process.env.COOKIE_SECURE === '1' ? '; Secure' : '';
+}
 export function setSessionCookie(res: ServerResponse, token: string, maxAgeS = 30 * 24 * 3600): void {
   res.setHeader('Set-Cookie',
-    `amt_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeS}`);
+    `amt_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(maxAgeS)}${cookieSecure()}`);
 }
 export function clearSessionCookie(res: ServerResponse): void {
-  res.setHeader('Set-Cookie', 'amt_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+  res.setHeader('Set-Cookie', `amt_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${cookieSecure()}`);
 }
 
 // ---------- geodésia ----------

@@ -303,7 +303,8 @@ function driverChecklist(d) {
 
 /* ============ privacidade (LGPD) ============ */
 async function secPrivacy() {
-  const { requests } = await api('/api/admin/deletion-requests');
+  const [{ requests }, { backups }] = await Promise.all([
+    api('/api/admin/deletion-requests'), api('/api/admin/backups')]);
   const ST = { pendente: 'yellow', concluido: 'green', cancelado: 'gray' };
   main().innerHTML = `
     <h2 class="mb">🔒 Privacidade (LGPD)</h2>
@@ -321,7 +322,22 @@ async function secPrivacy() {
             ${r.reason ? `<br>Motivo: ${escapeHtml(r.reason)}` : ''}</div></div>
           ${r.status === 'pendente' ? `<button class="btn btn-danger btn-sm" data-anon="${r.user_id}" ${r.active_ride ? 'disabled' : ''}>Anonimizar</button>` : ''}
         </div>`).join('') : '<div class="empty"><div class="eico">✅</div>Nenhum pedido de exclusão.</div>'}
+    </div>
+    <div class="card">
+      <h3>💾 Cópias do banco</h3>
+      <p class="muted small mb">Uma cópia por dia, no mesmo disco do servidor. <b>Baixe uma regularmente e guarde em
+        outro lugar seguro</b> (ela contém dados pessoais): se o disco do servidor se perder, as cópias daqui vão junto.
+        Cada download fica na auditoria.</p>
+      ${backups.length ? backups.map(b => `<div class="list-item"><div class="li-main">
+          <div class="li-title">${fmt.dt(b.at)}</div><div class="li-sub">${(b.size / 1048576).toFixed(1)} MB</div></div>
+          <a class="btn btn-outline btn-sm" href="/api/admin/backups/${encodeURIComponent(b.name)}" download>Baixar</a></div>`).join('')
+        : '<p class="muted small">Nenhuma cópia ainda (a primeira é feita 1 minuto depois de o servidor ligar).</p>'}
+      <button class="btn btn-navy btn-sm mt" id="bk-now">Fazer uma cópia agora</button>
     </div>`;
+  $('#bk-now').onclick = () => withLoading($('#bk-now'), async () => {
+    await api('/api/admin/backups', { method: 'POST' });
+    secPrivacy();
+  }, { okMsg: 'Cópia feita.' }).catch(() => { });
   $$('[data-anon]').forEach(b => b.onclick = async () => {
     const word = await askText('Anonimizar conta (LGPD)', 'Esta ação NÃO pode ser desfeita. Digite ANONIMIZAR para confirmar');
     if (!word) return;
@@ -453,6 +469,13 @@ async function openRide(idd) {
       ? '<button class="btn btn-danger btn-sm" data-refund>Estornar</button>' : ''}
       </div>` : '<p class="muted small">Sem cobrança registrada.</p>'}
 
+    ${r.status === 'accepted' ? `<div class="card mt">
+      <b>Embarque</b> <span class="muted small">${r.arrived_at ? `mototaxista chegou às ${fmt.time(r.arrived_at)}` : 'mototaxista ainda a caminho'}</span>
+      <p class="muted small">Use só se o passageiro não conseguir mostrar o código (sem bateria, sem internet),
+        depois de falar com ele. Fica registrado quem confirmou e o motivo.</p>
+      <button class="btn btn-outline btn-sm" data-board ${r.arrived_at ? '' : 'disabled'}>Confirmar embarque pela central</button>
+    </div>` : ''}
+
     <h3 class="mt">Linha do tempo</h3>
     <div class="timeline">
       ${events.map(e => `<div class="tev"><b>${escapeHtml(e.type)}</b>
@@ -465,6 +488,15 @@ async function openRide(idd) {
     toast(`Status no provedor: ${r2.status}`, 'ok');
     m.close(); openRide(idd);
   });
+  const board = $('[data-board]', m);
+  if (board) board.onclick = async () => {
+    const reason = await askText('Confirmar embarque pela central', 'Motivo (ex.: passageiro sem bateria, confirmado por ligação)');
+    if (!reason) return;
+    await withLoading(board, async () => {
+      await api(`/api/admin/rides/${idd}/confirm-boarding`, { method: 'POST', body: { reason } });
+      m.close(); openRide(idd);
+    }, { okMsg: 'Embarque confirmado e registrado na auditoria.' }).catch(() => { });
+  };
   const ref = $('[data-refund]', m);
   if (ref) ref.onclick = async () => {
     const reason = await askText('Estornar pagamento', 'Motivo do estorno (fica na auditoria)');
@@ -595,7 +627,7 @@ async function secIssues(filter = '') {
               ${escapeHtml(i.user_name)} · ${fmt.dt(i.created_at)}<br>
               ${escapeHtml(i.origin_text)} → ${escapeHtml(i.dest_text)} · ${fmt.money(i.price_cents)}
               · mototaxista: ${escapeHtml(i.driver_name || '—')}<br>
-              ${i.boarding_confirmed_at ? `Embarque confirmado ${i.boarding_method === 'codigo' ? 'com o código do passageiro' : ''}
+              ${i.boarding_confirmed_at ? `Embarque confirmado ${i.boarding_method === 'codigo' ? 'com o código do passageiro' : i.boarding_method === 'central' ? 'pela central' : ''}
                 em ${fmt.dt(i.boarding_confirmed_at)} por ${escapeHtml(i.boarding_confirmed_by_name || '—')}
                 ${i.boarding_dist_m != null ? `· mototaxista a ${i.boarding_dist_m} m do ponto de embarque` : '· sem GPS do mototaxista'}<br>` : ''}
               ${i.description ? `"${escapeHtml(i.description)}"` : '<i>sem descrição</i>'}
@@ -1139,6 +1171,19 @@ async function secSettings() {
       <label class="check-row"><input type="checkbox" id="lg-reviewed" ${st.legal_reviewed === '1' ? 'checked' : ''}>
         <span>Os textos foram revisados por um advogado (tira o aviso de versão preliminar).</span></label>
     </div>
+    <div class="card">
+      <h3>🗂️ Guarda de dados e requisitos do mototaxista</h3>
+      <p class="muted small mb">Prazos em dias. <b>0 = não apagar</b> (padrão). Ao ligar, o GPS e o chat de corridas
+        encerradas há mais tempo que o prazo são apagados de vez; corridas com ocorrência aberta ficam guardadas.
+        Defina os prazos com o advogado e escreva-os na Política de Privacidade.</p>
+      <div class="grid2">
+        <div class="field"><label>Apagar GPS de corridas encerradas após (dias)</label><input class="input" id="rt-gps" type="number" min="0" max="3650" value="${st.gps_retention_days ?? 0}"></div>
+        <div class="field"><label>Apagar chat de corridas encerradas após (dias)</label><input class="input" id="rt-msg" type="number" min="0" max="3650" value="${st.messages_retention_days ?? 0}"></div>
+        <div class="field"><label>Cópias diárias do banco guardadas</label><input class="input" id="rt-bkp" type="number" min="1" max="60" value="${st.backup_keep ?? 7}"></div>
+        <div class="field"><label>Idade mínima do mototaxista (0 = não confere)</label><input class="input" id="rq-age" type="number" min="0" max="99" value="${st.min_driver_age ?? 21}"></div>
+        <div class="field"><label>Anos mínimos de habilitação (0 = não confere)</label><input class="input" id="rq-cnh" type="number" min="0" max="50" value="${st.min_cnh_years ?? 2}"></div>
+      </div>
+    </div>
     <button class="btn btn-primary" id="st-save" style="max-width:340px">Salvar configurações</button>
     <p class="muted small mt">Versão do app publicada: <b>${escapeHtml(window.APP_VERSION || '—')}</b>.
       Quem já tem o app instalado recebe a versão nova ao abrir ou voltar para o app.</p>
@@ -1177,6 +1222,8 @@ async function secSettings() {
           company_address: $('#lg-addr').value, company_contact: $('#lg-contact').value,
           dpo_contact: $('#lg-dpo').value, legal_reviewed: $('#lg-reviewed').checked ? '1' : '0',
           request_timeout_min: $('#st-reqto').value,
+          gps_retention_days: $('#rt-gps').value, messages_retention_days: $('#rt-msg').value,
+          backup_keep: $('#rt-bkp').value, min_driver_age: $('#rq-age').value, min_cnh_years: $('#rq-cnh').value,
         },
         fares: faresBody,
       },

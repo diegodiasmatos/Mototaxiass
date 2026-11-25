@@ -390,8 +390,8 @@ function addMapTools(elId, map, allowPick) {
   const host = document.getElementById(elId);
   const tools = document.createElement('div');
   tools.className = 'map-tools';
-  tools.innerHTML = `<button title="Centralizar em mim" data-center>🎯</button>` +
-    (allowPick ? `<button title="Escolher no mapa" data-pick>📌</button>` : '');
+  tools.innerHTML = `<button type="button" title="Centralizar em mim" aria-label="Centralizar o mapa na minha localização" data-center>🎯</button>` +
+    (allowPick ? `<button type="button" title="Escolher no mapa" aria-label="Marcar o local tocando no mapa" data-pick>📌</button>` : '');
   host.appendChild(tools);
   $('[data-center]', tools).onclick = () => centerOnMe(map);
   if (allowPick) $('[data-pick]', tools).onclick = () => startMapPick(map, host);
@@ -993,7 +993,7 @@ function renderBoarding(r) {
     box.hidden = false;
     box.innerHTML = `
       <h3>✅ Embarque confirmado</h3>
-      <p class="muted small">Confirmado pelo mototaxista com o seu código em
+      <p class="muted small">${r.boarding_method === 'central' ? 'Confirmado pela central' : 'Confirmado pelo mototaxista com o seu código'} em
         <b>${fmt.date(r.boarding_confirmed_at)} às ${fmt.time(r.boarding_confirmed_at)}</b>.</p>
       <p class="small mt">A corrida não pode mais ser cancelada pelo app. Para pedir ajuda ou
         contestar a cobrança, fale com o suporte.</p>

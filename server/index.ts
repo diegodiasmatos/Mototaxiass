@@ -15,6 +15,7 @@ import { driverRoutes } from './drivers.ts';
 import { adminRoutes } from './admin.ts';
 import { integrationRoutes } from './integrations.ts';
 import { accountRoutes } from './account.ts';
+import { startMaintenance } from './maintenance.ts';
 import { sseConnect } from './notify.ts';
 import { appVersion, injectSwVersion, injectHtmlVersion } from './version.ts';
 
@@ -26,6 +27,60 @@ const MIME: Record<string, string> = {
   '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json',
   '.woff2': 'font/woff2',
 };
+
+// ================= cabeçalhos de segurança =================
+
+/**
+ * Política de conteúdo completa: só a própria origem e os serviços que o app
+ * usa (Leaflet servido pelo próprio app, blocos do OpenStreetMap, Mapbox,
+ * Google Maps e o login do Google). Scripts embutidos entram pelo hash.
+ * Em produção vai como "Report-Only" (só avisa no console) até ser conferida
+ * com o Mapbox no domínio real; CSP_ENFORCE=1 passa a bloquear.
+ */
+let _inlineHashes: string[] | null = null;
+function inlineScriptHashes(): string[] {
+  if (_inlineHashes) return _inlineHashes;
+  const set = new Set<string>();
+  for (const f of fs.readdirSync(PUBLIC_DIR)) {
+    if (!f.endsWith('.html')) continue;
+    const html = fs.readFileSync(path.join(PUBLIC_DIR, f), 'utf8');
+    for (const m of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+      set.add(`'sha256-${crypto.createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
+    }
+  }
+  return (_inlineHashes = [...set]);
+}
+function fullCsp(): string {
+  const g = ['https://*.googleapis.com', 'https://*.gstatic.com'];
+  const d: Record<string, string[]> = {
+    'default-src': ["'self'"],
+    'script-src': ["'self'", ...inlineScriptHashes(), 'https://api.mapbox.com', ...g, 'https://accounts.google.com/gsi/client'],
+    'style-src': ["'self'", "'unsafe-inline'", 'https://api.mapbox.com', 'https://fonts.googleapis.com', 'https://accounts.google.com/gsi/style'],
+    'img-src': ["'self'", 'data:', 'blob:', 'https://tile.openstreetmap.org', 'https://*.tile.openstreetmap.org',
+      'https://api.mapbox.com', ...g, 'https://*.google.com', 'https://*.googleusercontent.com', 'https://*.ggpht.com'],
+    'font-src': ["'self'", 'data:', 'https://fonts.gstatic.com'],
+    'connect-src': ["'self'", 'https://api.mapbox.com', 'https://events.mapbox.com', ...g, 'https://*.google.com', 'https://accounts.google.com'],
+    'worker-src': ["'self'", 'blob:'],
+    'child-src': ["'self'", 'blob:'],
+    'frame-src': ['https://accounts.google.com'],
+    'manifest-src': ["'self'"],
+    'object-src': ["'none'"],
+    'base-uri': ["'self'"],
+    'form-action': ["'self'"],
+    'frame-ancestors': ["'none'"],
+  };
+  return Object.entries(d).map(([k, v]) => `${k} ${v.join(' ')}`).join('; ');
+}
+/** Parte que não quebra nada e vale sempre: ninguém abre o app dentro de outro site. */
+const BASE_CSP = "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'";
+
+function securityHeaders(res: http.ServerResponse): void {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(self), microphone=(), payment=(), usb=()');
+  if (process.env.APP_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+}
 
 function serveStatic(res: http.ServerResponse, urlPath: string): boolean {
   let rel = urlPath;
@@ -46,6 +101,13 @@ function serveStatic(res: http.ServerResponse, urlPath: string): boolean {
   // a versão do app vai dentro do sw.js e de cada página (ver server/version.ts)
   if (rel === '/sw.js') body = injectSwVersion(body.toString('utf8'), appVersion(PUBLIC_DIR));
   else if (ext === '.html') body = injectHtmlVersion(body.toString('utf8'), appVersion(PUBLIC_DIR));
+  if (ext === '.html') {
+    if (process.env.CSP_ENFORCE === '1') res.setHeader('Content-Security-Policy', fullCsp());
+    else {
+      res.setHeader('Content-Security-Policy', BASE_CSP);
+      res.setHeader('Content-Security-Policy-Report-Only', fullCsp());
+    }
+  }
   res.writeHead(200, {
     'Content-Type': MIME[ext] || 'application/octet-stream',
     // HTML e sw.js: o navegador sempre confere com o servidor antes de usar
@@ -101,6 +163,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   const pathname = url.pathname;
   const ip = clientIp(req);
 
+  securityHeaders(res);
   try {
     // documentos privados assinados
     const docMatch = /^\/files\/doc\/([^/]+)$/.exec(pathname);
@@ -203,14 +266,9 @@ export async function start(opts: StartOptions = {}): Promise<{ server: http.Ser
     import('./address-base.ts').then(m => m.refreshOutdatedBase()).catch(() => { });
   }
 
-  // limpeza periódica: sessões e cotações expiradas
-  const cleanup = setInterval(() => {
-    try {
-      db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now());
-      db.prepare('DELETE FROM ride_quotes WHERE expires_at < ? AND used = 0').run(now() - 86400_000);
-    } catch { /* não crítico */ }
-  }, 10 * 60_000);
-  cleanup.unref();
+  // manutenção: sessões e cotações vencidas, cópia diária do banco e prazos
+  // de guarda (desligados até a central definir)
+  startMaintenance();
 
   const server = http.createServer((req, res) => { void handle(req, res); });
   const port = opts.port ?? Number(process.env.PORT || 8780);

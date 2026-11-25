@@ -9,11 +9,15 @@ import { route, type Route, type SessionUser } from './router.ts';
 import { notifyAdmins } from './notify.ts';
 
 const SESSION_TTL = 30 * 24 * 3600 * 1000;
+/** A central tem acesso a dados de todos: sessão de 12 h. */
+const ADMIN_SESSION_TTL = 12 * 3600 * 1000;
+export function sessionTtl(role: string): number { return role === 'admin' ? ADMIN_SESSION_TTL : SESSION_TTL; }
 
 export function createSession(userId: string): string {
   const token = crypto.randomBytes(32).toString('base64url');
   db.prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
-    .run(token, userId, now(), now() + SESSION_TTL);
+    .run(token, userId, now(), now() + sessionTtl(
+      (db.prepare('SELECT role FROM users WHERE id = ?').get(userId) as any)?.role || ''));
   return token;
 }
 
@@ -42,7 +46,7 @@ function sanitizePhoto(photo: unknown): string | null {
 async function loginUser(res: any, u: any): Promise<void> {
   if (u.blocked) throw new ApiError(403, `Conta bloqueada. ${u.blocked_reason || 'Fale com o suporte.'}`);
   const token = createSession(u.id);
-  setSessionCookie(res, token);
+  setSessionCookie(res, token, sessionTtl(u.role) / 1000);
   json(res, 200, { ok: true, user: publicUser(u) });
 }
 

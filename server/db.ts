@@ -704,7 +704,10 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   cash_enabled: '1',
   pix_expires_min: '15',
   request_timeout_min: '15',
-  min_driver_age: '21',            // idade mínima do mototaxista (0 = não confere)
+  min_driver_age: '21',
+  backup_keep: '7',                // cópias diárias guardadas no disco
+  gps_retention_days: '0',         // GPS de corridas encerradas: apagar após N dias (0 = nunca)
+  messages_retention_days: '0',    // chat de corridas encerradas: apagar após N dias (0 = nunca)            // idade mínima do mototaxista (0 = não confere)
   min_cnh_years: '2',              // anos mínimos de habilitação (0 = não confere)       // procurando mototaxista: cancela e estorna depois disso (0 = nunca)
   driver_debt_limit_cents: '5000', // dívida de comissão (corridas em dinheiro) que bloqueia novas corridas
   pickup_move_alert_m: '80',       // distância que dispara "você mudou de local?"
@@ -749,8 +752,13 @@ function backupBeforeMigrations(file: string, applied: Set<number>): void {
   console.log(`[banco] cópia de segurança antes da migração: ${target}`);
 }
 
+let _dbFile = '';
+/** Caminho do arquivo do banco em uso. */
+export function dbFilePath(): string { return _dbFile; }
+
 export function initDb(dbPath?: string): DatabaseSync {
   const file = dbPath || process.env.DB_PATH || path.join(dataDir(), 'assis.db');
+  _dbFile = file;
   db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');

@@ -23,7 +23,7 @@
   --frame: #191920;         /* moldura do aplicativo em telas largas */
   --text: #ffffff;
   --text-2: #d8d8d9;
-  --muted: #74747e;
+  --muted: #8b8b96;         /* contraste 5:1 ou mais sobre os cartões (acessibilidade) */
 
   --brand: #e7ff00;
   --brand-fill: #dcf302;
