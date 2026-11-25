@@ -56,6 +56,7 @@ async function init() {
 function bindAuth() {
   $('#tab-login').onclick = () => authTab(true);
   $('#tab-register').onclick = () => authTab(false);
+  bindForgotPassword();
   $('#form-login').onsubmit = async e => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -75,7 +76,7 @@ function bindAuth() {
         method: 'POST',
         body: {
           role: 'passenger', name: f.get('name'), phone: f.get('phone'),
-          email: f.get('email'), password: f.get('password'),
+          email: f.get('email'), password: f.get('password'), accept_terms: f.get('accept_terms') === 'on',
         },
       });
       S.user = r.user; toast('Conta criada! Bem-vindo(a) 🎉', 'ok'); enterApp();
@@ -122,9 +123,6 @@ function bindScreenMenu() {
         showScreen('screen-home');
       },
     },
-    { label: 'Vitrine de Lojas (Compre de Empresas)', soon: true },
-    { label: 'Cardápio & Carrinho de Produtos', soon: true },
-    { label: 'Central de Segurança & SOS', soon: true },
     {
       label: 'Busca de Motociclista',
       match: () => onRide('pending_payment', 'requested'),
@@ -183,6 +181,8 @@ function setupGoogleButton() {
 
 /* ================= entrada no app ================= */
 async function enterApp() {
+  ensureTermsAccepted();
+  renderAccountCard($('#account-card'));
   $('#bottomnav').hidden = false;
   $('#btn-notifs').hidden = false;
   $('#btn-notifs').onclick = openNotifications;
@@ -390,8 +390,8 @@ function addMapTools(elId, map, allowPick) {
   const host = document.getElementById(elId);
   const tools = document.createElement('div');
   tools.className = 'map-tools';
-  tools.innerHTML = `<button title="Centralizar em mim" data-center>🎯</button>` +
-    (allowPick ? `<button title="Escolher no mapa" data-pick>📌</button>` : '');
+  tools.innerHTML = `<button type="button" title="Centralizar em mim" aria-label="Centralizar o mapa na minha localização" data-center>🎯</button>` +
+    (allowPick ? `<button type="button" title="Escolher no mapa" aria-label="Marcar o local tocando no mapa" data-pick>📌</button>` : '');
   host.appendChild(tools);
   $('[data-center]', tools).onclick = () => centerOnMe(map);
   if (allowPick) $('[data-pick]', tools).onclick = () => startMapPick(map, host);
@@ -844,8 +844,9 @@ async function refreshActiveRide() {
       closeConfirmModal();
       if (final?.ride?.status === 'completed' && !final.ride.rated) promptRating(final.ride);
       else if (final?.ride?.status === 'cancelled') {
-        toast(final.ride.cancelled_by === 'driver'
-          ? 'O mototaxista cancelou a corrida.' : 'Corrida cancelada.');
+        toast(final.ride.cancelled_by === 'driver' ? 'O mototaxista cancelou a corrida.'
+          : final.ride.cancelled_by === 'sistema' ? `Corrida cancelada: ${final.ride.cancel_reason}`
+            : 'Corrida cancelada.', final.ride.cancelled_by === 'sistema' ? 'err' : undefined);
       }
       showScreen('screen-home');
       refreshStats();
@@ -909,6 +910,7 @@ function renderRide() {
     : S.gps.state === 'weak' ? 'Sinal fraco' : 'GPS indisponível');
 
   renderBoarding(r);
+  renderSafety(r);
 
   $('#ride-chat').hidden = !['accepted', 'in_progress'].includes(r.status);
   if (!$('#ride-chat').hidden) loadChat();
@@ -918,6 +920,34 @@ function renderRide() {
   if (r.status === 'pending_payment') startPaymentPolling(); else stopPaymentPolling();
 
   renderRideMap();
+}
+
+/* ---------- segurança durante a corrida ---------- */
+/** Emergência (190) e compartilhar os dados da corrida com alguém de confiança. */
+function renderSafety(r) {
+  const box = $('#ride-safety');
+  if (!box) return;
+  if (!r.driver || !['accepted', 'in_progress'].includes(r.status)) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <a class="btn btn-danger btn-sm" href="tel:190" aria-label="Ligar para a polícia, 190">🆘 Emergência · 190</a>
+      <button class="btn btn-outline btn-sm" id="btn-share-ride">📤 Compartilhar corrida</button>
+    </div>
+    <p class="muted small mt">Envie a alguém de confiança o nome, a moto, a placa e o trajeto.
+      O compartilhamento manda os dados da corrida, não a localização ao vivo.</p>`;
+  $('#btn-share-ride').onclick = async () => {
+    const d = r.driver;
+    const text = `Estou numa corrida VAIRO. Mototaxista: ${d.name}, ${[d.moto.brand, d.moto.model, d.moto.color].filter(Boolean).join(' ')}, `
+      + `placa ${d.moto.plate || '—'}. De ${r.origin.text} para ${r.dest.text}. `
+      + `${r.started_at ? `Saída às ${fmt.time(r.started_at)}.` : `Pedido às ${fmt.time(r.requested_at)}.`}`;
+    try {
+      if (navigator.share) await navigator.share({ title: 'Minha corrida VAIRO', text });
+      else { await navigator.clipboard.writeText(text); toast('Dados copiados. Cole numa conversa.', 'ok'); }
+    } catch (e) {
+      if (e?.name !== 'AbortError') toast('Não foi possível compartilhar. Copie os dados da tela.', 'err');
+    }
+  };
 }
 
 /* ---------- confirmação de embarque ---------- */
@@ -963,7 +993,7 @@ function renderBoarding(r) {
     box.hidden = false;
     box.innerHTML = `
       <h3>✅ Embarque confirmado</h3>
-      <p class="muted small">Confirmado pelo mototaxista com o seu código em
+      <p class="muted small">${r.boarding_method === 'central' ? 'Confirmado pela central' : 'Confirmado pelo mototaxista com o seu código'} em
         <b>${fmt.date(r.boarding_confirmed_at)} às ${fmt.time(r.boarding_confirmed_at)}</b>.</p>
       <p class="small mt">A corrida não pode mais ser cancelada pelo app. Para pedir ajuda ou
         contestar a cobrança, fale com o suporte.</p>

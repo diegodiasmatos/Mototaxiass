@@ -1,0 +1,5 @@
+# banco, chave secreta e documentos: NUNCA versionar (dados pessoais)
+data/
+.env
+node_modules/
+*.log

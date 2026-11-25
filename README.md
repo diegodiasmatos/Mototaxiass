@@ -7,6 +7,10 @@ aplicativo do passageiro, painel do motorista e central administrativa, com
 mapas reais, GPS em tempo real, tarifas calculadas no servidor e comissão
 automática de 15%.
 
+> **Antes do lançamento:** veja [docs/LANCAMENTO.md](docs/LANCAMENTO.md) — o que já foi
+> corrigido e o que ainda depende de configuração, advogado ou teste em celular.
+> A pasta `data/` não é mais versionada: copie-a antes de um `git pull`.
+
 ## Como executar
 
 Requisito único: **Node.js 24+** (sem npm install — zero dependências).

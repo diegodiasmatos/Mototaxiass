@@ -7,11 +7,11 @@ import {
 } from './util.ts';
 import { route, type Route } from './router.ts';
 import { getFare, allFares, computePriceCents, splitCommission } from './fares.ts';
-import { eligibleDrivers, finalizeRide, getRide, rideEvent, cancelRide } from './rides.ts';
+import { eligibleDrivers, finalizeRide, getRide, rideEvent, cancelRide, ridePaymentOk } from './rides.ts';
 import { notify, notifyAdmins, sseSend } from './notify.ts';
 import {
   driverBalance, ledger, getPaymentByRide, refundPayment, syncPayment,
-  isTestMode, providerName, splitAvailable,
+  isTestMode, providerName, splitAvailable, testPaymentsBlocked,
 } from './payments.ts';
 
 const CREDENTIAL_KEYS = [
@@ -67,6 +67,7 @@ export const adminRoutes: Route[] = [
         c(`SELECT COALESCE(SUM(amount_cents),0) v FROM financial_transactions WHERE kind='repasse_devido'`).v
         - c(`SELECT COALESCE(SUM(amount_cents),0) v FROM financial_transactions WHERE kind='repasse_pago'`).v),
       test_mode: isTestMode(),
+      test_blocked: testPaymentsBlocked(),
       provider: providerName(),
     };
 
@@ -220,7 +221,10 @@ export const adminRoutes: Route[] = [
   route('PUT /api/admin/settings', 'admin', async ({ req, res, user }) => {
     const b = await readBody(req);
     const EDITABLE = ['city_name', 'center_lat', 'center_lng', 'coverage_radius_km',
-      'dispatch_radius_km', 'commission_pct', 'quote_ttl_min', 'loc_fresh_s',
+      'dispatch_radius_km', 'commission_pct', 'quote_ttl_min', 'loc_fresh_s', 'request_timeout_min',
+      // dados da empresa nos Termos e na Política de Privacidade
+      'company_name', 'company_cnpj', 'company_address', 'company_contact', 'dpo_contact', 'legal_reviewed',
+      'backup_keep', 'gps_retention_days', 'messages_retention_days', 'min_driver_age', 'min_cnh_years',
       'welcome_message', 'review_sla_hours',
       // apareciam na tela de configurações, mas o servidor não gravava
       'confirm_window_s', 'driver_debt_limit_cents', 'gps_max_accuracy_m'];
@@ -228,6 +232,12 @@ export const adminRoutes: Route[] = [
       confirm_window_s: [1, 120],
       driver_debt_limit_cents: [0, 10_000_000],
       gps_max_accuracy_m: [10, 5000],
+      request_timeout_min: [0, 240],
+      backup_keep: [1, 60],
+      gps_retention_days: [0, 3650],
+      messages_retention_days: [0, 3650],
+      min_driver_age: [0, 99],
+      min_cnh_years: [0, 50],
     };
     for (const [k, [min, max]] of Object.entries(RANGES)) {
       if (b.settings?.[k] === undefined) continue;
@@ -385,6 +395,34 @@ export const adminRoutes: Route[] = [
   }),
 
   /** Estorno manual de uma corrida (sempre registrado na auditoria). */
+  /**
+   * Confirmação de embarque pela central, para quando o passageiro não
+   * consegue mostrar o código (celular sem bateria, sem internet). A central
+   * deve falar com o passageiro antes. Fica registrado quem confirmou e o motivo.
+   */
+  route('POST /api/admin/rides/:id/confirm-boarding', 'admin', async ({ req, res, user, params }) => {
+    const r = getRide(params.id);
+    if (r.status !== 'accepted') throw new ApiError(409, 'Só é possível confirmar o embarque de corrida aceita e ainda não iniciada.');
+    if (!r.arrived_at) throw new ApiError(409, 'O mototaxista ainda não marcou que chegou ao ponto de embarque.');
+    if (!ridePaymentOk(r)) throw new ApiError(402, 'O pagamento do passageiro ainda não foi confirmado.');
+    const b = await readBody(req);
+    const reason = reqStr(b.reason, 'motivo', 300);
+    const t = now();
+    const ok = db.prepare(`UPDATE rides SET status = 'in_progress', started_at = ?, boarding_confirmed_at = ?,
+        boarding_confirmed_by = ?, boarding_method = 'central', boarding_code = NULL,
+        boarding_attempts = 0, boarding_locked_until = NULL
+      WHERE id = ? AND status = 'accepted'`).run(t, t, user!.id, r.id);
+    if (ok.changes !== 1) throw new ApiError(409, 'A corrida mudou de estado.');
+    rideEvent(r.id, 'boarding_confirmed', user!.id, `pela central: ${reason}`, 'accepted', 'in_progress');
+    audit(user!.id, 'boarding_confirm', 'ride', r.id, reason);
+    notify(r.passenger_id, 'ride_started', 'Embarque confirmado pela central',
+      { body: 'Boa viagem! Se você não embarcou, toque em "Não embarquei" no app.', rideId: r.id });
+    if (r.driver_id) notify(r.driver_id, 'ride_started', 'A central confirmou o embarque', { body: 'Pode iniciar a viagem.', rideId: r.id });
+    sseSend(r.passenger_id, 'ride_update', { id: r.id });
+    if (r.driver_id) sseSend(r.driver_id, 'ride_update', { id: r.id });
+    json(res, 200, { ok: true });
+  }),
+
   route('POST /api/admin/rides/:id/refund', 'admin', async ({ req, res, user, params }) => {
     const r = getRide(params.id);
     const payment = getPaymentByRide(r.id);
@@ -755,6 +793,33 @@ export const adminRoutes: Route[] = [
     }
     sseSend(r.passenger_id, 'ride_update', { id: r.id });
     json(res, 200, { ok: true });
+  }),
+
+  // ---------- cópias de segurança ----------
+  route('GET /api/admin/backups', 'admin', async ({ res }) => {
+    const { listBackups } = await import('./maintenance.ts');
+    json(res, 200, { backups: listBackups() });
+  }),
+  route('POST /api/admin/backups', 'admin', async ({ res, user }) => {
+    const { dailyBackupIfDue, listBackups } = await import('./maintenance.ts');
+    const file = dailyBackupIfDue(Date.now(), true);   // cópia agora, fora do horário
+    audit(user!.id, 'backup_create', 'db', undefined, file ? file.split('/').pop() : '');
+    json(res, 201, { ok: true, backups: listBackups() });
+  }),
+  /** Baixar uma cópia (contém dados pessoais: só a central, e fica na auditoria). */
+  route('GET /api/admin/backups/:name', 'admin', async ({ res, user, params }) => {
+    const { backupDir, listBackups } = await import('./maintenance.ts');
+    const name = params.name;
+    if (!/^assis-diario-[0-9TZ-]+\.db$/.test(name) || !listBackups().some(b => b.name === name)) {
+      throw new ApiError(404, 'Cópia não encontrada.');
+    }
+    audit(user!.id, 'backup_download', 'db', undefined, name);
+    const file = (await import('node:path')).join(backupDir(), name);
+    res.writeHead(200, {
+      'Content-Type': 'application/vnd.sqlite3', 'Cache-Control': 'no-store',
+      'Content-Disposition': `attachment; filename="${name}"`,
+    });
+    (await import('node:fs')).createReadStream(file).pipe(res);
   }),
 
   // ---------- auditoria ----------

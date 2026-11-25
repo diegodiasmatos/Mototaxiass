@@ -1172,3 +1172,135 @@ function setNotifBadge(count) {
 }
 
 initChrome();
+
+
+/* ================= conta: termos, senha e exclusão ================= */
+
+/**
+ * Quem já tinha conta antes dos Termos (ou de uma nova versão) precisa
+ * aceitar para continuar. A janela não fecha sem aceitar; dá para ler os
+ * textos e sair da conta.
+ */
+async function ensureTermsAccepted() {
+  let me;
+  try { me = await api('/api/me'); } catch { return; }
+  if (me.terms_ok !== false || document.getElementById('terms-gate')) return;
+  const back = document.createElement('div');
+  back.className = 'modal-backdrop';
+  back.id = 'terms-gate';
+  back.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="tg-title">
+    <h3 id="tg-title">Termos de Uso e Privacidade</h3>
+    <p class="muted mb">Para continuar usando a VAIRO, leia e aceite os
+      <a href="/termos" target="_blank" rel="noopener">Termos de Uso</a> e a
+      <a href="/privacidade" target="_blank" rel="noopener">Política de Privacidade</a>.
+      Eles explicam as regras de cancelamento e cobrança e como seus dados e sua localização são usados.</p>
+    <label class="check-row"><input type="checkbox" id="tg-check"> <span>Li e aceito.</span></label>
+    <button class="btn btn-primary mt" id="tg-ok" disabled>Continuar</button>
+    <button class="btn btn-outline mt" id="tg-out">Sair da conta</button></div>`;
+  document.body.appendChild(back);
+  const ok = back.querySelector('#tg-ok');
+  back.querySelector('#tg-check').onchange = e => { ok.disabled = !e.target.checked; };
+  ok.onclick = () => withLoading(ok, async () => {
+    await api('/api/me/accept-terms', { method: 'POST', body: { version: me.terms_version } });
+    back.remove();
+  }, { okMsg: 'Obrigado! Aceite registrado.' }).catch(() => { });
+  back.querySelector('#tg-out').onclick = async () => {
+    await api('/api/auth/logout', { method: 'POST' }).catch(() => { });
+    location.reload();
+  };
+}
+
+/** "Esqueci minha senha" na tela de login. */
+function bindForgotPassword() {
+  for (const b of document.querySelectorAll('[data-forgot]')) {
+    b.onclick = () => {
+      const typed = document.querySelector('#form-login [name=email]')?.value || '';
+      const m = openModal(`
+        <h3>Esqueci minha senha</h3>
+        <p class="muted mb">Informe o e-mail da conta. A central confere seus dados e envia, pelo telefone
+          cadastrado, um link para você criar uma nova senha.</p>
+        <div class="field"><label for="fg-email">E-mail</label>
+          <input class="input" id="fg-email" type="email" autocomplete="email" value="${escapeHtml(typed)}"></div>
+        <button class="btn btn-primary" data-send>Pedir nova senha</button>`);
+      const send = m.querySelector('[data-send]');
+      send.onclick = () => withLoading(send, async () => {
+        const email = m.querySelector('#fg-email').value.trim();
+        if (!email) throw new Error('Digite o e-mail da conta.');
+        const r = await api('/api/auth/forgot', { method: 'POST', body: { email } });
+        m.querySelector('.modal').innerHTML = `<h3>Pedido enviado</h3><p class="mt">${escapeHtml(r.message)}</p>
+          <button class="btn btn-primary mt" data-close>Entendi</button>`;
+        m.querySelector('[data-close]').onclick = () => m.close();
+      }).catch(() => { });
+    };
+  }
+}
+
+/** Cartão "Conta e privacidade" do Perfil: troca de senha e exclusão de conta. */
+async function renderAccountCard(box) {
+  if (!box) return;
+  let me = {};
+  try { me = await api('/api/me'); } catch { /* mostra sem o status */ }
+  const pending = me.deletion_requested_at;
+  box.innerHTML = `
+    <h3>🔒 Conta e privacidade</h3>
+    <button class="btn btn-outline btn-sm mb" data-pw>Trocar senha</button>
+    <p class="muted small mb"><a href="/termos" target="_blank" rel="noopener">Termos de Uso</a> ·
+      <a href="/privacidade" target="_blank" rel="noopener">Política de Privacidade</a></p>
+    ${pending
+      ? `<p class="small warn-text">Você pediu a exclusão da conta em ${fmt.date(pending)}. A central vai concluir e avisar.</p>
+         <button class="btn btn-outline btn-sm" data-undo>Desistir da exclusão</button>`
+      : `<button class="btn btn-outline btn-sm" data-del>Excluir minha conta</button>`}`;
+  box.querySelector('[data-pw]').onclick = openChangePassword;
+  const del = box.querySelector('[data-del]');
+  if (del) del.onclick = () => openDeleteAccount(box);
+  const undo = box.querySelector('[data-undo]');
+  if (undo) undo.onclick = () => withLoading(undo, async () => {
+    await api('/api/me/delete-request', { method: 'DELETE' });
+    renderAccountCard(box);
+  }, { okMsg: 'Pedido de exclusão cancelado.' }).catch(() => { });
+}
+
+function openChangePassword() {
+  const m = openModal(`
+    <h3>Trocar senha</h3>
+    <div class="field"><label for="cp-cur">Senha atual</label>
+      <input class="input" id="cp-cur" type="password" autocomplete="current-password"></div>
+    <div class="field"><label for="cp-new">Nova senha (mín. 8 caracteres)</label>
+      <input class="input" id="cp-new" type="password" minlength="8" autocomplete="new-password"></div>
+    <div class="field"><label for="cp-new2">Repita a nova senha</label>
+      <input class="input" id="cp-new2" type="password" minlength="8" autocomplete="new-password"></div>
+    <button class="btn btn-primary" data-save>Salvar nova senha</button>
+    <p class="muted small mt">Por segurança, o app sai da sua conta nos outros aparelhos.</p>`);
+  const save = m.querySelector('[data-save]');
+  save.onclick = () => withLoading(save, async () => {
+    const a = m.querySelector('#cp-new').value, b = m.querySelector('#cp-new2').value;
+    if (a !== b) throw new Error('As duas senhas novas não são iguais.');
+    await api('/api/me/password', { method: 'POST',
+      body: { current_password: m.querySelector('#cp-cur').value, new_password: a } });
+    m.close();
+  }, { okMsg: 'Senha alterada.' }).catch(() => { });
+}
+
+function openDeleteAccount(box) {
+  const m = openModal(`
+    <h3>Excluir minha conta</h3>
+    <p class="muted mb">Vamos apagar os dados que identificam você: nome, e-mail, telefone, foto, documentos,
+      endereços, mensagens e localização. Corridas e pagamentos ficam guardados <b>sem identificar você</b>,
+      quando a lei exigir. Depois de concluída, a exclusão não pode ser desfeita.</p>
+    <p class="muted small mb">A central conclui o pedido depois de conferir se não há corrida em andamento
+      ou valores pendentes. Até lá, você pode desistir.</p>
+    <div class="field"><label for="da-reason">Motivo (opcional)</label>
+      <textarea class="input" id="da-reason" maxlength="500"></textarea></div>
+    <div class="field"><label for="da-pw">Confirme com sua senha</label>
+      <input class="input" id="da-pw" type="password" autocomplete="current-password"></div>
+    <button class="btn btn-danger" data-send>Pedir exclusão da conta</button>
+    <button class="btn btn-outline mt" data-cancel>Voltar</button>`);
+  m.querySelector('[data-cancel]').onclick = () => m.close();
+  const send = m.querySelector('[data-send]');
+  send.onclick = () => withLoading(send, async () => {
+    await api('/api/me/delete-request', { method: 'POST',
+      body: { password: m.querySelector('#da-pw').value, reason: m.querySelector('#da-reason').value } });
+    m.close();
+    renderAccountCard(box);
+  }, { okMsg: 'Pedido registrado. A central vai concluir e avisar.' }).catch(() => { });
+}

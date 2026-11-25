@@ -654,6 +654,45 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     ALTER TABLE rides ADD COLUMN boarding_dist_m INTEGER;
     `,
   },
+
+  // ----------------------------------------------------------------
+  // V9 — conta do usuário: aceite dos termos (versão e data), links de
+  // nova senha (só o hash do token é guardado) e pedidos de exclusão.
+  // Só adiciona colunas e tabelas.
+  // ----------------------------------------------------------------
+  {
+    version: 9,
+    sql: `
+    ALTER TABLE users ADD COLUMN terms_version TEXT;
+    ALTER TABLE users ADD COLUMN terms_accepted_at INTEGER;
+    CREATE TABLE password_resets (
+      token_hash TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_by TEXT,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at    INTEGER
+    );
+    CREATE INDEX idx_pwreset_user ON password_resets(user_id);
+    CREATE TABLE account_deletion_requests (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id),
+      reason     TEXT,
+      status     TEXT NOT NULL DEFAULT 'pendente'
+                 CHECK (status IN ('pendente','concluido','cancelado')),
+      created_at INTEGER NOT NULL,
+      handled_by TEXT,
+      handled_at INTEGER,
+      note       TEXT
+    );
+    CREATE INDEX idx_delreq_user ON account_deletion_requests(user_id);
+    -- requisitos do mototaxista informados no cadastro (conferidos pela central)
+    ALTER TABLE drivers ADD COLUMN cnh_expiry TEXT;
+    ALTER TABLE drivers ADD COLUMN cnh_first_date TEXT;
+    ALTER TABLE drivers ADD COLUMN decl_cat_a_ear INTEGER;
+    ALTER TABLE drivers ADD COLUMN decl_course INTEGER;
+    `,
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {
@@ -664,6 +703,12 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   card_enabled: '1',
   cash_enabled: '1',
   pix_expires_min: '15',
+  request_timeout_min: '15',
+  min_driver_age: '21',
+  backup_keep: '7',                // cópias diárias guardadas no disco
+  gps_retention_days: '0',         // GPS de corridas encerradas: apagar após N dias (0 = nunca)
+  messages_retention_days: '0',    // chat de corridas encerradas: apagar após N dias (0 = nunca)            // idade mínima do mototaxista (0 = não confere)
+  min_cnh_years: '2',              // anos mínimos de habilitação (0 = não confere)       // procurando mototaxista: cancela e estorna depois disso (0 = nunca)
   driver_debt_limit_cents: '5000', // dívida de comissão (corridas em dinheiro) que bloqueia novas corridas
   pickup_move_alert_m: '80',       // distância que dispara "você mudou de local?"
   gps_max_accuracy_m: '150',       // acima disso a posição é considerada imprecisa
@@ -707,8 +752,13 @@ function backupBeforeMigrations(file: string, applied: Set<number>): void {
   console.log(`[banco] cópia de segurança antes da migração: ${target}`);
 }
 
+let _dbFile = '';
+/** Caminho do arquivo do banco em uso. */
+export function dbFilePath(): string { return _dbFile; }
+
 export function initDb(dbPath?: string): DatabaseSync {
   const file = dbPath || process.env.DB_PATH || path.join(dataDir(), 'assis.db');
+  _dbFile = file;
   db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');

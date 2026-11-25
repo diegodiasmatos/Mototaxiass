@@ -12,6 +12,10 @@ primary_region = 'gru'
 [env]
   DATA_DIR = '/data'
   PORT = '8780'
+  # app publicado: pagamento de teste bloqueado (só dinheiro até o Mercado Pago ser configurado)
+  APP_ENV = 'production'
+  # o IP real do cliente vem do proxy da Fly (Fly-Client-IP)
+  TRUST_PROXY = '1'
 
 [[mounts]]
   source = 'dados'

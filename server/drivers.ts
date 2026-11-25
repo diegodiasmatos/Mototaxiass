@@ -5,6 +5,7 @@ import {
   ApiError, id, now, json, readBody, reqStr, reqNum, dataDir, haversineM,
 } from './util.ts';
 import { route, type Route } from './router.ts';
+import { assertTermsAccepted } from './account.ts';
 import { splitCommission } from './fares.ts';
 import {
   getRide, rideEvent, etaSeconds, cancelRide, dispatchRide, assertCanTransition,
@@ -121,6 +122,7 @@ export const driverRoutes: Route[] = [
 
   // Cadastro profissional completo (etapas enviadas de uma vez ao final do wizard).
   route('POST /api/driver/apply', 'driver', async ({ req, res, user }) => {
+    assertTermsAccepted(user!);
     const b = await readBody(req);
     const existing = db.prepare('SELECT status FROM drivers WHERE user_id = ?').get(user!.id) as any;
     if (existing && !['correction', 'rejected'].includes(existing.status)) {
@@ -128,6 +130,38 @@ export const driverRoutes: Route[] = [
     }
 
     const birth = reqStr(b.birth_date, 'data de nascimento', 12);
+    // requisitos do condutor: idade, CNH válida, tempo de habilitação, categoria A com EAR.
+    // Os limites ficam nas configurações da central (confira a lei e as regras do município).
+    const parseDate = (v: string, what: string) => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+      const d = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
+      if (!d || Number.isNaN(d.getTime()) || d.getUTCDate() !== +m![3]) throw new ApiError(400, `Data inválida: ${what}.`);
+      return d;
+    };
+    const yearsSince = (d: Date) => {
+      const t = new Date(now());
+      let y = t.getUTCFullYear() - d.getUTCFullYear();
+      if (t.getUTCMonth() < d.getUTCMonth() || (t.getUTCMonth() === d.getUTCMonth() && t.getUTCDate() < d.getUTCDate())) y--;
+      return y;
+    };
+    const birthD = parseDate(birth, 'data de nascimento');
+    const minAge = getSettingNum('min_driver_age');
+    if (minAge > 0 && yearsSince(birthD) < minAge) {
+      throw new ApiError(400, `É preciso ter pelo menos ${minAge} anos para trabalhar como mototaxista.`);
+    }
+    const cnhExpiry = reqStr(b.cnh_expiry, 'validade da CNH', 12);
+    if (parseDate(cnhExpiry, 'validade da CNH').getTime() < now() - 86400_000) {
+      throw new ApiError(400, 'A CNH informada está vencida. Renove antes de se cadastrar.');
+    }
+    const cnhFirst = reqStr(b.cnh_first_date, 'data da 1ª habilitação', 12);
+    const minYears = getSettingNum('min_cnh_years');
+    if (minYears > 0 && yearsSince(parseDate(cnhFirst, 'data da 1ª habilitação')) < minYears) {
+      throw new ApiError(400, `É preciso ter habilitação há pelo menos ${minYears} anos.`);
+    }
+    if (b.decl_cat_a_ear !== true) {
+      throw new ApiError(400, 'Confirme que sua CNH é categoria A com a observação EAR (exerce atividade remunerada).');
+    }
+    const declCourse = b.decl_course === true ? 1 : 0;
     const address = reqStr(b.address, 'endereço', 300);
     const plate = reqStr(b.moto_plate, 'placa', 10).toUpperCase();
     if (!/^[A-Z]{3}-?\d[A-Z0-9]\d{2}$/.test(plate)) throw new ApiError(400, 'Placa inválida (padrão ABC-1D23 ou ABC-1234).');
@@ -146,11 +180,15 @@ export const driverRoutes: Route[] = [
         moto_brand=?, moto_model=?, moto_year=?, moto_color=?, submitted_at=?, deadline_at=?,
         review_reason=NULL, reviewed_at=NULL WHERE user_id=?`)
         .run(birth, address, plate, brand, model, year, color, t, deadline, user!.id);
+      db.prepare(`UPDATE drivers SET cnh_expiry=?, cnh_first_date=?, decl_cat_a_ear=1, decl_course=? WHERE user_id=?`)
+        .run(cnhExpiry, cnhFirst, declCourse, user!.id);
     } else {
       db.prepare(`INSERT INTO drivers (user_id, status, birth_date, address, moto_plate,
         moto_brand, moto_model, moto_year, moto_color, submitted_at, deadline_at)
         VALUES (?,'pending',?,?,?,?,?,?,?,?,?)`)
         .run(user!.id, birth, address, plate, brand, model, year, color, t, deadline);
+      db.prepare(`UPDATE drivers SET cnh_expiry=?, cnh_first_date=?, decl_cat_a_ear=1, decl_course=? WHERE user_id=?`)
+        .run(cnhExpiry, cnhFirst, declCourse, user!.id);
     }
     for (const kind of DOC_KINDS) saveDocument(user!.id, kind, b.documents[kind]);
 
@@ -177,6 +215,7 @@ export const driverRoutes: Route[] = [
   }),
 
   route('POST /api/driver/online', 'driver', async ({ req, res, user }) => {
+    assertTermsAccepted(user!);
     requireApprovedDriver(user!.id);
     const b = await readBody(req);
     const online = b.online ? 1 : 0;

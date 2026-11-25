@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="VAIRO Motorista">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
   <link rel="preload" href="/fonts/inter-latin-var.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/css/app.css">
   <script>try{if(localStorage.getItem('vairo-theme')==='light')document.documentElement.dataset.theme='light'}catch(e){}</script>
@@ -47,6 +47,7 @@
         <button class="btn btn-primary" type="submit">Entrar como Motorista</button>
         <p class="auth-switch">Novo na VAIRO? <button type="button" class="linkbtn" id="tab-register">Cadastre sua Moto</button></p>
       </div>
+      <p class="auth-switch"><button type="button" class="linkbtn" data-forgot>Esqueci minha senha</button></p>
     </form>
     <form id="form-register" class="auth-form" hidden>
       <p class="muted small mb">Crie sua conta de motorista. Depois você envia seus documentos para análise.</p>
@@ -55,11 +56,15 @@
       <div class="field"><label for="reg-phone">Telefone (WhatsApp)</label><input class="input" id="reg-phone" name="phone" type="tel" required></div>
       <div class="field"><label for="reg-email">E-mail</label><input class="input" id="reg-email" name="email" type="email" required autocomplete="email"></div>
       <div class="field"><label for="reg-password">Senha (mín. 8 caracteres)</label><input class="input" id="reg-password" name="password" type="password" minlength="8" required autocomplete="new-password"></div>
+            <label class="check-row"><input type="checkbox" name="accept_terms" required>
+        <span>Li e aceito os <a href="/termos" target="_blank" rel="noopener">Termos de Uso</a> e a
+        <a href="/privacidade" target="_blank" rel="noopener">Política de Privacidade</a>.</span></label>
       <div class="auth-foot">
         <button class="btn btn-primary" type="submit">Criar conta de motorista</button>
         <p class="auth-switch">Já tem uma conta? <button type="button" class="linkbtn" id="tab-login">Entrar</button></p>
       </div>
     </form>
+    <p class="auth-note legal-links"><a href="/termos">Termos de Uso</a> · <a href="/privacidade">Privacidade</a></p>
     <p class="auth-note">É passageiro? <a href="/passageiro">Peça sua corrida aqui</a></p>
   </section>
 
@@ -98,6 +103,12 @@
       <div id="apply-step-3" hidden>
         <h3>3 · Documentos</h3>
         <p class="muted small mb">Exigências: CNH válida <b>categoria A</b> com observação <b>EAR</b> (exerce atividade remunerada) e CRLV da moto em dia. Os arquivos ficam em área privada — somente a administração acessa.</p>
+        <div class="grid2">
+          <div class="field"><label for="ap-cnh-exp">Validade da CNH</label><input class="input" id="ap-cnh-exp" type="date" required></div>
+          <div class="field"><label for="ap-cnh-first">Data da 1ª habilitação</label><input class="input" id="ap-cnh-first" type="date" required></div>
+        </div>
+        <label class="check-row"><input type="checkbox" id="ap-decl-ear"> <span>Minha CNH é <b>categoria A</b> e tem a observação <b>EAR</b>.</span></label>
+        <label class="check-row mb"><input type="checkbox" id="ap-decl-course"> <span>Tenho o curso especializado para mototaxista.</span></label>
         <div class="upload-slot" id="slot-cnh"><div class="uico">🪪</div><div class="ulabel">CNH (frente, com EAR)</div><div class="usub">Foto nítida ou PDF</div></div>
         <input type="file" id="file-cnh" accept="image/*,application/pdf" hidden>
         <div class="upload-slot" id="slot-crlv"><div class="uico">📄</div><div class="ulabel">CRLV do veículo</div><div class="usub">Documento da moto</div></div>
@@ -184,6 +195,7 @@
       </form>
     </div>
     <button class="btn btn-outline" id="btn-notif-perm">🔔 Ativar notificações do navegador</button>
+    <div class="card" id="account-card"></div>
     <button class="btn btn-danger mt" id="btn-logout">Sair da conta</button>
   </section>
 </main>
@@ -194,7 +206,7 @@
   <button data-screen="screen-profile"><span class="nico"><i data-icon="user"></i></span>Perfil</button>
 </nav>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/vendor/leaflet/leaflet.js"></script>
 <script src="/js/icons.js"></script>
 <script src="/js/common.js"></script>
 <script src="/js/driver.js"></script>

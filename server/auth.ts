@@ -1,18 +1,23 @@
 import crypto from 'node:crypto';
 import { db, getSetting } from './db.ts';
 import {
-  ApiError, hashPassword, verifyPassword, id, now, json, readBody,
+  ApiError, hashPassword, verifyPassword, id, now, json, readBody, rateExceeded, rateHit,
   isValidEmail, isValidCpf, reqStr, rateLimit, setSessionCookie, clearSessionCookie,
 } from './util.ts';
+import { termsOk, recordTermsAcceptance, TERMS_VERSION } from './account.ts';
 import { route, type Route, type SessionUser } from './router.ts';
 import { notifyAdmins } from './notify.ts';
 
 const SESSION_TTL = 30 * 24 * 3600 * 1000;
+/** A central tem acesso a dados de todos: sessão de 12 h. */
+const ADMIN_SESSION_TTL = 12 * 3600 * 1000;
+export function sessionTtl(role: string): number { return role === 'admin' ? ADMIN_SESSION_TTL : SESSION_TTL; }
 
 export function createSession(userId: string): string {
   const token = crypto.randomBytes(32).toString('base64url');
   db.prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
-    .run(token, userId, now(), now() + SESSION_TTL);
+    .run(token, userId, now(), now() + sessionTtl(
+      (db.prepare('SELECT role FROM users WHERE id = ?').get(userId) as any)?.role || ''));
   return token;
 }
 
@@ -41,7 +46,7 @@ function sanitizePhoto(photo: unknown): string | null {
 async function loginUser(res: any, u: any): Promise<void> {
   if (u.blocked) throw new ApiError(403, `Conta bloqueada. ${u.blocked_reason || 'Fale com o suporte.'}`);
   const token = createSession(u.id);
-  setSessionCookie(res, token);
+  setSessionCookie(res, token, sessionTtl(u.role) / 1000);
   json(res, 200, { ok: true, user: publicUser(u) });
 }
 
@@ -57,6 +62,9 @@ export const authRoutes: Route[] = [
     if (password.length < 8) throw new ApiError(400, 'A senha deve ter pelo menos 8 caracteres.');
     if (!isValidEmail(b.email)) throw new ApiError(400, 'E-mail inválido.');
     if (b.cpf !== undefined && b.cpf !== '' && !isValidCpf(b.cpf)) throw new ApiError(400, 'CPF inválido.');
+    if (b.accept_terms !== true) {
+      throw new ApiError(400, 'Para criar a conta, leia e aceite os Termos de Uso e a Política de Privacidade.');
+    }
 
     const exists = db.prepare('SELECT id FROM users WHERE email = ?').get(b.email) as any;
     if (exists) throw new ApiError(409, 'Já existe uma conta com este e-mail.');
@@ -66,6 +74,7 @@ export const authRoutes: Route[] = [
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(uid, roleIn, name, b.email, phone, b.cpf ? String(b.cpf).replace(/\D/g, '') : null,
         hashPassword(password), sanitizePhoto(b.photo), now());
+    recordTermsAcceptance(uid);
 
     if (roleIn === 'passenger') notifyAdmins('new_passenger', 'Novo passageiro cadastrado', `${name} (${b.email})`);
     const token = createSession(uid);
@@ -73,13 +82,22 @@ export const authRoutes: Route[] = [
     json(res, 201, { ok: true, user: { id: uid, role: roleIn, name, email: b.email, phone, photo: null } });
   }),
 
+  /**
+   * Login. Só as tentativas ERRADAS contam: 20 por IP e 8 por conta a cada
+   * 15 minutos. Quem acerta a senha nunca é barrado por causa dos outros.
+   */
   route('POST /api/auth/login', null, async ({ req, res, ip }) => {
-    if (!rateLimit(`login:${ip}`, 25, 10 * 60_000)) throw new ApiError(429, 'Muitas tentativas. Aguarde alguns minutos.');
     const b = await readBody(req);
     const email = reqStr(b.email, 'e-mail', 160);
     const password = reqStr(b.password, 'senha', 200);
+    const ipKey = `loginfail-ip:${ip}`, accKey = `loginfail-acc:${email.toLowerCase()}`;
+    if (rateExceeded(ipKey, 20) || rateExceeded(accKey, 8)) {
+      throw new ApiError(429, 'Muitas tentativas com senha errada. Aguarde 15 minutos ou use "Esqueci minha senha".');
+    }
     const u = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
     if (!u || !verifyPassword(password, u.password_hash)) {
+      rateHit(ipKey, 15 * 60_000);
+      rateHit(accKey, 15 * 60_000);
       throw new ApiError(401, 'E-mail ou senha incorretos.');
     }
     await loginUser(res, u);
@@ -134,7 +152,15 @@ export const authRoutes: Route[] = [
         moto_color, submitted_at, deadline_at, review_reason, rating_sum, rating_count, rides_count
         FROM drivers WHERE user_id = ?`).get(user!.id) ?? null;
     }
-    json(res, 200, { user: publicUser(user!), driver, unread: unread.c });
+    const extra = db.prepare('SELECT terms_version FROM users WHERE id = ?').get(user!.id) as any;
+    const del = db.prepare(`SELECT created_at FROM account_deletion_requests
+      WHERE user_id = ? AND status = 'pendente'`).get(user!.id) as any;
+    json(res, 200, {
+      user: publicUser(user!), driver, unread: unread.c,
+      terms_ok: termsOk({ role: user!.role, terms_version: extra?.terms_version }),
+      terms_version: TERMS_VERSION,
+      deletion_requested_at: del?.created_at ?? null,
+    });
   }),
 
   route('PATCH /api/me', 'any', async ({ req, res, user }) => {

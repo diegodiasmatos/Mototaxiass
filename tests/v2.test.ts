@@ -92,15 +92,15 @@ before(async () => {
   close = s.close;
 
   await pax.req('POST', '/api/auth/register', {
-    role: 'passenger', name: 'Ana Passageira', phone: '(44) 90000-1111',
+    role: 'passenger', accept_terms: true, name: 'Ana Passageira', phone: '(44) 90000-1111',
     email: 'ana@v2.test', password: 'senha12345',
   });
   await drv.req('POST', '/api/auth/register', {
-    role: 'driver', name: 'Beto Motoboy', cpf: '529.982.247-25',
+    role: 'driver', accept_terms: true, name: 'Beto Motoboy', cpf: '529.982.247-25',
     phone: '(44) 90000-2222', email: 'beto@v2.test', password: 'senha12345',
   });
   await drv.req('POST', '/api/driver/apply', {
-    birth_date: '1990-01-01', address: 'Rua A, 10', moto_plate: 'ABC-1D23',
+    birth_date: '1990-01-01', cnh_expiry: '2031-01-01', cnh_first_date: '2012-05-10', decl_cat_a_ear: true, address: 'Rua A, 10', moto_plate: 'ABC-1D23',
     moto_brand: 'Honda', moto_model: 'CG 160', moto_year: '2022', moto_color: 'Preta',
     documents: { cnh: fakeDoc(), crlv: fakeDoc(), selfie: fakeDoc() },
   });
@@ -440,6 +440,30 @@ test('embarque: contestação depois da corrida concluída também é registrada
   assert.equal(c.status, 201);
   const row = db.prepare(`SELECT status FROM ride_issues WHERE id = ?`).get(c.data.id) as any;
   assert.equal(row.status, 'aberta');
+});
+
+test('embarque: a central confirma quando o passageiro não consegue mostrar o código', async () => {
+  const rid = await newRide('pix');
+  assert.equal((await drv.req('POST', `/api/driver/rides/${rid}/accept`)).status, 200);
+  // antes de o mototaxista chegar, não
+  assert.equal((await adm.req('POST', `/api/admin/rides/${rid}/confirm-boarding`, { reason: 'x' })).status, 409);
+  await drv.req('POST', `/api/driver/rides/${rid}/arrived`);
+  assert.equal((await pax.req('POST', `/api/admin/rides/${rid}/confirm-boarding`, { reason: 'x' })).status, 403);
+  assert.equal((await adm.req('POST', `/api/admin/rides/${rid}/confirm-boarding`, {})).status, 400);   // motivo obrigatório
+  const ok = await adm.req('POST', `/api/admin/rides/${rid}/confirm-boarding`,
+    { reason: 'passageiro sem bateria, confirmado por ligação' });
+  assert.equal(ok.status, 200);
+  const row = db.prepare('SELECT status, boarding_method, boarding_confirmed_by FROM rides WHERE id = ?').get(rid) as any;
+  assert.equal(row.status, 'in_progress');
+  assert.equal(row.boarding_method, 'central');
+  assert.notEqual(row.boarding_confirmed_by, driverId);
+  const aud = await adm.req('GET', '/api/admin/audit');
+  assert.ok(aud.data.logs.some((l: any) => l.action === 'boarding_confirm' && l.target_id === rid));
+  // o passageiro continua podendo contestar
+  assert.equal((await pax.req('POST', `/api/rides/${rid}/issue`, { kind: 'nao_embarquei' })).status, 201);
+  await drv.req('POST', `/api/driver/rides/${rid}/complete`);
+  const iss = (await adm.req('GET', '/api/admin/issues?status=aberta')).data.issues.find((i: any) => i.ride_id === rid);
+  await adm.req('POST', `/api/admin/issues/${iss.id}/resolve`, { action: 'concluir', note: 'confirmado' });
 });
 
 // ================= GPS =================

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101014">
+  <meta name="referrer" content="no-referrer">
+  <title>Criar nova senha — VAIRO</title>
+  <link rel="icon" href="/img/icon.svg?v=2" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/app.css">
+  <script>try{if(localStorage.getItem('vairo-theme')==='light')document.documentElement.dataset.theme='light'}catch(e){}</script>
+</head>
+<body>
+<main class="app">
+  <div class="card" style="margin-top:12vh">
+    <h2>🔑 Criar nova senha</h2>
+    <form id="form-reset" class="mt">
+      <div class="field"><label for="pw1">Nova senha (mín. 8 caracteres)</label>
+        <input class="input" id="pw1" type="password" minlength="8" required autocomplete="new-password"></div>
+      <div class="field"><label for="pw2">Repita a nova senha</label>
+        <input class="input" id="pw2" type="password" minlength="8" required autocomplete="new-password"></div>
+      <p class="err-text small" id="reset-msg" hidden></p>
+      <button class="btn btn-primary" type="submit">Salvar nova senha</button>
+    </form>
+    <div id="reset-ok" hidden>
+      <p class="mt">✅ Senha alterada. Por segurança, todas as sessões abertas foram encerradas.</p>
+      <a class="btn btn-primary mt" href="/">Entrar</a>
+    </div>
+  </div>
+</main>
+<script src="/js/reset.js"></script>
+</body>
+</html>

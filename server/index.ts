@@ -5,15 +5,17 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
   ROOT, loadEnv, json, parseCookies, ApiError, verifySignedDoc,
-  hashPassword, id, now,
+  hashPassword, id, now, clientIp,
 } from './util.ts';
 import { initDb, db } from './db.ts';
 import { matchRoute, type Route, type Ctx } from './router.ts';
 import { authRoutes, userFromToken } from './auth.ts';
-import { rideRoutes, startAutoConfirmSweeper } from './rides.ts';
+import { rideRoutes, startAutoConfirmSweeper, startRideDeadlineSweeper } from './rides.ts';
 import { driverRoutes } from './drivers.ts';
 import { adminRoutes } from './admin.ts';
 import { integrationRoutes } from './integrations.ts';
+import { accountRoutes } from './account.ts';
+import { startMaintenance } from './maintenance.ts';
 import { sseConnect } from './notify.ts';
 import { appVersion, injectSwVersion, injectHtmlVersion } from './version.ts';
 
@@ -26,6 +28,60 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
+// ================= cabeçalhos de segurança =================
+
+/**
+ * Política de conteúdo completa: só a própria origem e os serviços que o app
+ * usa (Leaflet servido pelo próprio app, blocos do OpenStreetMap, Mapbox,
+ * Google Maps e o login do Google). Scripts embutidos entram pelo hash.
+ * Em produção vai como "Report-Only" (só avisa no console) até ser conferida
+ * com o Mapbox no domínio real; CSP_ENFORCE=1 passa a bloquear.
+ */
+let _inlineHashes: string[] | null = null;
+function inlineScriptHashes(): string[] {
+  if (_inlineHashes) return _inlineHashes;
+  const set = new Set<string>();
+  for (const f of fs.readdirSync(PUBLIC_DIR)) {
+    if (!f.endsWith('.html')) continue;
+    const html = fs.readFileSync(path.join(PUBLIC_DIR, f), 'utf8');
+    for (const m of html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+      set.add(`'sha256-${crypto.createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
+    }
+  }
+  return (_inlineHashes = [...set]);
+}
+function fullCsp(): string {
+  const g = ['https://*.googleapis.com', 'https://*.gstatic.com'];
+  const d: Record<string, string[]> = {
+    'default-src': ["'self'"],
+    'script-src': ["'self'", ...inlineScriptHashes(), 'https://api.mapbox.com', ...g, 'https://accounts.google.com/gsi/client'],
+    'style-src': ["'self'", "'unsafe-inline'", 'https://api.mapbox.com', 'https://fonts.googleapis.com', 'https://accounts.google.com/gsi/style'],
+    'img-src': ["'self'", 'data:', 'blob:', 'https://tile.openstreetmap.org', 'https://*.tile.openstreetmap.org',
+      'https://api.mapbox.com', ...g, 'https://*.google.com', 'https://*.googleusercontent.com', 'https://*.ggpht.com'],
+    'font-src': ["'self'", 'data:', 'https://fonts.gstatic.com'],
+    'connect-src': ["'self'", 'https://api.mapbox.com', 'https://events.mapbox.com', ...g, 'https://*.google.com', 'https://accounts.google.com'],
+    'worker-src': ["'self'", 'blob:'],
+    'child-src': ["'self'", 'blob:'],
+    'frame-src': ['https://accounts.google.com'],
+    'manifest-src': ["'self'"],
+    'object-src': ["'none'"],
+    'base-uri': ["'self'"],
+    'form-action': ["'self'"],
+    'frame-ancestors': ["'none'"],
+  };
+  return Object.entries(d).map(([k, v]) => `${k} ${v.join(' ')}`).join('; ');
+}
+/** Parte que não quebra nada e vale sempre: ninguém abre o app dentro de outro site. */
+const BASE_CSP = "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'";
+
+function securityHeaders(res: http.ServerResponse): void {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(self), microphone=(), payment=(), usb=()');
+  if (process.env.APP_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+}
+
 function serveStatic(res: http.ServerResponse, urlPath: string): boolean {
   let rel = urlPath;
   // páginas amigáveis
@@ -34,6 +90,9 @@ function serveStatic(res: http.ServerResponse, urlPath: string): boolean {
   if (rel === '/motorista' || rel === '/mototaxista') rel = '/motorista.html';
   if (rel === '/empresa') rel = '/empresa.html';
   if (rel === '/admin') rel = '/admin.html';
+  if (rel === '/termos') rel = '/termos.html';
+  if (rel === '/privacidade') rel = '/privacidade.html';
+  if (rel === '/redefinir-senha') rel = '/redefinir-senha.html';
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR)) return false; // path traversal
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return false;
@@ -42,6 +101,13 @@ function serveStatic(res: http.ServerResponse, urlPath: string): boolean {
   // a versão do app vai dentro do sw.js e de cada página (ver server/version.ts)
   if (rel === '/sw.js') body = injectSwVersion(body.toString('utf8'), appVersion(PUBLIC_DIR));
   else if (ext === '.html') body = injectHtmlVersion(body.toString('utf8'), appVersion(PUBLIC_DIR));
+  if (ext === '.html') {
+    if (process.env.CSP_ENFORCE === '1') res.setHeader('Content-Security-Policy', fullCsp());
+    else {
+      res.setHeader('Content-Security-Policy', BASE_CSP);
+      res.setHeader('Content-Security-Policy-Report-Only', fullCsp());
+    }
+  }
   res.writeHead(200, {
     'Content-Type': MIME[ext] || 'application/octet-stream',
     // HTML e sw.js: o navegador sempre confere com o servidor antes de usar
@@ -89,20 +155,31 @@ function bootstrapAdmin(): void {
 }
 
 const ALL_ROUTES: Route[] = [
-  ...authRoutes, ...rideRoutes, ...driverRoutes, ...adminRoutes, ...integrationRoutes,
+  ...authRoutes, ...accountRoutes, ...rideRoutes, ...driverRoutes, ...adminRoutes, ...integrationRoutes,
 ];
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const url = new URL(req.url || '/', 'http://localhost');
   const pathname = url.pathname;
-  const ip = (req.socket.remoteAddress || '0.0.0.0').replace('::ffff:', '');
+  const ip = clientIp(req);
 
+  securityHeaders(res);
   try {
     // documentos privados assinados
     const docMatch = /^\/files\/doc\/([^/]+)$/.exec(pathname);
     if (docMatch && req.method === 'GET') { serveSignedDoc(res, docMatch[1], url.searchParams); return; }
 
     const user = userFromToken(parseCookies(req)['amt_session']);
+
+    // saúde do serviço para monitores externos (UptimeRobot, Better Stack etc.):
+    // 200 quando o banco responde, 503 quando não. Sem dados pessoais.
+    if (pathname === '/api/health' && req.method === 'GET') {
+      let dbOk = false;
+      try { dbOk = (db.prepare('SELECT 1 AS ok').get() as any)?.ok === 1; } catch { /* banco fora */ }
+      res.writeHead(dbOk ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ ok: dbOk, version: appVersion(PUBLIC_DIR), time: new Date().toISOString() }));
+      return;
+    }
 
     // versão publicada do app: a página aberta compara com a dela (sem login)
     if (pathname === '/api/version' && req.method === 'GET') {
@@ -190,6 +267,8 @@ export async function start(opts: StartOptions = {}): Promise<{ server: http.Ser
 
   // confirma automaticamente as corridas cujo prazo de 5 s expirou (no servidor)
   startAutoConfirmSweeper();
+  // corridas sem pagamento ou sem aceite não ficam paradas para sempre
+  startRideDeadlineSweeper();
 
   // base de endereços baixada num formato antigo: baixa de novo, em segundo
   // plano, sem atrasar a subida (não roda nos testes / modo sem rede)
@@ -197,14 +276,9 @@ export async function start(opts: StartOptions = {}): Promise<{ server: http.Ser
     import('./address-base.ts').then(m => m.refreshOutdatedBase()).catch(() => { });
   }
 
-  // limpeza periódica: sessões e cotações expiradas
-  const cleanup = setInterval(() => {
-    try {
-      db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now());
-      db.prepare('DELETE FROM ride_quotes WHERE expires_at < ? AND used = 0').run(now() - 86400_000);
-    } catch { /* não crítico */ }
-  }, 10 * 60_000);
-  cleanup.unref();
+  // manutenção: sessões e cotações vencidas, cópia diária do banco e prazos
+  // de guarda (desligados até a central definir)
+  startMaintenance();
 
   const server = http.createServer((req, res) => { void handle(req, res); });
   const port = opts.port ?? Number(process.env.PORT || 8780);
