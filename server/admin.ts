@@ -697,9 +697,56 @@ export const adminRoutes: Route[] = [
     if (haversineM(lat, lng, cLat, cLng) > radius) {
       throw new ApiError(422, 'O ponto está fora da área de cobertura.');
     }
+    // Já existe? Não sobrescreve sem a central confirmar (antes trocava em silêncio)
+    const { findPlaceConflict } = await import('./address-base.ts');
+    const conflict = findPlaceConflict(name, lat, lng);
+    if (conflict && b.replace !== true) {
+      res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        error: conflict.kind === 'mesmo_nome'
+          ? `Já existe um local chamado "${conflict.name}" (${conflict.source === 'manual' ? 'cadastro manual' : 'OpenStreetMap'}, a ${conflict.dist_m} m deste ponto).`
+          : `Já existe "${conflict.name}" a ${conflict.dist_m} m deste ponto. Pode ser o mesmo lugar.`,
+        conflict,
+      }));
+      return;
+    }
+    if (conflict?.kind === 'parecido_perto' && b.replace === true) {
+      // é outro lugar: cadastra com o nome dado, sem mexer no parecido
+    } else if (conflict?.kind === 'mesmo_nome') {
+      audit(user!.id, 'place_replace', 'settings', String(conflict.id), `${name} (substituiu a posição/dados anteriores)`);
+    }
     const id = addManualPlace(name, tags, detail, lat, lng);
     audit(user!.id, 'place_add', 'settings', undefined, name);
     json(res, 200, { ok: true, id });
+  }),
+
+  /**
+   * Importação de planilha de locais. `dry_run: true` só confere (prévia);
+   * sem ele, cadastra as linhas novas numa única transação. Linhas que já
+   * existem ou parecem duplicadas nunca são gravadas por aqui.
+   */
+  route('POST /api/admin/places/import', 'admin', async ({ req, res, user }) => {
+    const { importManualPlaces } = await import('./address-base.ts');
+    const b = await readBody(req, 4_000_000);
+    if (!Array.isArray(b.rows) || !b.rows.length) throw new ApiError(400, 'Envie as linhas da planilha.');
+    if (b.rows.length > 3000) throw new ApiError(400, 'Planilha grande demais: no máximo 3.000 linhas por vez.');
+    const area = {
+      lat: getSettingNum('center_lat'), lng: getSettingNum('center_lng'),
+      radiusM: getSettingNum('coverage_radius_km') * 1000,
+    };
+    const dry = b.dry_run !== false;
+    const results = importManualPlaces(b.rows, area, dry);
+    const count = (s: string) => results.filter(r => r.status === s).length;
+    const summary = {
+      total: results.length, novos: count('novo'), ja_existem: count('ja_existe'),
+      possiveis_duplicatas: count('possivel_duplicata'), repetidos_na_planilha: count('repetido_na_planilha'),
+      fora_da_area: count('fora_da_area'), invalidos: count('invalido'),
+    };
+    if (!dry) {
+      audit(user!.id, 'places_import', 'settings', undefined,
+        `${summary.novos} cadastrado(s) de ${summary.total} linha(s)${b.source ? ` · fonte: ${String(b.source).slice(0, 120)}` : ''}`);
+    }
+    json(res, 200, { dry_run: dry, summary, results });
   }),
 
   route('DELETE /api/admin/places/:id', 'admin', async ({ res, user, params }) => {

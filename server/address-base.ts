@@ -460,6 +460,100 @@ export function addManualPlace(name: string, tags: string | null, detail: string
   return Number(r.lastInsertRowid);
 }
 
+// ---------------------------------------------------------------
+// Conferência de duplicados e importação em lote (planilha)
+// ---------------------------------------------------------------
+
+/** Palavras que não ajudam a comparar nomes ("de", "da", "ltda"...). */
+const NAME_STOP = new Set(['de', 'da', 'do', 'das', 'dos', 'e', 'a', 'o', 'ltda', 'me', 'eireli', 'sa', 's', 'epp']);
+function nameTokens(s: string): Set<string> {
+  return new Set(normalize(s).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(t => t.length > 1 && !NAME_STOP.has(t)));
+}
+/** Parecença entre dois nomes (0 a 1): palavras em comum sobre o nome menor. */
+export function nameSimilarity(a: string, b: string): number {
+  const A = nameTokens(a), B = nameTokens(b);
+  if (!A.size || !B.size) return 0;
+  let common = 0;
+  for (const t of A) if (B.has(t)) common++;
+  return common / Math.min(A.size, B.size);
+}
+
+export const NEAR_DUPLICATE_M = 80;
+
+/**
+ * Já existe este local? Mesmo nome (qualquer origem) ou nome parecido a
+ * menos de 80 m. Nada é sobrescrito sem confirmação.
+ */
+export function findPlaceConflict(name: string, lat: number, lng: number):
+  { kind: 'mesmo_nome' | 'parecido_perto'; id: number; name: string; source: string; dist_m: number } | null {
+  const same = db.prepare(`SELECT id, name, source, lat, lng FROM local_addresses WHERE kind = 'local' AND norm = ?`)
+    .get(normalize(name)) as any;
+  if (same) return { kind: 'mesmo_nome', id: same.id, name: same.name, source: same.source, dist_m: Math.round(haversineM(lat, lng, same.lat, same.lng)) };
+  // caixa de ~200 m em volta para não percorrer a base inteira
+  const d = 0.002;
+  const near = db.prepare(`SELECT id, name, source, lat, lng FROM local_addresses WHERE kind = 'local'
+    AND lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?`).all(lat - d, lat + d, lng - d, lng + d) as any[];
+  for (const r of near) {
+    const dist = haversineM(lat, lng, r.lat, r.lng);
+    if (dist <= NEAR_DUPLICATE_M && nameSimilarity(name, r.name) >= 0.6) {
+      return { kind: 'parecido_perto', id: r.id, name: r.name, source: r.source, dist_m: Math.round(dist) };
+    }
+  }
+  return null;
+}
+
+export interface ImportRow { name: string; tags?: string | null; detail?: string | null; lat: number; lng: number }
+export interface ImportResult {
+  line: number; name: string;
+  status: 'novo' | 'ja_existe' | 'possivel_duplicata' | 'repetido_na_planilha' | 'fora_da_area' | 'invalido';
+  message: string; id?: number;
+}
+
+/**
+ * Importa locais de uma planilha. Com `dryRun` só confere e mostra o que
+ * aconteceria. Só entram linhas novas: o que já existe (mesmo nome) ou
+ * parece já existir (nome parecido a menos de 80 m) é recusado, nunca
+ * sobrescrito.
+ */
+export function importManualPlaces(rows: ImportRow[], area: { lat: number; lng: number; radiusM: number },
+  dryRun: boolean): ImportResult[] {
+  const out: ImportResult[] = [];
+  const seen = new Map<string, number>();
+  const accepted: { name: string; lat: number; lng: number }[] = [];
+  const run = () => rows.forEach((r, i) => {
+    const line = i + 2;               // linha 1 é o cabeçalho
+    const name = String(r.name || '').trim().slice(0, 120);
+    const lat = Number(r.lat), lng = Number(r.lng);
+    const res = (status: ImportResult['status'], message: string, id?: number) =>
+      out.push({ line, name: name || '(sem nome)', status, message, ...(id ? { id } : {}) });
+    if (!name) return res('invalido', 'Sem nome.');
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180 || (lat === 0 && lng === 0)) {
+      return res('invalido', 'Latitude/longitude ausentes ou inválidas.');
+    }
+    const dist = haversineM(lat, lng, area.lat, area.lng);
+    if (dist > area.radiusM) return res('fora_da_area', `A ${(dist / 1000).toFixed(1)} km do centro (limite ${(area.radiusM / 1000).toFixed(0)} km).`);
+    const key = normalize(name);
+    if (seen.has(key)) return res('repetido_na_planilha', `Mesmo nome da linha ${seen.get(key)}.`);
+    const twin = accepted.find(a => haversineM(lat, lng, a.lat, a.lng) <= NEAR_DUPLICATE_M && nameSimilarity(name, a.name) >= 0.6);
+    if (twin) return res('repetido_na_planilha', `Parecido com "${twin.name}", a menos de ${NEAR_DUPLICATE_M} m.`);
+    seen.set(key, line);
+    const c = findPlaceConflict(name, lat, lng);
+    if (c?.kind === 'mesmo_nome') return res('ja_existe', `Já cadastrado ("${c.name}", ${c.source === 'manual' ? 'cadastro manual' : 'OpenStreetMap'}, a ${c.dist_m} m).`, c.id);
+    if (c) return res('possivel_duplicata', `Parecido com "${c.name}" a ${c.dist_m} m. Confira; se for outro lugar, use um nome mais completo.`, c.id);
+    accepted.push({ name, lat, lng });
+    if (dryRun) return res('novo', 'Será cadastrado.');
+    const id = addManualPlace(name, r.tags ? String(r.tags).slice(0, 200) : null,
+      r.detail ? String(r.detail).slice(0, 200) : null, lat, lng);
+    res('novo', 'Cadastrado.', id);
+  });
+  if (dryRun) run();
+  else {
+    db.exec('BEGIN');
+    try { run(); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; }
+  }
+  return out;
+}
+
 export function removeManualPlace(id: number): boolean {
   const r = db.prepare(`DELETE FROM local_addresses WHERE id = ? AND source = 'manual'`).run(id);
   return r.changes > 0;

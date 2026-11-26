@@ -2269,3 +2269,68 @@ test('configurações: confirmação, limite de dívida e precisão do GPS são 
     });
   }
 });
+
+// ================= importação de locais e duplicados =================
+
+test('locais: cadastro manual não sobrescreve em silêncio quem já existe', async () => {
+  const t = Date.now();
+  db.prepare(`INSERT INTO local_addresses (kind, name, norm, detail, tags, lat, lng, updated_at, source)
+    VALUES ('local', 'Igreja Matriz Teste', 'igreja matriz teste', 'Praça A', 'igreja', -24.4160, -53.5200, ?, 'osm')`).run(t);
+  const dup = await adm.req('POST', '/api/admin/places', { name: 'Igreja Matriz Teste', lat: -24.4100, lng: -53.5100 });
+  assert.equal(dup.status, 409);
+  assert.match(dup.data.error, /Já existe/);
+  let row = db.prepare(`SELECT lat, source FROM local_addresses WHERE norm = 'igreja matriz teste'`).get() as any;
+  assert.equal(row.lat, -24.4160);                  // nada mudou
+  assert.equal(row.source, 'osm');
+  // nome parecido a poucos metros também pede confirmação
+  const near = await adm.req('POST', '/api/admin/places', { name: 'Igreja Matriz Teste Central', lat: -24.41601, lng: -53.52001 });
+  assert.equal(near.status, 409);
+  // confirmando, grava (e fica na auditoria)
+  const ok = await adm.req('POST', '/api/admin/places', { name: 'Igreja Matriz Teste', lat: -24.4100, lng: -53.5100, replace: true });
+  assert.equal(ok.status, 200);
+  row = db.prepare(`SELECT lat, source FROM local_addresses WHERE norm = 'igreja matriz teste'`).get() as any;
+  assert.equal(row.source, 'manual');
+  const aud = await adm.req('GET', '/api/admin/audit');
+  assert.ok(aud.data.logs.some((l: any) => l.action === 'place_replace'));
+  db.prepare(`DELETE FROM local_addresses WHERE norm LIKE 'igreja matriz teste%'`).run();
+});
+
+test('locais: importação de planilha confere tudo antes e só grava linhas novas', async () => {
+  db.prepare(`INSERT INTO local_addresses (kind, name, norm, lat, lng, updated_at, source)
+    VALUES ('local', 'Farmacia Ja Existe', 'farmacia ja existe', -24.4150, -53.5210, ?, 'osm')`).run(Date.now());
+  const rows = [
+    { name: 'Clinica Nova Importada', tags: 'clinica saude', detail: 'Rua X, 10 – Centro', lat: -24.4170, lng: -53.5230 },
+    { name: 'Farmacia Ja Existe', lat: -24.4150, lng: -53.5210 },
+    { name: 'Farmácia Já Existe Filial', lat: -24.41505, lng: -53.52105 },     // parecido, a ~7 m
+    { name: 'Clinica Nova Importada', lat: -24.4171, lng: -53.5231 },          // repetido na planilha
+    { name: 'Longe Demais', lat: -25.5, lng: -54.5 },
+    { name: 'Sem Coordenada', lat: NaN, lng: 0 },
+    { name: '', lat: -24.41, lng: -53.52 },
+  ];
+  assert.equal((await pax.req('POST', '/api/admin/places/import', { rows })).status, 403);
+  const prev = await adm.req('POST', '/api/admin/places/import', { rows, dry_run: true });
+  assert.equal(prev.status, 200);
+  assert.equal(prev.data.dry_run, true);
+  assert.deepEqual(prev.data.results.map((r: any) => r.status),
+    ['novo', 'ja_existe', 'possivel_duplicata', 'repetido_na_planilha', 'fora_da_area', 'invalido', 'invalido']);
+  // a prévia não grava nada
+  assert.equal((db.prepare(`SELECT COUNT(*) n FROM local_addresses WHERE norm = 'clinica nova importada'`).get() as any).n, 0);
+
+  const done = await adm.req('POST', '/api/admin/places/import', { rows, dry_run: false, source: 'teste.csv' });
+  assert.equal(done.data.summary.novos, 1);
+  const created = db.prepare(`SELECT source, detail, tags FROM local_addresses WHERE norm = 'clinica nova importada'`).get() as any;
+  assert.equal(created.source, 'manual');
+  assert.equal(created.detail, 'Rua X, 10 – Centro');
+  // o que já existia continua igual
+  assert.equal((db.prepare(`SELECT source FROM local_addresses WHERE norm = 'farmacia ja existe'`).get() as any).source, 'osm');
+  // importar de novo não duplica
+  const again = await adm.req('POST', '/api/admin/places/import', { rows, dry_run: false });
+  assert.equal(again.data.summary.novos, 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) n FROM local_addresses WHERE norm = 'clinica nova importada'`).get() as any).n, 1);
+  // aparece na busca do passageiro
+  const s = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('clinica nova importada'));
+  assert.ok(s.data.results.some((x: any) => x.text.startsWith('Clinica Nova Importada')));
+  const aud = await adm.req('GET', '/api/admin/audit');
+  assert.ok(aud.data.logs.some((l: any) => l.action === 'places_import' && /teste\.csv/.test(l.details)));
+  db.prepare(`DELETE FROM local_addresses WHERE norm IN ('clinica nova importada', 'farmacia ja existe')`).run();
+});

@@ -301,6 +301,94 @@ function driverChecklist(d) {
     </ul></div>`;
 }
 
+/* ============ importação de planilha de locais ============ */
+
+/** Lê CSV (; ou ,, com aspas) e devolve linhas como objetos pelo cabeçalho. */
+function parseCsv(text) {
+  text = text.replace(/^\ufeff/, '');
+  const first = text.split(/\r?\n/, 1)[0] || '';
+  const sep = (first.match(/;/g) || []).length >= (first.match(/,/g) || []).length ? ';' : ',';
+  const rows = [];
+  let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (c === '"') q = false;
+      else cell += c;
+    } else if (c === '"') q = true;
+    else if (c === sep) { row.push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell); cell = '';
+      if (row.some(x => x.trim())) rows.push(row);
+      row = [];
+    } else cell += c;
+  }
+  row.push(cell);
+  if (row.some(x => x.trim())) rows.push(row);
+  const norm = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '_');
+  const head = (rows.shift() || []).map(norm);
+  return rows.map(r => Object.fromEntries(head.map((h, i) => [h, (r[i] ?? '').trim()])));
+}
+
+/** Converte uma linha da planilha no formato do servidor. */
+function csvRowToPlace(o) {
+  const pick = (...k) => { for (const x of k) if (o[x]) return o[x]; return ''; };
+  const num = v => Number(String(v).replace(',', '.'));
+  const street = pick('logradouro', 'endereco', 'rua');
+  const number = pick('numero', 'n', 'num');
+  const district = pick('bairro');
+  const detail = pick('detail', 'detalhe') || [street && number ? `${street}, ${number}` : street, district]
+    .filter(Boolean).join(' – ');
+  return {
+    name: pick('nome', 'name', 'nome_do_local'),
+    tags: [pick('categoria', 'tipo_de_estabelecimento'), pick('palavras_chave', 'tags')].filter(Boolean).join(' ') || null,
+    detail: detail || null,
+    lat: num(pick('latitude', 'lat')), lng: num(pick('longitude', 'lng', 'lon')),
+  };
+}
+
+async function importPlacesFile(file) {
+  const box = $('#imp-preview');
+  if (!file) return;
+  let rows;
+  try { rows = parseCsv(await file.text()).map(csvRowToPlace); }
+  catch { box.innerHTML = '<p class="err-text">Não consegui ler o arquivo. Salve a planilha como CSV.</p>'; return; }
+  if (!rows.length) { box.innerHTML = '<p class="err-text">A planilha está vazia.</p>'; return; }
+  box.innerHTML = '<div class="spinner"></div>';
+  const ST = {
+    novo: ['green', 'novo'], ja_existe: ['gray', 'já existe'], possivel_duplicata: ['yellow', 'possível duplicata'],
+    repetido_na_planilha: ['yellow', 'repetido na planilha'], fora_da_area: ['red', 'fora da área'], invalido: ['red', 'inválido'],
+  };
+  const render = (r, done) => {
+    const s = r.summary;
+    box.innerHTML = `
+      <p><b>${done ? 'Importação concluída' : 'Prévia (nada foi gravado ainda)'}</b> — ${s.total} linha(s):
+        <span class="pill green">${s.novos} ${done ? 'cadastrado(s)' : 'novo(s)'}</span>
+        <span class="pill gray">${s.ja_existem} já existem</span>
+        <span class="pill yellow">${s.possiveis_duplicatas + s.repetidos_na_planilha} possíveis duplicatas</span>
+        <span class="pill red">${s.fora_da_area + s.invalidos} fora da área / inválidos</span></p>
+      <div style="max-height:320px;overflow:auto">
+        <table class="tbl"><thead><tr><th>Linha</th><th>Nome</th><th>Situação</th><th>Detalhe</th></tr></thead><tbody>
+        ${r.results.map(x => `<tr><td>${x.line}</td><td>${escapeHtml(x.name)}</td>
+          <td><span class="pill ${ST[x.status][0]}">${ST[x.status][1]}</span></td><td class="small">${escapeHtml(x.message)}</td></tr>`).join('')}
+        </tbody></table></div>
+      ${!done && s.novos ? `<button class="btn btn-primary mt" id="imp-go">Cadastrar os ${s.novos} novo(s)</button>` : ''}
+      ${done ? '<button class="btn btn-outline btn-sm mt" id="imp-refresh">Atualizar a lista</button>' : ''}`;
+    const go = $('#imp-go');
+    if (go) go.onclick = () => withLoading(go, async () => {
+      const r2 = await api('/api/admin/places/import', { method: 'POST', body: { rows, dry_run: false, source: file.name } });
+      render(r2, true);
+    }, { okMsg: 'Locais cadastrados. Já aparecem na busca dos passageiros.' }).catch(() => { });
+    const rf = $('#imp-refresh');
+    if (rf) rf.onclick = () => secMaps();
+  };
+  try {
+    render(await api('/api/admin/places/import', { method: 'POST', body: { rows, dry_run: true } }), false);
+  } catch (e) { box.innerHTML = `<p class="err-text">${escapeHtml(e.message)}</p>`; }
+}
+
 /* ============ privacidade (LGPD) ============ */
 async function secPrivacy() {
   const [{ requests }, { backups }] = await Promise.all([
@@ -883,6 +971,17 @@ async function secMaps() {
       <button class="btn btn-primary mt" id="pl-save" disabled>2 · Salvar local</button>
     </div>
 
+    <div class="card">
+      <h3>📥 Importar planilha de locais</h3>
+      <p class="muted small mb">Arquivo CSV (separado por ; ou ,) com cabeçalho. Colunas reconhecidas:
+        <b>nome</b>, <b>latitude</b>, <b>longitude</b> (obrigatórias) e, se houver, categoria, palavras_chave,
+        logradouro, numero, bairro, fonte. Primeiro o sistema <b>só confere</b> e mostra o que aconteceria;
+        nada é gravado até você confirmar. Locais que já existem ou parecem duplicados (nome parecido a menos de
+        80 m) <b>não</b> são importados nem sobrescritos.</p>
+      <input type="file" id="imp-file" accept=".csv,text/csv" class="input">
+      <div id="imp-preview" class="mt"></div>
+    </div>
+
     ${hidden.length ? `<div class="card">
       <h3>🙈 Ocultos da busca dos passageiros <span class="pill gray">${hidden.length}</span></h3>
       <p class="muted small mb">Registros do OpenStreetMap com nome vago (“Escola”, “Trilha”) ou com cara
@@ -1055,13 +1154,25 @@ async function secMaps() {
     const name = $('#pl-name').value.trim();
     if (!name) { toast('Informe o nome do estabelecimento.', 'err'); return; }
     if (!plCoord) { toast('Localize o ponto primeiro.', 'err'); return; }
-    await api('/api/admin/places', {
-      method: 'POST',
-      body: { name, tags: $('#pl-tags').value.trim() || null, detail: $('#pl-ref').value.trim() || null,
-        lat: plCoord.lat, lng: plCoord.lng },
-    });
+    const body = { name, tags: $('#pl-tags').value.trim() || null, detail: $('#pl-ref').value.trim() || null,
+      lat: plCoord.lat, lng: plCoord.lng };
+    try {
+      await api('/api/admin/places', { method: 'POST', body });
+    } catch (e) {
+      if (e.status !== 409) throw e;
+      // já existe: só grava se a central confirmar que é para substituir / que é outro lugar
+      const ok = await confirmModal('Local parecido já cadastrado', `${e.message} Gravar mesmo assim?`, 'Gravar mesmo assim');
+      if (!ok) throw new Error('Nada foi gravado.');
+      await api('/api/admin/places', { method: 'POST', body: { ...body, replace: true } });
+    }
     secMaps();
-  }, { okMsg: 'Local cadastrado! Já aparece na busca dos passageiros.' }).catch(() => { });
+  }, { okMsg: 'Local salvo! Já aparece na busca dos passageiros.' }).catch(() => { });
+
+  $('#imp-file').onchange = () => {
+    const f = $('#imp-file').files[0];
+    $('#imp-file').value = '';          // permite escolher o mesmo arquivo de novo (nova conferência)
+    importPlacesFile(f);
+  };
 
   $$('[data-pl-del]').forEach(btn => {
     btn.onclick = async () => {
