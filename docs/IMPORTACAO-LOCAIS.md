@@ -54,3 +54,26 @@ abertos). A posição de cada estabelecimento é a do mesmo endereço no IBGE
 ativo, com CNPJ (sem CNPJ é pessoa física: não publicamos), coordenada presente,
 dentro da área, não repetida em endereços diferentes, perto do bairro informado
 e dos outros estabelecimentos da mesma rua, e nome que não seja só de uma pessoa.
+
+## Importação automática (pasta `seed/`)
+
+No app publicado (`APP_ENV=production`), o servidor importa **uma vez**, ao
+ligar e depois da atualização do OpenStreetMap, os arquivos da pasta `seed/`:
+
+- `ibge-*.csv` — endereços oficiais do IBGE (CNEFE), pela mesma rotina do cartão
+  da central;
+- `locais-*.csv` — planilhas de locais já conferidos, pela mesma rotina de
+  "Importar planilha de locais".
+
+Cada arquivo fica marcado como importado pela impressão digital dele (não roda
+de novo). Se o arquivo mudar, é importado de novo e só o que for novo entra.
+Tudo fica na auditoria como "sistema". Para não importar, defina
+`SEED_IMPORTS=0`. Coloque em `seed/` só dados **já conferidos**.
+
+Hoje: `ibge-cnefe-2022-4102000-assis-chateaubriand.csv` (IBGE, Censo 2022) e
+`locais-lote-01-pronto.csv` (saúde e postos conferidos com o IBGE). O lote de
+comércio do Censo 2022 **não** está aqui porque precisa ser conferido antes.
+
+Fontes: IBGE — Cadastro Nacional de Endereços para Fins Estatísticos (CNEFE),
+Censo Demográfico 2022; Ministério da Saúde — CNES; ANP — revendedores de
+combustíveis.

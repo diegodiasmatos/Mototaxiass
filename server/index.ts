@@ -282,9 +282,16 @@ export async function start(opts: StartOptions = {}): Promise<{ server: http.Ser
 
   // base de endereços baixada num formato antigo: baixa de novo, em segundo
   // plano, sem atrasar a subida (não roda nos testes / modo sem rede)
-  if (process.env.GEO_OFFLINE !== '1') {
-    import('./address-base.ts').then(m => m.refreshOutdatedBase()).catch(() => { });
-  }
+  const baseReady: Promise<unknown> = process.env.GEO_OFFLINE !== '1'
+    ? import('./address-base.ts').then(m => m.refreshOutdatedBase()).catch(() => { })
+    : Promise.resolve();
+
+  // endereços oficiais (IBGE) e locais conferidos da pasta seed/: importados
+  // UMA vez no app publicado, depois da base do OpenStreetMap
+  import('./seed.ts').then(m => {
+    if (!m.seedImportsEnabled()) return;
+    return baseReady.then(() => m.runSeedImports());
+  }).catch(e => console.error(`[importação automática] ${e?.message || e}`));
 
   // manutenção: sessões e cotações vencidas, cópia diária do banco e prazos
   // de guarda (desligados até a central definir)

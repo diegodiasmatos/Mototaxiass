@@ -9,6 +9,8 @@ COPY package.json ./
 COPY server ./server
 COPY public ./public
 COPY tools ./tools
+# dados oficiais importados uma vez na subida (server/seed.ts)
+COPY seed ./seed
 
 # Banco, documentos e segredo de sessão vivem aqui.
 # Monte um disco persistente neste caminho (ver README).
