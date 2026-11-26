@@ -13,6 +13,9 @@ automática de 15%.
 >
 > **Google Play:** o app Android (TWA) está em `android/` e o passo a passo em
 > [docs/play-store/README.md](docs/play-store/README.md).
+>
+> **Locais e estabelecimentos:** importação de planilha na central e fontes permitidas em
+> [docs/IMPORTACAO-LOCAIS.md](docs/IMPORTACAO-LOCAIS.md).
 
 ## Como executar
 
