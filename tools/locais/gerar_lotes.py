@@ -1,4 +1,4 @@
-"""Monta os lotes de importação a partir de fontes oficiais abertas (CNES e ANP).
+"""Monta os lotes de importação a partir de fontes oficiais abertas.
 
 Saída (pasta enderecos/):
   lote-01-saude-pronto.csv      → passou em todas as conferências
@@ -136,6 +136,103 @@ for l in linhas:
     if cnt[norm(l['nome'])] > 1 and l['situacao'] == 'pronto':
         l['situacao'] = 'conferir: mesmo nome em mais de um endereço (incluir a unidade/bairro no nome)'
 
+# ---------------- cruzamento com o IBGE (CNEFE, Censo 2022) ----------------
+# A posição do CNEFE foi anotada no local pelo recenseador. Se o mesmo endereço
+# (rua + número) existe no CNEFE, o estabelecimento fica na posição do IBGE.
+import os
+CNEFE_FILE = os.path.join(D, 'cnefe', '4102000_ASSIS_CHATEAUBRIAND.csv')
+TIPOS_RUA = r'^(rua|r|avenida|av|travessa|tv|alameda|rodovia|rod|estrada|praca|pca)\.?\s+'
+ABREV = {'d': 'dom', 'pres': 'presidente', 'mal': 'marechal', 'dr': 'doutor', 'sta': 'santa', 'sto': 'santo', 'xv': 'quinze', 'prof': 'professor', 'gov': 'governador', 'cel': 'coronel', 'gal': 'general', 'pe': 'padre'}
+def nucleo(rua):
+    n = norm(rua).replace('.', ' ')
+    n = re.sub(TIPOS_RUA, '', n)
+    return ' '.join(ABREV.get(w, w) for w in n.split())
+cnefe_idx = {}; cnefe_estab = []
+if os.path.exists(CNEFE_FILE):
+    for r in csv.DictReader(open(CNEFE_FILE, encoding='latin-1'), delimiter=';'):
+        if r['NV_GEO_COORD'] not in ('1', '2', '3'): continue
+        k = (nucleo(' '.join(x for x in (r['NOM_TITULO_SEGLOGR'], r['NOM_SEGLOGR']) if x)), r['NUM_ENDERECO'].lstrip('0'))
+        cnefe_idx.setdefault(k, []).append(r)
+        if r['DSC_ESTABELECIMENTO'].strip(): cnefe_estab.append(r)
+def cnefe_lookup(rua, num):
+    n = (num or '').strip().lstrip('0')
+    if not n or not n.isdigit(): return None
+    return cnefe_idx.get((nucleo(rua), n))
+cruzados = Counter()
+for l in linhas:
+    hit = cnefe_lookup(l['logradouro'], l['numero'])
+    if not hit:
+        cruzados['sem o endereço no IBGE'] += 1
+        if l['situacao'] == 'pronto':
+            l['situacao'] = 'conferir: endereço não encontrado no IBGE para confirmar a posição'
+        continue
+    h = hit[0]
+    if l['latitude']:
+        d = dist((float(l['latitude']), float(l['longitude'])), (float(h['LATITUDE']), float(h['LONGITUDE'])))
+        cruzados['posição corrigida pelo IBGE (> 100 m)' if d > 100 else 'posição confirmada pelo IBGE'] += 1
+    else:
+        cruzados['posição obtida do IBGE (fonte sem coordenada)'] += 1
+    l['latitude'], l['longitude'] = f"{float(h['LATITUDE']):.6f}", f"{float(h['LONGITUDE']):.6f}"
+    l['fonte'] += ' · posição do endereço: IBGE/CNEFE 2022'
+    # postos: o recenseador costuma anotar o nome que as pessoas usam
+    if l['_fonte'] == 'ANP':
+        nomes = [x['DSC_ESTABELECIMENTO'] for x in hit if 'POSTO' in x['DSC_ESTABELECIMENTO'].upper()]
+        if nomes:
+            l['nome'] = titulo(nomes[0])
+            l['situacao'] = 'pronto' if dist((float(l['latitude']), float(l['longitude'])), CENTER) <= RADIUS else 'conferir: fora da área atendida'
+        else:
+            l['situacao'] = 'conferir: nome é a razão social (confirmar o nome do posto que as pessoas usam)'
+    elif l['situacao'].startswith('conferir:') and all(
+        m.strip().startswith(('coordenada repetida', 'ponto a', 'sem coordenada', 'endereço não encontrado')) for m in l['situacao'][9:].split(';')):
+        # o único problema era a posição, e o IBGE resolveu
+        l['situacao'] = 'pronto'
+
+# ---------------- estabelecimentos anotados pelo Censo 2022 ----------------
+CATS = [
+    ('mercado', r'\b(supermercado|mercado|mercearia|atacad|hortifruti|sacolao|acougue|frutaria)', 'mercado supermercado mercearia'),
+    ('padaria', r'\b(padaria|panificadora|confeitaria|panifica)', 'padaria panificadora pao'),
+    ('academia', r'\b(academia|crossfit|fitness|pilates)', 'academia ginastica'),
+    ('posto de combustivel', r'\bposto\b(?! de saude)', 'posto combustivel gasolina'),
+    ('farmacia', r'\b(farmacia|drogaria)', 'farmacia drogaria remedio'),
+    ('restaurante', r'\b(restaurante|lanchonete|pizzaria|churrascaria|pastelaria|sorveteria|lanches|cafe|bar e)', 'restaurante lanchonete comida'),
+    ('igreja', r'\b(igreja|capela|paroquia|templo|congregacao|assembleia de deus|tabernaculo|comunidade evangelica|ministerio)', 'igreja templo'),
+    ('escola', r'\b(escola|colegio|creche|cmei|instituto federal|faculdade|universidade|centro de educacao)', 'escola colegio educacao'),
+    ('loja', r'\b(loja|magazine|calcados|confeccoes|moveis|eletro|materiais de construcao|ferragens|papelaria|otica|presentes|variedades|autopecas|auto pecas)', 'loja comercio'),
+    ('banco', r'\b(banco|sicredi|sicoob|cresol|caixa economica|bradesco|itau|santander|cooperativa de credito)', 'banco agencia caixa eletronico'),
+    ('hotel', r'\b(hotel|pousada)', 'hotel pousada'),
+]
+GENERICO = re.compile(r'^(galpao|barracao|deposito|garagem|comercio|loja|igreja|escola|mercado|bar|oficina|salao|predio|sala|sala comercial|ponto comercial|estabelecimento|empresa)\b(?!\s+\w)', re.I)
+lote3 = []; vistos = []
+# anotações que não são o estabelecimento em si, ou que enganam a categoria
+EXCLUIR = re.compile(r'\b(deposito|administrativo|depto|departamento|dependencias|wcs?|banheiro|almoxarifado|barracao|galpao|garagem|estacionamento|em construcao)\b|desativad|fechad|inativ|molas')
+RECATEG = [(re.compile(r'\bauto ?escola'), ('autoescola', 'auto escola habilitacao cnh')),
+           (re.compile(r'\b(bombeiro|brigada)'), ('orgao publico', 'bombeiros')),
+           (re.compile(r'\batacadista medicamentos|distribuidora de medicamentos'), None)]
+SO_CATEGORIA = re.compile(r'^(padaria|panificadora|academia|igreja|capela|escola|creche|mercado|mercearia|supermercado|loja|bar|lanchonete|restaurante|farmacia|drogaria|posto|posto de combustivel|posto de gasolina|hotel|banco|templo|academia de ginastica|confeitaria|studio fitness|studio de pilates)$')
+for r in cnefe_estab:
+    nome = re.sub(r'\s+', ' ', r['DSC_ESTABELECIMENTO']).strip()
+    nn = norm(nome)
+    if EXCLUIR.search(nn) or SO_CATEGORIA.match(nn): continue
+    cat = next((c for c in CATS if re.search(c[1], nn)), None)
+    for rx, nova in RECATEG:
+        if rx.search(nn): cat = (nova[0], '', nova[1]) if nova else None; break
+    if not cat: continue
+    lat, lng = float(r['LATITUDE']), float(r['LONGITUDE'])
+    if dist((lat, lng), CENTER) > RADIUS: continue
+    if any(v[0] == nn and dist((lat, lng), (v[1], v[2])) < 80 for v in vistos): continue
+    vistos.append((nn, lat, lng))
+    mot = ['estabelecimento anotado no Censo 2022: confirmar se continua aberto e o nome atual']
+    if GENERICO.match(nn) or len(nn) < 6: mot.insert(0, 'nome genérico')
+    if len(nome) >= 40: mot.append('nome cortado em 40 letras pelo Censo')
+    num = r['NUM_ENDERECO'] if r['NUM_ENDERECO'] not in ('0', '') else ''
+    lote3.append({
+        'nome': titulo(nome), 'categoria': cat[0], 'palavras_chave': cat[2],
+        'logradouro': titulo(' '.join(x for x in (r['NOM_TIPO_SEGLOGR'], r['NOM_TITULO_SEGLOGR'], r['NOM_SEGLOGR']) if x)),
+        'numero': num, 'bairro': titulo(r['DSC_LOCALIDADE']), 'cep': r['CEP'],
+        'latitude': f'{lat:.6f}', 'longitude': f'{lng:.6f}',
+        'fonte': 'IBGE — CNEFE, Censo Demográfico 2022', 'situacao': 'conferir: ' + '; '.join(mot), '_fonte': 'CNEFE',
+    })
+
 COLS = ['nome', 'categoria', 'palavras_chave', 'logradouro', 'numero', 'bairro', 'cidade', 'estado', 'cep', 'latitude', 'longitude', 'fonte', 'situacao']
 def write(path, rows):
     with open(path, 'w', newline='', encoding='utf-8-sig') as f:
@@ -144,14 +241,18 @@ def write(path, rows):
         for r in sorted(rows, key=lambda r: (r['bairro'], r['nome'])): w.writerow({**r, 'cidade': 'Assis Chateaubriand', 'estado': 'PR'})
 pronto = [l for l in linhas if l['situacao'] == 'pronto']
 conferir = [l for l in linhas if l['situacao'] != 'pronto']
-write(f'{D}/lote-01-saude-pronto.csv', pronto)
+write(f'{D}/lote-01-pronto.csv', pronto)
 write(f'{D}/lote-02-conferir.csv', conferir)
+write(f'{D}/lote-03-ibge-censo2022-estabelecimentos.csv', lote3)
 motivos = Counter(m.strip() for l in conferir for m in l['situacao'][len('conferir: '):].split(';'))
 rel = {
     'cnes_total': len(cnes), 'anp_total': len(anp), 'descartados': dict(fora),
     'pronto': len(pronto), 'conferir': len(conferir),
     'pronto_por_categoria': Counter(l['categoria'] for l in pronto), 'pronto_por_bairro': Counter(l['bairro'] for l in pronto),
     'motivos_conferir': motivos,
+    'cruzamento_ibge': cruzados,
+    'lote3_total': len(lote3), 'lote3_por_categoria': Counter(l['categoria'] for l in lote3),
+    'lote3_nome_generico': sum(1 for l in lote3 if 'nome genérico' in l['situacao']),
 }
 json.dump(rel, open(f'{D}/relatorio-lotes.json', 'w'), ensure_ascii=False, indent=1)
 print(json.dumps(rel, ensure_ascii=False, indent=1))

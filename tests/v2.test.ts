@@ -2334,3 +2334,70 @@ test('locais: importação de planilha confere tudo antes e só grava linhas nov
   assert.ok(aud.data.logs.some((l: any) => l.action === 'places_import' && /teste\.csv/.test(l.details)));
   db.prepare(`DELETE FROM local_addresses WHERE norm IN ('clinica nova importada', 'farmacia ja existe')`).run();
 });
+
+// ================= endereços do IBGE (CNEFE) =================
+
+test('IBGE (CNEFE): números de casa exatos, ruas e bairros que faltam, sem sobrescrever', async () => {
+  const H = 'COD_UNICO_ENDERECO;COD_UF;COD_MUNICIPIO;COD_DISTRITO;COD_SUBDISTRITO;COD_SETOR;NUM_QUADRA;NUM_FACE;CEP;DSC_LOCALIDADE;NOM_TIPO_SEGLOGR;NOM_TITULO_SEGLOGR;NOM_SEGLOGR;NUM_ENDERECO;DSC_MODIFICADOR;NOM_COMP_ELEM1;VAL_COMP_ELEM1;NOM_COMP_ELEM2;VAL_COMP_ELEM2;NOM_COMP_ELEM3;VAL_COMP_ELEM3;NOM_COMP_ELEM4;VAL_COMP_ELEM4;NOM_COMP_ELEM5;VAL_COMP_ELEM5;LATITUDE;LONGITUDE;NV_GEO_COORD;COD_ESPECIE;DSC_ESTABELECIMENTO;COD_INDICADOR_ESTAB_ENDERECO;COD_INDICADOR_CONST_ENDERECO;COD_INDICADOR_FINALIDADE_CONST;COD_TIPO_ESPECI';
+  const row = (loc: string, tipo: string, nome: string, num: string, lat: number, lng: number, nv = '1') =>
+    `1;41;4102000;410200005;41020000500;X;1;1;85935000;${loc};${tipo};;${nome};${num};;;;;;;;;;;;${lat};${lng};${nv};1;;;;;101`;
+  const linhas: string[] = [];
+  // rua nova com 12 casas num bairro novo
+  for (let i = 0; i < 12; i++) linhas.push(row('JARDIM CNEFE TESTE', 'RUA', 'DAS ACACIAS CNEFE', String(100 + i * 10), -24.4200 + i * 0.0001, -53.5300));
+  // rua que já existe (OSM) + um número que um passageiro já confirmou
+  db.prepare(`INSERT INTO local_addresses (kind, name, norm, lat, lng, updated_at, source)
+    VALUES ('rua', 'Rua Existente Cnefe', 'rua existente cnefe', -24.4180, -53.5250, ?, 'osm')`).run(Date.now());
+  db.prepare(`INSERT INTO address_points (street_norm, street_name, number, lat, lng, source, hits, updated_at)
+    VALUES ('rua existente cnefe', 'Rua Existente Cnefe', 50, -24.41801, -53.52501, 'passageiro', 1, ?)`).run(Date.now());
+  linhas.push(row('CENTRO', 'RUA', 'EXISTENTE CNEFE', '50', -24.4190, -53.5260));
+  linhas.push(row('CENTRO', 'RUA', 'EXISTENTE CNEFE', '60', -24.4181, -53.5251));
+  // ignorados: posição imprecisa, fora da área, tipo inválido, localidade ambígua
+  linhas.push(row('CENTRO', 'RUA', 'IMPRECISA CNEFE', '10', -24.41, -53.52, '5'));
+  linhas.push(row('BRAGANTINA', 'RUA', 'LONGE CNEFE', '10', -24.60, -53.62));
+  linhas.push(row('CENTRO', 'BAIRRO', 'ZE CNEFE', '10', -24.41, -53.52));
+  for (let i = 0; i < 12; i++) linhas.push(row('AO LADO DO RAMAL CNEFE', 'RUA', 'DAS ACACIAS CNEFE', String(300 + i), -24.4215, -53.5300));
+  const csv = [H, ...linhas].join('\n');
+
+  assert.equal((await pax.req('POST', '/api/admin/cnefe/import', { csv })).status, 403);
+  const prev = await adm.req('POST', '/api/admin/cnefe/import', { csv });
+  assert.equal(prev.status, 200);
+  assert.equal(prev.data.dry_run, true);
+  assert.equal(prev.data.ruas.novas, 1);
+  assert.equal(prev.data.ruas.ja_existem, 1);
+  assert.equal(prev.data.ignoradas.coordenada_imprecisa, 1);
+  assert.equal(prev.data.ignoradas.fora_da_area, 1);
+  assert.equal(prev.data.ignoradas.tipo_de_logradouro_invalido, 1);
+  assert.equal(prev.data.localidades.nome_ambiguo, 1);
+  assert.deepEqual(prev.data.exemplos.localidades_novas, ['Jardim Cnefe Teste']);
+  // prévia não grava
+  assert.equal((db.prepare(`SELECT COUNT(*) n FROM address_points WHERE source = 'ibge'`).get() as any).n, 0);
+
+  const done = await adm.req('POST', '/api/admin/cnefe/import', { csv, dry_run: false });
+  assert.equal(done.status, 200);
+  assert.equal(done.data.numeros.ja_existem, 1);              // o nº 50 confirmado pelo passageiro fica
+  const p50 = db.prepare(`SELECT source, lat FROM address_points WHERE street_norm = 'rua existente cnefe' AND number = 50`).get() as any;
+  assert.equal(p50.source, 'passageiro');
+  const rua = db.prepare(`SELECT source FROM local_addresses WHERE norm = 'rua das acacias cnefe'`).get() as any;
+  assert.equal(rua.source, 'ibge');
+  assert.ok(db.prepare(`SELECT 1 FROM local_addresses WHERE kind = 'bairro' AND norm = 'jardim cnefe teste'`).get());
+  assert.ok(!db.prepare(`SELECT 1 FROM local_addresses WHERE norm LIKE '%ramal cnefe%'`).get());
+
+  // o passageiro digita a rua com número e cai na casa certa
+  const s = await pax.req('GET', '/api/geo/search?q=' + encodeURIComponent('rua das acacias cnefe 150'));
+  const hit = s.data.results.find((x: any) => x.text.startsWith('Rua das Acacias Cnefe, 150'));
+  assert.ok(hit, JSON.stringify(s.data.results.slice(0, 2)));
+  assert.equal(hit.number_how, 'exato');
+  assert.ok(Math.abs(hit.lat - (-24.4200 + 5 * 0.0001)) < 1e-6);
+
+  // importar de novo não duplica
+  const again = await adm.req('POST', '/api/admin/cnefe/import', { csv, dry_run: false });
+  assert.equal(again.data.numeros.novos, 0);
+  assert.equal(again.data.ruas.novas, 0);
+  const aud = await adm.req('GET', '/api/admin/audit');
+  assert.ok(aud.data.logs.some((l: any) => l.action === 'cnefe_import'));
+  // arquivo errado é recusado
+  assert.equal((await adm.req('POST', '/api/admin/cnefe/import', { csv: 'a;b;c\n' + 'x'.repeat(200) })).status, 400);
+
+  db.prepare(`DELETE FROM address_points WHERE street_norm IN ('rua das acacias cnefe', 'rua existente cnefe')`).run();
+  db.prepare(`DELETE FROM local_addresses WHERE norm IN ('rua das acacias cnefe', 'rua existente cnefe', 'jardim cnefe teste')`).run();
+});

@@ -17,6 +17,18 @@ Central → 🗺️ Mapas → **Importar planilha de locais**.
 O cadastro manual (um local por vez) também avisa quando o nome já existe ou há
 um local parecido muito perto, e só grava se a central confirmar.
 
+## Endereços oficiais do IBGE (números de casa)
+
+Central → 🗺️ Mapas → **Endereços oficiais do IBGE (CNEFE)**. Baixe o arquivo
+do município no IBGE (link na própria tela), descompacte e escolha o `.csv`.
+A prévia mostra quantos números de casa, ruas e bairros/loteamentos entram.
+Depois de importar, "Rua X, 123" cai no ponto exato da casa. Casas não viram
+locais com nome. Nada é sobrescrito: números confirmados por passageiros e
+ruas/bairros já existentes ficam como estão, e "Atualizar base" (OSM) não apaga
+o que veio do IBGE. Ficam de fora: endereços fora da área atendida (distritos),
+posição imprecisa (quadra/setor), tipos de logradouro inválidos e localidades
+anotadas de forma livre ("ao lado do ramal…").
+
 ## Fontes que podem ser usadas
 
 - **Podem** ser guardadas no VAIRO: OpenStreetMap (licença ODbL, botão
@@ -33,8 +45,12 @@ python3 tools/locais/baixar_fontes.py pasta/ data/assis.db
 python3 tools/locais/gerar_lotes.py pasta/
 ```
 
-Saem `lote-01-saude-pronto.csv` (passou em todas as conferências) e
-`lote-02-conferir.csv` (com o motivo de cada linha). Critérios: estabelecimento
+Saem `lote-01-pronto.csv` (passou em todas as conferências),
+`lote-02-conferir.csv` (com o motivo de cada linha) e
+`lote-03-ibge-censo2022-estabelecimentos.csv` (mercados, padarias, lojas,
+academias, igrejas, escolas… anotados pelo Censo 2022: confirmar se continuam
+abertos). A posição de cada estabelecimento é a do mesmo endereço no IBGE
+(anotada no local pelo recenseador); sem o endereço no IBGE, vai para conferir. Critérios: estabelecimento
 ativo, com CNPJ (sem CNPJ é pessoa física: não publicamos), coordenada presente,
 dentro da área, não repetida em endereços diferentes, perto do bairro informado
 e dos outros estabelecimentos da mesma rua, e nome que não seja só de uma pessoa.
