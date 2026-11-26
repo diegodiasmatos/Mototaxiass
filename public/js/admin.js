@@ -947,6 +947,24 @@ async function secMaps() {
     </div>
 
     <div class="card">
+      <h3>🏠 Endereços oficiais do IBGE (CNEFE) <span class="pill ${m.address_base.ibge_updated_at ? 'green' : 'gray'}">
+        ${m.address_base.numeros} números de casa</span></h3>
+      <p class="muted small mb">O Cadastro Nacional de Endereços do IBGE (Censo 2022, dados abertos) tem
+        <b>cada endereço da cidade, número por número, com coordenadas</b>. Importar faz "Rua X, 123" cair na casa
+        certa e acrescenta as ruas e bairros que o OpenStreetMap não tem. Casas <b>não</b> viram locais com nome.
+        Nada que já existe é sobrescrito, e "Atualizar base" (OpenStreetMap) não apaga o que veio do IBGE.</p>
+      <ol class="muted small mb" style="padding-left:18px;line-height:1.7">
+        <li>Baixe o arquivo do município no site do IBGE:
+          <a href="https://ftp.ibge.gov.br/Cadastro_Nacional_de_Enderecos_para_Fins_Estatisticos/Censo_Demografico_2022/Arquivos_CNEFE/CSV/Municipio/41_PR/4102000_ASSIS_CHATEAUBRIAND.zip" target="_blank" rel="noopener">4102000_ASSIS_CHATEAUBRIAND.zip</a>
+          e descompacte.</li>
+        <li>Escolha o arquivo <b>.csv</b> abaixo. Primeiro aparece só a prévia.</li>
+      </ol>
+      <input type="file" id="cnefe-file" accept=".csv,text/csv" class="input">
+      <div id="cnefe-result" class="mt"></div>
+      ${m.address_base.ibge_updated_at ? `<p class="muted small mt">Última importação do IBGE: ${new Date(m.address_base.ibge_updated_at).toLocaleString('pt-BR')}</p>` : ''}
+    </div>
+
+    <div class="card">
       <h3>🏪 Estabelecimentos cadastrados à mão
         <span class="pill ${places.length ? 'green' : 'gray'}">${places.length}</span></h3>
       <p class="muted small mb">O OpenStreetMap não conhece todo comércio da cidade. Cadastre aqui
@@ -1167,6 +1185,37 @@ async function secMaps() {
     }
     secMaps();
   }, { okMsg: 'Local salvo! Já aparece na busca dos passageiros.' }).catch(() => { });
+
+  $('#cnefe-file').onchange = async () => {
+    const f = $('#cnefe-file').files[0];
+    $('#cnefe-file').value = '';
+    if (!f) return;
+    const box = $('#cnefe-result');
+    box.innerHTML = '<div class="spinner"></div>';
+    // o arquivo do IBGE vem em Latin-1 (acentos)
+    const csv = new TextDecoder('windows-1252').decode(await f.arrayBuffer());
+    const show = (r, done) => {
+      box.innerHTML = `<p><b>${done ? 'Importação concluída' : 'Prévia (nada foi gravado ainda)'}</b> — ${r.linhas} endereços no arquivo, ${r.usadas} usados.</p>
+        <div class="fin-grid mb">
+          <div class="fin-card in"><div class="fv">${r.numeros.novos}</div><div class="fl">Números de casa ${done ? 'gravados' : 'novos'}</div></div>
+          <div class="fin-card in"><div class="fv">${r.ruas.novas}</div><div class="fl">Ruas ${done ? 'gravadas' : 'novas'}</div></div>
+          <div class="fin-card in"><div class="fv">${r.localidades.novas}</div><div class="fl">Bairros/loteamentos ${done ? 'gravados' : 'novos'}</div></div>
+        </div>
+        <p class="muted small">Já existiam: ${r.ruas.ja_existem} ruas, ${r.localidades.ja_existem} bairros, ${r.numeros.ja_existem} números.
+          Ignorados: ${r.ignoradas.fora_da_area} fora da área atendida (distritos), ${r.ignoradas.coordenada_imprecisa} com posição imprecisa,
+          ${r.ignoradas.tipo_de_logradouro_invalido} com tipo de logradouro inválido, ${r.ruas.poucos_enderecos} ruas com menos de 3 endereços,
+          ${r.localidades.nome_ambiguo + r.localidades.poucos_enderecos} localidades com nome ambíguo ou poucos endereços.</p>
+        ${r.exemplos.localidades_novas.length ? `<p class="small">Bairros/loteamentos: ${r.exemplos.localidades_novas.map(escapeHtml).join(', ')}</p>` : ''}
+        ${r.exemplos.ruas_novas.length ? `<p class="small">Algumas ruas: ${r.exemplos.ruas_novas.map(escapeHtml).join(', ')}…</p>` : ''}
+        ${!done ? '<button class="btn btn-primary mt" id="cnefe-go">Importar</button>' : ''}`;
+      const go = $('#cnefe-go');
+      if (go) go.onclick = () => withLoading(go, async () => {
+        show(await api('/api/admin/cnefe/import', { method: 'POST', body: { csv, dry_run: false } }), true);
+      }, { okMsg: 'Endereços do IBGE importados.' }).catch(() => { });
+    };
+    try { show(await api('/api/admin/cnefe/import', { method: 'POST', body: { csv, dry_run: true } }), false); }
+    catch (e) { box.innerHTML = `<p class="err-text">${escapeHtml(e.message)}</p>`; }
+  };
 
   $('#imp-file').onchange = () => {
     const f = $('#imp-file').files[0];

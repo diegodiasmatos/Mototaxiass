@@ -30,6 +30,13 @@ json.dump(cnes, open(f'{out}/cnes-todos.json', 'w'), ensure_ascii=False)
 anp = get('https://revendedoresapi.anp.gov.br/v1/combustivel?municipio=ASSIS%20CHATEAUBRIAND&uf=PR')
 json.dump(anp, open(f'{out}/anp.json', 'w'), ensure_ascii=False)
 
+# IBGE — CNEFE (Censo 2022): todos os endereços do município com coordenadas
+import io, os, zipfile
+CNEFE = ('https://ftp.ibge.gov.br/Cadastro_Nacional_de_Enderecos_para_Fins_Estatisticos/Censo_Demografico_2022/'
+         'Arquivos_CNEFE/CSV/Municipio/41_PR/4102000_ASSIS_CHATEAUBRIAND.zip')
+with urllib.request.urlopen(CNEFE, timeout=300) as r:
+    zipfile.ZipFile(io.BytesIO(r.read())).extractall(os.path.join(out, 'cnefe'))
+
 con = sqlite3.connect(f'file:{dbfile}?mode=ro', uri=True)
 pts = [dict(zip(('kind', 'name', 'norm', 'lat', 'lng'), r)) for r in con.execute('SELECT kind, name, norm, lat, lng FROM local_addresses')]
 json.dump(pts, open(f'{out}/base-pontos.json', 'w'), ensure_ascii=False)

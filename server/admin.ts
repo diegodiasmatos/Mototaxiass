@@ -770,6 +770,30 @@ export const adminRoutes: Route[] = [
     json(res, 200, { ok: true, ...r });
   }),
 
+  /**
+   * Endereços oficiais do IBGE (CNEFE, Censo 2022): números de casa com
+   * posição exata e ruas/localidades que faltam. `dry_run` (padrão) só confere.
+   */
+  route('POST /api/admin/cnefe/import', 'admin', async ({ req, res, user }) => {
+    const { importCnefe } = await import('./cnefe.ts');
+    const b = await readBody(req, 40 * 1024 * 1024);
+    if (typeof b.csv !== 'string' || b.csv.length < 100) throw new ApiError(400, 'Envie o arquivo CSV do CNEFE.');
+    const area = {
+      lat: getSettingNum('center_lat'), lng: getSettingNum('center_lng'),
+      radiusM: getSettingNum('coverage_radius_km') * 1000,
+    };
+    const dry = b.dry_run !== false;
+    let r;
+    try { r = importCnefe(b.csv, area, dry); }
+    catch (e: any) { throw new ApiError(400, e?.message || 'Arquivo inválido.'); }
+    if (!dry) {
+      setSetting('cnefe_imported_at', String(Date.now()));
+      audit(user!.id, 'cnefe_import', 'settings', undefined,
+        `${r.ruas.novas} rua(s), ${r.localidades.novas} localidade(s), ${r.numeros.novos} número(s) de casa`);
+    }
+    json(res, 200, { dry_run: dry, ...r });
+  }),
+
   route('POST /api/admin/maps-config/clear-cache', 'admin', async ({ res, user }) => {
     const before = (db.prepare('SELECT COUNT(*) c FROM geo_cache').get() as any).c;
     db.prepare('DELETE FROM geo_cache').run();

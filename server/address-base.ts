@@ -136,7 +136,7 @@ export function addressPointStats(): { total: number; osm: number; aprendidos: n
   const by: Record<string, number> = {};
   for (const r of rows) by[r.source] = r.c;
   return {
-    total: (by.osm || 0) + (by.passageiro || 0),
+    total: Object.values(by).reduce((a, b) => a + b, 0),
     osm: by.osm || 0, aprendidos: by.passageiro || 0,
   };
 }
@@ -320,16 +320,23 @@ export function baseCount(): number {
   } catch { return 0; }
 }
 
-export function baseStats(): { ruas: number; bairros: number; locais: number; total: number; updated_at: number | null } {
+export function baseStats(): { ruas: number; bairros: number; locais: number; total: number; updated_at: number | null;
+  numeros: number; por_fonte: Record<string, number>; ibge_updated_at: number | null } {
   const rows = db.prepare(
     'SELECT kind, COUNT(*) c FROM local_addresses GROUP BY kind').all() as any[];
   const by: Record<string, number> = {};
   for (const r of rows) by[r.kind] = r.c;
+  const por_fonte: Record<string, number> = {};
+  for (const r of db.prepare('SELECT source, COUNT(*) c FROM local_addresses GROUP BY source').all() as any[]) por_fonte[r.source] = r.c;
   const upd = Number(getSetting('address_base_updated_at') || '');
+  const ibge = Number(getSetting('cnefe_imported_at') || '');
   return {
     ruas: by.rua || 0, bairros: by.bairro || 0, locais: by.local || 0,
     total: (by.rua || 0) + (by.bairro || 0) + (by.local || 0),
     updated_at: Number.isFinite(upd) && upd > 0 ? upd : null,
+    numeros: (db.prepare('SELECT COUNT(*) c FROM address_points').get() as any).c,
+    por_fonte,
+    ibge_updated_at: Number.isFinite(ibge) && ibge > 0 ? ibge : null,
   };
 }
 
