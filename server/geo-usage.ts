@@ -17,7 +17,8 @@
  */
 import { db, getSettingNum } from './db.ts';
 
-export type GoogleApi = 'routes' | 'autocomplete' | 'details' | 'geocode' | 'maploads';
+export type GoogleApi = 'routes' | 'autocomplete' | 'details' | 'geocode' | 'maploads'
+  | 'mb_maploads' | 'mb_directions' | 'mb_geocode';
 
 export const GOOGLE_APIS: { api: GoogleApi; label: string; setting: string; free: number; sku: string }[] = [
   { api: 'routes', label: 'Rotas (moto)', setting: 'google_cap_routes', free: 1000, sku: 'Compute Routes (Enterprise: TWO_WHEELER)' },
@@ -25,6 +26,14 @@ export const GOOGLE_APIS: { api: GoogleApi; label: string; setting: string; free
   { api: 'details', label: 'Posição do lugar escolhido', setting: 'google_cap_details', free: 10000, sku: 'Place Details Essentials' },
   { api: 'geocode', label: 'Endereço do GPS / toque no mapa', setting: 'google_cap_geocode', free: 10000, sku: 'Geocoding (Essentials)' },
   { api: 'maploads', label: 'Carregamentos do mapa', setting: 'google_cap_maploads', free: 10000, sku: 'Dynamic Maps (Essentials)' },
+  // Mapbox (provedor ativo quando há token). Cota grátis de carregamentos do
+  // mapa (GL JS) confirmada em mapbox.com/pricing: 50.000/mês. Rotas e
+  // endereços: 100.000/mês segundo terceiros — NÃO confirmado; teto bem abaixo.
+  // O Mapbox reinicia a contagem pelo mês do calendário (UTC); usar o mês do
+  // Pacífico aqui só deixa o teto um pouco mais conservador.
+  { api: 'mb_maploads', label: 'Mapbox · carregamentos do mapa', setting: 'mapbox_cap_maploads', free: 50000, sku: 'Mapbox GL JS map loads' },
+  { api: 'mb_directions', label: 'Mapbox · rotas', setting: 'mapbox_cap_directions', free: 100000, sku: 'Directions API (cota a confirmar)' },
+  { api: 'mb_geocode', label: 'Mapbox · endereços', setting: 'mapbox_cap_geocode', free: 100000, sku: 'Geocoding temporário (cota a confirmar)' },
 ];
 
 /** Mês de cobrança do Google (horário do Pacífico). */

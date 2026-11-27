@@ -58,6 +58,15 @@ export function mapboxEnabled(): boolean {
  */
 async function mbxGet(path: string, params: Record<string, string>, token: string,
   timeoutMs: number): Promise<any> {
+  // teto mensal abaixo da cota grátis: passou, quem chamou cai no OSM/OSRM
+  const { googleAllowed, countGoogle } = await import('./geo-usage.ts');
+  const api = path.startsWith('/directions') ? 'mb_directions' : 'mb_geocode';
+  if (!googleAllowed(api)) {
+    const err = new Error('Mapbox: teto mensal do app atingido');
+    (err as any).status = 429;
+    throw err;
+  }
+  countGoogle(api);
   const url = new URL(apiBase() + path);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   url.searchParams.set('access_token', token);

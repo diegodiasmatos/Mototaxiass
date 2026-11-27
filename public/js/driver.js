@@ -18,7 +18,6 @@ init();
 async function init() {
   renderBrand($('#brand'));
   S.config = await api('/api/config').catch(() => ({ city_name: 'Assis Chateaubriand - PR', center: { lat: -24.4156, lng: -53.5216 } }));
-  await initMaps(S.config);
   $('#auth-logo').innerHTML = LOGO_MARK;
 
   bindAuth(); bindApply(); bindPanel(); bindProfile(); bindNav();
@@ -158,6 +157,7 @@ function bindScreenMenu() {
 
 /* ================= roteamento pós-login ================= */
 async function enterApp() {
+  await initMaps(S.config);       // só depois do login (a tela de entrada fica leve)
   ensureTermsAccepted();
   renderAccountCard($('#account-card'));
   $('#btn-notifs').hidden = false;

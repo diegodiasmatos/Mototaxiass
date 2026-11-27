@@ -31,13 +31,37 @@
     <div class="hero-actions">
       <a class="hero-btn primary" href="/passageiro"><i data-icon="user"></i>Passageiro</a>
       <a class="hero-btn dark" href="/motorista"><i data-icon="motorcycle"></i>Motorista</a>
-      <a class="hero-btn line" href="/empresa"><i data-icon="store"></i>Empresa</a>
+      <a class="hero-btn line" href="/empresa" title="Área de empresas ainda não disponível"><i data-icon="store"></i>Empresa · em breve</a>
     </div>
+  </section>
+
+  <section class="ov-info" aria-label="Como funciona">
+    <h2>Como funciona</h2>
+    <ol class="ov-steps">
+      <li><b>Diga para onde vai.</b> Use sua localização ou busque o endereço, o estabelecimento ou o bairro.</li>
+      <li><b>Veja o preço antes.</b> O valor aparece antes de confirmar; pague por Pix, cartão ou dinheiro.</li>
+      <li><b>Acompanhe a moto no mapa.</b> Você vê o mototaxista chegando e confirma o embarque com um código.</li>
+    </ol>
+    <div class="ov-cards">
+      <div class="ov-card"><span>📍</span><div><b>Onde atendemos</b><p id="ov-city">Assis Chateaubriand – PR</p></div></div>
+      <div class="ov-card"><span>💰</span><div><b>Preço</b><p id="ov-price">Calculado pela distância da rota, mostrado antes de confirmar.</p></div></div>
+      <div class="ov-card"><span>🛟</span><div><b>Atendimento</b><p><a href="https://wa.me/5544988285423" rel="noopener">WhatsApp (44) 98828-5423</a> · <a href="mailto:vairoapp1@gmail.com">vairoapp1@gmail.com</a></p></div></div>
+      <div class="ov-card"><span>🏍️</span><div><b>É mototaxista?</b><p><a href="/motorista">Cadastre-se</a>: a central confere CNH, documento da moto e o curso exigido.</p></div></div>
+    </div>
+    <p class="ov-legal"><a href="/termos">Termos de Uso</a> · <a href="/privacidade">Política de Privacidade</a></p>
   </section>
 
 </main>
 
 <script src="/js/icons.js"></script>
 <script src="/js/common.js"></script>
+<script>
+  // dados reais do servidor (cidade e tarifa vigente)
+  api('/api/config').then(c => { if (c.city_name) $('#ov-city').textContent = c.city_name.replace(' - ', ' – '); }).catch(() => {});
+  api('/api/public/fares').then(f => {
+    const e = f.fares.find(x => x.category === 'economica') || f.fares[0];
+    if (e) $('#ov-price').textContent = `A partir de ${fmt.money(e.base_cents)} (até ${(e.included_m / 1000).toLocaleString('pt-BR')} km) + ${fmt.money(e.per_km_cents)} por km adicional. Você vê o valor antes de confirmar.`;
+  }).catch(() => {});
+</script>
 </body>
 </html>

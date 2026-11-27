@@ -120,6 +120,18 @@ function serveStatic(res: http.ServerResponse, urlPath: string): boolean {
   return true;
 }
 
+/** A requisição veio de uma página de outro site? (Sec-Fetch-Site ou Origin diferente do host) */
+export function isCrossSite(req: http.IncomingMessage): boolean {
+  const sfs = String(req.headers['sec-fetch-site'] || '');
+  if (sfs === 'cross-site') return true;
+  const origin = String(req.headers.origin || '');
+  if (!origin || origin === 'null') return origin === 'null';
+  try {
+    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '');
+    return new URL(origin).host !== host;
+  } catch { return true; }
+}
+
 /** Documentos privados: somente via link assinado e temporário. */
 function serveSignedDoc(res: http.ServerResponse, docId: string, q: URLSearchParams): void {
   const e = q.get('e') || '', s = q.get('s') || '';
@@ -129,7 +141,12 @@ function serveSignedDoc(res: http.ServerResponse, docId: string, q: URLSearchPar
   }
   const doc = db.prepare('SELECT file_path, mime FROM driver_documents WHERE id = ?').get(docId) as any;
   if (!doc || !fs.existsSync(doc.file_path)) { json(res, 404, { error: 'Documento não encontrado.' }); return; }
-  res.writeHead(200, { 'Content-Type': doc.mime, 'Cache-Control': 'no-store' });
+  // sandbox: mesmo um arquivo malicioso não roda script na origem do app
+  res.writeHead(200, {
+    'Content-Type': doc.mime, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; object-src 'self'",
+    'Content-Disposition': 'inline',
+  });
   res.end(fs.readFileSync(doc.file_path));
 }
 
@@ -204,6 +221,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (pathname === '/api/events' && req.method === 'GET') {
       if (!user) { json(res, 401, { error: 'Faça login para continuar.' }); return; }
       sseConnect(user.id, user.role, res);
+      return;
+    }
+
+    // Proteção extra contra CSRF (além do cookie SameSite=Lax): ação vinda de
+    // OUTRO site é recusada. Integrações servidor→servidor (webhooks) não
+    // mandam Origin e seguem normalmente.
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method || 'GET') && pathname.startsWith('/api/')
+        && isCrossSite(req)) {
+      json(res, 403, { error: 'Requisição de outro site recusada.' });
       return;
     }
 

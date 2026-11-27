@@ -794,6 +794,9 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   google_cap_details: '9000',      // Place Details Essentials: 10.000 grátis/mês
   google_cap_geocode: '9000',      // Geocoding: 10.000 grátis/mês
   google_cap_maploads: '9000',     // Dynamic Maps: 10.000 grátis/mês
+  mapbox_cap_maploads: '45000',    // Mapbox GL JS: 50.000 grátis/mês (confirmado)
+  mapbox_cap_directions: '50000',  // Directions: grátis declarado por terceiros, não confirmado
+  mapbox_cap_geocode: '50000',     // Geocoding: idem
 
   city_name: 'Assis Chateaubriand - PR',
   center_lat: '-24.4156',

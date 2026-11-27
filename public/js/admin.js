@@ -1296,13 +1296,13 @@ async function renderGeoUsage() {
   }
   const u = await api('/api/admin/geo-usage').catch(e => ({ error: e.message }));
   if (u.error) { card.innerHTML = `<h3>💰 Consumo do Google</h3><p class="muted">${escapeHtml(u.error)}</p>`; return; }
-  card.innerHTML = `<h3>💰 Consumo do Google Maps — mês ${escapeHtml(u.month)}</h3>
-    <p class="muted small mb">Cada chamada ao Google é contada. Ao chegar no teto, o app passa a usar o
+  card.innerHTML = `<h3>💰 Consumo dos mapas (Google e Mapbox) — mês ${escapeHtml(u.month)}</h3>
+    <p class="muted small mb">Cada chamada paga ao Google ou ao Mapbox é contada. Ao chegar no teto, o app passa a usar o
       OpenStreetMap até o mês virar (dia 1º, horário do Pacífico) — sem cobrança surpresa.
-      O teto não pode passar da cota grátis do Google. Configure também cotas e alerta de orçamento no Google Cloud (ver README).</p>
+      O teto não pode passar da cota grátis do serviço. Configure também cotas e alerta de orçamento no Google Cloud (ver README).</p>
     ${u.apis.map(a => `<div class="list-item">
       <div class="li-main"><div class="li-title">${escapeHtml(a.label)} ${a.blocked ? '<span class="pill red">teto atingido: usando OSM</span>' : ''}</div>
-        <div class="li-sub">${a.used} de ${a.cap} (cota grátis: ${a.free}/mês) · ${escapeHtml(a.sku)}</div>
+        <div class="li-sub">${a.used} de ${a.cap} (cota grátis: ${a.free.toLocaleString('pt-BR')}/mês) · ${escapeHtml(a.sku)}</div>
         <div class="bar" style="height:6px;border-radius:4px;background:var(--card-2);margin-top:6px">
           <div style="height:6px;border-radius:4px;width:${a.pct}%;background:${a.pct >= 90 ? 'var(--red)' : a.pct >= 70 ? 'var(--amber)' : 'var(--green)'}"></div></div></div>
       <input class="input" style="width:96px" type="number" min="0" max="${a.free}" value="${a.cap}" data-cap="${a.api}" aria-label="Teto mensal: ${escapeHtml(a.label)}">

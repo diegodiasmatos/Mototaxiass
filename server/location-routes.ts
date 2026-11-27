@@ -24,9 +24,10 @@ export const locationRoutes: Route[] = [
   }),
 
   /** O navegador avisa que desenhou um mapa do Google (é isso que o Google cobra). */
-  route('POST /api/geo/mapload', 'any', ({ res, user }) => {
+  route('POST /api/geo/mapload', 'any', ({ res, user, query }) => {
     // contar a mais nunca gera custo (no máximo troca o mapa pelo OSM); o limite evita inflar à toa
-    if (rateLimit(`mapload:${user!.id}`, 30, 3600_000)) countGoogle('maploads');
+    const api = query.get('p') === 'mapbox' ? 'mb_maploads' : 'maploads';
+    if (rateLimit(`mapload:${api}:${user!.id}`, 30, 3600_000)) countGoogle(api);
     json(res, 200, { ok: true });
   }),
 
@@ -41,7 +42,7 @@ export const locationRoutes: Route[] = [
       if (b[a.api] === undefined) continue;
       const v = Math.floor(Number(b[a.api]));
       if (!Number.isFinite(v) || v < 0) throw new ApiError(400, `Teto inválido para ${a.label}.`);
-      if (v > a.free) throw new ApiError(400, `${a.label}: o teto não pode passar da cota grátis do Google (${a.free}/mês).`);
+      if (v > a.free) throw new ApiError(400, `${a.label}: o teto não pode passar da cota grátis do serviço (${a.free}/mês).`);
       setSetting(a.setting, String(v));
       changed.push(`${a.label}=${v}`);
     }

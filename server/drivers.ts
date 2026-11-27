@@ -38,6 +38,14 @@ function saveDocument(driverId: string, kind: string, dataUrl: string): void {
   if (!ext) throw new ApiError(400, `Documento ${kind}: use JPEG, PNG, WebP ou PDF.`);
   const buf = Buffer.from(m[2], 'base64');
   if (buf.length < 1024) throw new ApiError(400, `Documento ${kind}: arquivo muito pequeno/corrompido.`);
+  // o conteúdo precisa ser mesmo do tipo declarado (assinatura do arquivo)
+  const sig: Record<string, (b: Buffer) => boolean> = {
+    'image/jpeg': b => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+    'image/png': b => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+    'image/webp': b => b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP',
+    'application/pdf': b => b.subarray(0, 5).toString('latin1') === '%PDF-',
+  };
+  if (!sig[mime]?.(buf)) throw new ApiError(400, `Documento ${kind}: o arquivo não é um ${ext.toUpperCase()} válido.`);
   if (buf.length > 8 * 1024 * 1024) throw new ApiError(400, `Documento ${kind}: máximo 8 MB.`);
 
   const dir = path.join(uploadsDir(), driverId);
@@ -123,7 +131,7 @@ export const driverRoutes: Route[] = [
   // Cadastro profissional completo (etapas enviadas de uma vez ao final do wizard).
   route('POST /api/driver/apply', 'driver', async ({ req, res, user }) => {
     assertTermsAccepted(user!);
-    const b = await readBody(req);
+    const b = await readBody(req, 36 * 1024 * 1024);   // 3 documentos (até 8 MB cada, em base64)
     const existing = db.prepare('SELECT status FROM drivers WHERE user_id = ?').get(user!.id) as any;
     if (existing && !['correction', 'rejected'].includes(existing.status)) {
       throw new ApiError(409, 'Cadastro já enviado. Aguarde a análise.');
