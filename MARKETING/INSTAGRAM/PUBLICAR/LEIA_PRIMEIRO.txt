@@ -1,0 +1,11 @@
+COMO PUBLICAR — siga as pastas na ordem (uns 15 minutos)
+
+1_PERFIL     → foto de perfil e TEXTOS_DO_PERFIL.txt (nome, bio, links, contato)
+2_DESTAQUES  → uma pasta por destaque, na ordem 1 a 6; cada uma tem COMO_FAZER.txt
+3_FEED       → publique 01, 02, 03... nessa ordem (um por dia ou em dias alternados)
+               *_LEGENDA.txt = copie e cole como legenda
+               Reels: ao publicar, "Editar capa" → "Adicionar da galeria" → *_CAPA.png
+
+Depois de publicar o 04, o 05 e o 06: no perfil, toque nos "..." de cada um → "Fixar no perfil".
+
+Lembrete: nada de "baixe já" ou "peça agora" antes do lançamento oficial.

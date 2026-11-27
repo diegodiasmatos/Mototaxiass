@@ -1,0 +1,5 @@
+DESTAQUE: Sobre
+
+1. Publique como story: story_1.mp4, story_2.png (um de cada vez, nessa ordem).
+2. No último story, toque em "Destacar" → "Novo" → nome: Sobre
+3. No perfil, segure o destaque → "Editar destaque" → "Editar capa" → escolha CAPA.png

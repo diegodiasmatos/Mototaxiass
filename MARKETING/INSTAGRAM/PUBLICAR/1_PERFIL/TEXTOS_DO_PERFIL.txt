@@ -1,0 +1,27 @@
+PERFIL DA VAIRO — copie e cole (Editar perfil)
+
+Tipo de conta: Profissional → Empresa
+Categoria: Serviço de transporte
+
+NOME (até 30 caracteres):
+VAIRO · Mototáxi em Assis
+
+BIO:
+🏍️ Corridas de moto em Assis Chateaubriand-PR
+📍 Preço antes de confirmar · moto ao vivo no mapa
+🔔 Vem aí! É mototaxista? Cadastre-se ⬇️
+
+LINKS (Editar perfil → Links → Adicionar link externo):
+Título: Conheça a VAIRO
+URL: https://assis-mototaxi.fly.dev/
+
+Título: Cadastro de mototaxista
+URL: https://assis-mototaxi.fly.dev/motorista
+
+Título: Atendimento no WhatsApp
+URL: https://wa.me/5544988285423
+
+BOTÕES DE CONTATO (Editar perfil → Opções de contato):
+WhatsApp: (44) 98828-5423
+E-mail: vairoapp1@gmail.com
+Endereço: NÃO preencher (no máximo a cidade: Assis Chateaubriand, PR)

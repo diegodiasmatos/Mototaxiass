@@ -1,0 +1,7 @@
+DESTAQUE: Seja parceiro
+
+1. Publique como story: story_1.png (um de cada vez, nessa ordem).
+No story de "Seja parceiro": adicione o adesivo LINK com https://assis-mototaxi.fly.dev/motorista e o texto "Cadastre-se".
+
+2. No último story, toque em "Destacar" → "Novo" → nome: Seja parceiro
+3. No perfil, segure o destaque → "Editar destaque" → "Editar capa" → escolha CAPA.png
