@@ -1,0 +1,20 @@
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><link rel="stylesheet" href="studio.css">
+<style>
+body.post .stage { height: 1350px; }
+#brand { top: 90px; left: 0; right: 0; display: flex; align-items: center; justify-content: center; gap: 26px; }
+#brand .tile { width: 130px; height: 130px; border-radius: 36px; }
+#h { top: 290px; left: 70px; width: 940px; font-size: 104px; }
+.phone { width: 520px; height: 1095px; left: 280px; top: 700px; transform: rotate(-4deg); }
+#rays { position: absolute; inset: 0; }
+#foot { left: 0; right: 0; top: 615px; text-align: center; z-index: 5; }
+.phone { top: 730px !important; }
+body.story #brand { top: 250px; } body.story #h { top: 470px; font-size: 112px; } body.story .phone { top: 900px; width: 560px; height: 1180px; left: 260px; }
+body.story #foot { top: 860px; bottom: auto; } body.story .phone { top: 980px !important; }
+</style></head><body><div class="stage">
+<div class="bg"></div><div class="grid"></div>
+<svg id="rays" viewBox="0 0 1080 1920"><path d="M-60 1920 L500 900" stroke="#e7ff00" stroke-opacity=".35" stroke-width="6"/><path d="M1140 1920 L580 900" stroke="#e7ff00" stroke-opacity=".35" stroke-width="6"/></svg>
+<div id="brand" class="abs"><div class="tile"><img src="logo.svg"></div><div class="word" style="font-size:108px;letter-spacing:.06em">VAIRO</div></div>
+<div id="h" class="abs h1">Uma nova experiência de <span class="hl">mobilidade</span>.</div>
+<div class="phone"><div class="notch"></div><div class="scr"><img src="p04_rota.png"></div></div>
+<div id="foot" class="abs"><span class="tag">Assis Chateaubriand – PR</span></div>
+</div><script>document.body.className = new URLSearchParams(location.search).get('f') || 'post';</script></body></html>

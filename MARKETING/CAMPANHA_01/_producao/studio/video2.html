@@ -1,0 +1,74 @@
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><link rel="stylesheet" href="studio.css">
+<style>
+.phone { width: 600px; height: 1262px; left: 240px; top: 500px; }
+#cap { top: 250px; width: 940px; left: 70px; display: flex; justify-content: center; }
+#cap .caption { max-width: 940px; }
+#speed { top: 430px; left: 50%; margin-left: -130px; z-index: 5; }
+#real { bottom: 100px; width: 100%; text-align: center; }
+#intro, #end { inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px; }
+</style></head><body><div class="stage">
+<div class="bg"></div><div class="grid"></div>
+<div id="intro" class="abs">
+  <div class="tile" style="width:200px;height:200px;border-radius:52px"><img src="logo.svg"></div>
+  <div class="h1" style="font-size:96px">Como funciona<br>o <span class="hl">VAIRO</span></div>
+</div>
+<div class="phone" id="ph"><div class="notch"></div><div class="scr"><img id="scr"></div></div>
+<div id="cap" class="abs"><div class="caption"><span class="num" id="n">1</span><span id="ct"></span></div></div>
+<div id="speed" class="abs tag">⏩ acelerado 4×</div>
+<div id="real" class="abs fine">Gravação de tela real do aplicativo · dados de demonstração</div>
+<div id="end" class="abs">
+  <div class="tag" style="font-size:34px">Preço antes de confirmar · Pix, cartão ou dinheiro</div>
+  <div class="tile" style="width:230px;height:230px;border-radius:60px;margin-top:30px"><img src="logo.svg"></div>
+  <div class="h1 word" style="font-size:150px;letter-spacing:.04em">VAIRO</div>
+  <div class="h1" style="font-size:54px;font-weight:800">sua cidade em <span class="hl">movimento</span></div>
+  <div class="fine" style="font-size:32px;margin-top:20px">Assis Chateaubriand – PR</div>
+</div>
+</div>
+<script src="studio.js"></script><script src="clips.js"></script><script>
+const { show, prog, ease, setImg, clipFrame } = studio;
+window.DURATION = 32;
+// segmentos: gravação, início no vídeo, velocidade
+const SEG = [
+  { c: 'A_passageiro', at: 2.4, sp: 1.5 },
+  { c: 'B_mototaxista', at: 13.0, sp: 1.6 },
+  { c: 'C_acompanhar', at: 19.4, sp: 4 },
+  { c: 'D_codigo', at: 26.6, sp: 1.6 },
+];
+const STEPS = [
+  [2.4, 4.2, 'Use sua localização como ponto de embarque'],
+  [4.2, 7.0, 'Busque o destino pelo nome da rua ou do bairro'],
+  [7.0, 10.0, 'Veja o trajeto por ruas, a distância e o tempo'],
+  [10.0, 13.0, 'Escolha a categoria e a forma de pagamento'],
+  [13.0, 19.4, 'O mototaxista recebe a chamada e aceita'],
+  [19.4, 26.6, 'Acompanhe a moto chegando, ao vivo no mapa'],
+  [26.6, 29.4, 'Mostre seu código e confirme o embarque'],
+];
+const $ = id => document.getElementById(id);
+window.render = async t => {
+  show($('intro'), t, 0.15, 2.0, { d: .5, y: 30, s: .06 });
+  const appOn = t >= 2.2 && t < 29.6;
+  show($('ph'), t, 2.2, 29.2, { d: .6, y: 140, s: .05, blur: 0 });
+  show($('real'), t, 2.6, 29.0, { d: .5, y: 0 });
+  // passo atual
+  const i = STEPS.findIndex(s => t >= s[0] && t < s[1]);
+  const cap = $('cap');
+  if (i >= 0) {
+    const [a, b, txt] = STEPS[i];
+    $('n').textContent = i + 1; $('ct').textContent = txt;
+    show(cap, t, a, b - .35, { d: .35, y: 24, blur: 6 });
+  } else cap.style.opacity = 0;
+  show($('speed'), t, 19.6, 26.2, { d: .3, y: 0 });
+  show($('end'), t, 29.5, null, { d: .6, y: 40, s: .05 });
+  // tela: quadro da gravação real
+  let seg = null;
+  for (const s of SEG) if (t >= s.at) seg = s;
+  if (seg && appOn) {
+    const clip = CLIPS[seg.c];
+    const tc = Math.min(clip.dur, (t - seg.at) * seg.sp);
+    const k = clipFrame(clip, tc);
+    await setImg($('scr'), `${clip.dir}/${clip.files[k]}`);
+  } else if (!seg) {
+    const clip = CLIPS.A_passageiro; await setImg($('scr'), `${clip.dir}/${clip.files[0]}`);
+  }
+};
+</script></body></html>

@@ -1,0 +1,81 @@
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><link rel="stylesheet" href="studio.css">
+<style>
+#road { position: absolute; inset: 0; }
+#hero { position: absolute; left: 0; right: 0; top: 560px; display: flex; flex-direction: column; align-items: center; gap: 46px; }
+#hero .tile { width: 300px; height: 300px; border-radius: 78px; }
+#wm { font-size: 190px; font-weight: 900; letter-spacing: .06em; display: flex; }
+#wm span { display: inline-block; }
+#flash { position: absolute; inset: 0; background: radial-gradient(600px 600px at 50% 40%, rgba(231,255,0,.55), transparent 70%); opacity: 0; }
+#line1 { top: 1180px; width: 900px; left: 90px; font-size: 76px; }
+#mini { top: 150px; left: 0; right: 0; display: flex; justify-content: center; align-items: center; gap: 22px; }
+#mini .tile { width: 92px; height: 92px; border-radius: 26px; }
+#cap { top: 300px; left: 60px; width: 960px; display: flex; justify-content: center; }
+.phone.a { width: 560px; height: 1180px; left: 260px; top: 520px; }
+.phone.b { width: 500px; height: 1053px; left: 560px; top: 640px; }
+#real { bottom: 96px; width: 100%; text-align: center; }
+#line2 { top: 760px; width: 960px; left: 60px; font-size: 88px; }
+#end { inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px; }
+</style></head><body><div class="stage">
+<div class="bg"></div><div class="grid"></div>
+<svg id="road" viewBox="0 0 1080 1920"><defs><linearGradient id="g" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#e7ff00" stop-opacity=".9"/><stop offset="1" stop-color="#e7ff00" stop-opacity="0"/></linearGradient></defs>
+  <path id="r1" d="M-80 1920 L500 760" stroke="url(#g)" stroke-width="10" fill="none"/>
+  <path id="r2" d="M1160 1920 L580 760" stroke="url(#g)" stroke-width="10" fill="none"/>
+  <path id="r3" d="M540 1920 L540 800" stroke="#e7ff00" stroke-width="8" fill="none" stroke-dasharray="70 70" opacity=".55"/>
+</svg>
+<div id="flash"></div>
+<div id="hero"><div class="tile" id="logo"><img src="logo.svg"></div><div id="wm"><span>V</span><span>A</span><span>I</span><span>R</span><span>O</span></div></div>
+<div id="line1" class="abs h1">Uma nova experiência de <span class="hl">mobilidade</span> está chegando.</div>
+<div id="mini" class="abs"><div class="tile"><img src="logo.svg"></div><div class="word" style="font-size:64px;letter-spacing:.06em">VAIRO</div></div>
+<div id="cap" class="abs"><div class="caption" id="ct"></div></div>
+<div class="phone a" id="pa"><div class="notch"></div><div class="scr">
+  <img id="s1" src="p02_home.png"><img id="s2" src="p04_rota.png"><img id="s3" src="p05_precos.png"><img id="s4" src="p07_acompanhar.png">
+</div></div>
+<div class="phone b" id="pb"><div class="notch"></div><div class="scr"><img src="m02_chamada.png"></div></div>
+<div id="real" class="abs fine">Telas reais do aplicativo · dados de demonstração</div>
+<div id="line2" class="abs h1"><span class="hl">Mobilidade</span>, tecnologia e praticidade em um só aplicativo.</div>
+<div id="end" class="abs">
+  <div class="tile" style="width:250px;height:250px;border-radius:64px"><img src="logo.svg"></div>
+  <div class="h1 word" style="font-size:160px;letter-spacing:.05em">VAIRO</div>
+  <div class="h1" style="font-size:60px;font-weight:800">sua cidade em <span class="hl">movimento</span></div>
+  <div class="fine" style="font-size:32px;margin-top:24px">Assis Chateaubriand – PR</div>
+</div>
+</div>
+<script src="studio.js"></script><script>
+const { show, prog, ease, out3, back, clamp } = studio;
+window.DURATION = 24;
+const $ = id => document.getElementById(id);
+const CAPS = [[6.6, 9.0, 'Peça sua corrida de moto em poucos toques'], [9.0, 13.8, 'Veja o trajeto e o preço antes de confirmar'],
+  [14.1, 16.6, 'Acompanhe o mototaxista no mapa, ao vivo'], [16.7, 19.5, 'E quem pilota recebe as chamadas no app']];
+window.render = async t => {
+  // estrada: aparece e "corre"
+  const rv = prog(t, 0, 1.4) * (1 - prog(t, 5.6, 6.4));
+  for (const id of ['r1', 'r2']) { const el = $(id); el.style.opacity = rv; el.setAttribute('stroke-dasharray', `${1400 * out3(prog(t, 0, 1.6))} 2000`); }
+  $('r3').style.opacity = .55 * rv; $('r3').setAttribute('stroke-dashoffset', -t * 220);
+  // logotipo e nome
+  const hero = $('hero');
+  const li = back(prog(t, 1.0, 2.0)), lo = ease(prog(t, 5.6, 6.3));
+  $('logo').style.transform = `scale(${0.55 + 0.45 * li})`;
+  $('logo').style.opacity = clamp(prog(t, 1.0, 1.5)); hero.style.opacity = 1 - lo;
+  hero.style.transform = `translateY(${-160 * ease(prog(t, 3.0, 3.8))}px) scale(${1 - .1 * ease(prog(t, 3.0, 3.8))})`;
+  [...$('wm').children].forEach((s, i) => { const p = out3(prog(t, 1.8 + i * .09, 2.4 + i * .09)); s.style.opacity = p; s.style.transform = `translateY(${(1 - p) * 60}px)`; s.style.filter = `blur(${(1 - p) * 10}px)`; });
+  $('logo').style.boxShadow = `0 0 ${60 + 140 * Math.max(0, 1 - Math.abs(t - 2.7) / .5)}px rgba(220,243,2,${.3 + .4 * Math.max(0, 1 - Math.abs(t - 2.7) / .5)})`;
+  $('flash').style.opacity = Math.max(0, 1 - Math.abs(t - 2.65) / .35) * .9;
+  show($('line1'), t, 3.3, 5.6, { d: .6, y: 40 });
+  // telas reais
+  show($('mini'), t, 6.3, 19.4, { d: .5, y: -20 });
+  const ci = CAPS.findIndex(c => t >= c[0] && t < c[1]);
+  if (ci >= 0) { $('ct').textContent = CAPS[ci][2]; show($('cap'), t, CAPS[ci][0], CAPS[ci][1] - .35, { d: .35, y: 24 }); } else $('cap').style.opacity = 0;
+  const pa = $('pa'), pb = $('pb');
+  const split = ease(prog(t, 16.5, 17.3));
+  pa.dataset.base = `translateX(${-150 * split}px) rotate(${-5 * split}deg)`;
+  show(pa, t, 6.2, 19.4, { d: .7, y: 260, s: .04, blur: 0 });
+  pb.dataset.base = `rotate(${6 * split}deg)`;
+  show(pb, t, 16.6, 19.4, { d: .7, y: 300, s: .05, blur: 0 });
+  const st = [[0, 8.6], [8.6, 11.0], [11.0, 14.0], [14.0, 99]];
+  st.forEach(([a, b], i) => { $('s' + (i + 1)).style.opacity = i === 0 ? 1 - prog(t, b, b + .45) : prog(t, a, a + .45) * (1 - prog(t, b, b + .45)); });
+  show($('real'), t, 6.6, 19.2, { d: .4, y: 0 });
+  show($('line2'), t, 19.6, 21.0, { d: .5, y: 40 });
+  show($('end'), t, 21.0, null, { d: .6, y: 40, s: .06 });
+  await Promise.all([...document.images].map(i => i.decode().catch(() => {})));
+};
+</script></body></html>

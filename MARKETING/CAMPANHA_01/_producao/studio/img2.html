@@ -1,0 +1,29 @@
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><link rel="stylesheet" href="studio.css">
+<style>
+#top { top: 70px; left: 0; right: 0; display: flex; align-items: center; justify-content: center; gap: 18px; }
+#top .tile { width: 84px; height: 84px; border-radius: 24px; }
+#h { top: 200px; left: 60px; width: 960px; font-size: 80px; }
+.phone { width: 296px; height: 624px; top: 470px; border-radius: 44px; padding: 10px; }
+.phone .scr { border-radius: 38px; } .phone .notch { top: 20px; width: 18px; height: 18px; margin-left: -9px; }
+#p1 { left: 62px; transform: rotate(-5deg); top: 500px; } #p2 { left: 392px; z-index: 2; } #p3 { left: 722px; transform: rotate(5deg); top: 500px; }
+.lbl { position: absolute; top: 1150px; width: 320px; text-align: center; font-size: 26px; font-weight: 800; }
+#feat { display: none; }
+#foot { left: 0; right: 0; bottom: 34px; text-align: center; }
+body.story #top { top: 220px; } body.story #h { top: 350px; font-size: 86px; }
+body.story .phone { top: 640px; } body.story #p1, body.story #p3 { top: 670px; } body.story .lbl { top: 1320px; }
+body.story #feat { display: grid; position: absolute; top: 1460px; left: 90px; right: 90px; grid-template-columns: 1fr 1fr; gap: 16px; }
+body.story #foot { bottom: 150px; }
+.chip2 { padding: 18px 20px; border-radius: 22px; background: rgba(23,23,29,.9); border: 1.5px solid rgba(231,255,0,.35); font-size: 28px; font-weight: 800; text-align: center; }
+</style></head><body><div class="stage">
+<div class="bg"></div><div class="grid"></div>
+<div id="top" class="abs"><div class="tile"><img src="logo.svg"></div><div class="word" style="font-size:64px;letter-spacing:.06em">VAIRO</div></div>
+<div id="h" class="abs h1">Tecnologia que aproxima você do seu <span class="hl">destino</span>.</div>
+<div class="phone" id="p1"><div class="notch"></div><div class="scr"><img src="p04_rota.png"></div></div>
+<div class="phone" id="p2"><div class="notch"></div><div class="scr"><img src="p07_acompanhar.png"></div></div>
+<div class="phone" id="p3"><div class="notch"></div><div class="scr"><img src="p08_codigo.png"></div></div>
+<div class="lbl" style="left:50px">Trajeto e preço<br><span class="hl">antes de confirmar</span></div>
+<div class="lbl" style="left:380px">Moto chegando<br><span class="hl">ao vivo no mapa</span></div>
+<div class="lbl" style="left:710px">Código de embarque<br><span class="hl">para sua segurança</span></div>
+<div id="feat"><div class="chip2">💳 Pix, cartão ou dinheiro</div><div class="chip2">🔔 Avisos da corrida</div><div class="chip2">📍 Busca por rua e bairro</div><div class="chip2">⭐ Avaliação do mototaxista</div></div>
+<div id="foot" class="abs fine">Telas reais do aplicativo · dados de demonstração</div>
+</div><script>document.body.className = new URLSearchParams(location.search).get('f') || 'post';</script></body></html>

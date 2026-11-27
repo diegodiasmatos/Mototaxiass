@@ -1,0 +1,38 @@
+@font-face { font-family: 'Inter'; src: url('inter-latin-var.woff2') format('woff2'); font-weight: 100 900; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --brand: #e7ff00; --brand-fill: #dcf302; --bg: #090909; --card: #17171d; --line: #2e2e34; --muted: #8b8b96; }
+html, body { width: 1080px; height: 1920px; overflow: hidden; background: var(--bg); color: #fff;
+  font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
+body.post { height: 1350px; }
+.stage { position: absolute; inset: 0; overflow: hidden; }
+/* fundo: grade fina + brilho neon da marca */
+.bg { position: absolute; inset: -200px; background:
+  radial-gradient(900px 700px at 50% 38%, rgba(220,243,2,.13), transparent 70%),
+  radial-gradient(700px 500px at 85% 92%, rgba(220,243,2,.07), transparent 70%), var(--bg); }
+.grid { position: absolute; inset: -200px; opacity: .22;
+  background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px);
+  background-size: 72px 72px; mask-image: radial-gradient(closest-side at 50% 45%, #000 40%, transparent 100%); }
+.abs { position: absolute; }
+.center-x { left: 50%; transform: translateX(-50%); }
+/* logotipo: o mesmo "V com estrada" do app, no ladrilho escuro com borda neon */
+.tile { display: grid; place-items: center; background: #090909; border: 2px solid rgba(231,255,0,.42);
+  box-shadow: 0 0 60px rgba(220,243,2,.30), inset 0 0 30px rgba(220,243,2,.05); }
+.tile img { width: 68%; height: 68%; }
+.word { font-weight: 900; letter-spacing: .02em; }
+/* textos */
+.h1 { font-weight: 900; letter-spacing: -.045em; line-height: 1.04; text-align: center; }
+.hl { color: var(--brand); }
+.caption { display: inline-flex; align-items: center; gap: 22px; padding: 26px 40px; border-radius: 34px;
+  background: rgba(23,23,29,.86); border: 2px solid rgba(231,255,0,.35); box-shadow: 0 18px 60px rgba(0,0,0,.5);
+  font-size: 46px; font-weight: 800; letter-spacing: -.02em; line-height: 1.18; backdrop-filter: blur(6px); }
+.num { flex: none; width: 74px; height: 74px; border-radius: 50%; background: var(--brand-fill); color: #000;
+  display: grid; place-items: center; font-size: 40px; font-weight: 900; }
+.tag { display: inline-block; padding: 10px 22px; border-radius: 999px; background: rgba(231,255,0,.12);
+  border: 1.5px solid rgba(231,255,0,.45); color: var(--brand); font-size: 28px; font-weight: 800; letter-spacing: .02em; }
+.fine { font-size: 24px; color: var(--muted); font-weight: 600; letter-spacing: .01em; }
+/* celular */
+.phone { position: absolute; border-radius: 72px; background: #0d0d10; padding: 16px;
+  box-shadow: 0 0 0 3px #26262c, 0 0 0 5px #0a0a0c, 0 60px 120px rgba(0,0,0,.7), 0 0 90px rgba(220,243,2,.16); }
+.phone .scr { position: relative; width: 100%; height: 100%; border-radius: 58px; overflow: hidden; background: #000; }
+.phone .scr img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.phone .notch { position: absolute; top: 30px; left: 50%; width: 26px; height: 26px; margin-left: -13px; border-radius: 50%; background: #000; box-shadow: 0 0 0 3px #15151a; z-index: 3; }

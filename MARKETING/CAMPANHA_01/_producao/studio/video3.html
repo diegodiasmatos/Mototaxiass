@@ -1,0 +1,72 @@
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><link rel="stylesheet" href="studio.css">
+<style>
+#sky { position: absolute; inset: 0; background: linear-gradient(180deg, #050507 0%, #0b0b10 45%, #141408 70%, #090909 100%); }
+#city { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; }
+#horizon { position: absolute; left: 0; right: 0; top: 1356px; height: 4px; background: linear-gradient(90deg, transparent, #e7ff00, transparent); box-shadow: 0 0 40px #e7ff00; }
+#roadsvg { position: absolute; inset: 0; }
+.txt { left: 70px; width: 940px; font-size: 80px; }
+#t1 { top: 330px; } #t2 { top: 330px; }
+.w { top: 360px; left: 0; right: 0; text-align: center; font-size: 150px; font-weight: 900; letter-spacing: -.04em; }
+.phone.a { width: 480px; height: 1011px; left: 300px; top: 620px; }
+.phone.b { width: 430px; height: 905px; left: 80px; top: 760px; }
+.phone.c { width: 430px; height: 905px; left: 570px; top: 760px; }
+#end { inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30px; background: radial-gradient(800px 800px at 50% 45%, rgba(220,243,2,.16), transparent 70%), rgba(9,9,9,.94); }
+#flash { position: absolute; inset: 0; background: radial-gradient(700px 700px at 50% 45%, rgba(231,255,0,.6), transparent 70%); opacity: 0; }
+</style></head><body><div class="stage">
+<div id="sky"></div>
+<svg id="city" viewBox="0 0 1080 1920"><g id="far"></g><g id="mid"></g><g id="near"></g></svg>
+<div id="horizon"></div>
+<svg id="roadsvg" viewBox="0 0 1080 1920">
+  <polygon points="470,1360 610,1360 1280,1920 -200,1920" fill="#0b0b0f"/>
+  <path d="M540 1360 L540 1920" stroke="#e7ff00" stroke-width="10" stroke-dasharray="40 60" id="lane" opacity=".7"/>
+  <path id="trail" d="M560 1920 Q 600 1600 545 1362" stroke="#e7ff00" stroke-width="16" fill="none" stroke-linecap="round" opacity=".0" style="filter: drop-shadow(0 0 18px #e7ff00)"/>
+  <path id="trail2" d="M610 1920 Q 640 1620 552 1362" stroke="#ff4d4d" stroke-width="8" fill="none" stroke-linecap="round" opacity=".0" style="filter: drop-shadow(0 0 14px #ff4d4d)"/>
+</svg>
+<div id="t1" class="abs h1 txt"><span class="hl">Assis Chateaubriand</span> está se preparando para uma nova experiência.</div>
+<div id="t2" class="abs h1 txt">A tecnologia também está transformando a <span class="hl">mobilidade</span>.</div>
+<div class="phone a" id="pa"><div class="notch"></div><div class="scr"><img src="p04_rota.png"></div></div>
+<div class="phone b" id="pb"><div class="notch"></div><div class="scr"><img src="p07_acompanhar.png"></div></div>
+<div class="phone c" id="pc"><div class="notch"></div><div class="scr"><img src="m02_chamada.png"></div></div>
+<div id="w1" class="abs w">Mobilidade.</div><div id="w2" class="abs w">Tecnologia.</div><div id="w3" class="abs w hl">Praticidade.</div>
+<div id="flash"></div>
+<div id="end" class="abs">
+  <div class="h1" style="font-size:96px">Vem aí,</div>
+  <div class="tile" id="lg" style="width:270px;height:270px;border-radius:70px"><img src="logo.svg"></div>
+  <div class="h1 word" style="font-size:180px;letter-spacing:.05em">VAIRO</div>
+  <div class="h1" style="font-size:58px;font-weight:800">sua cidade em <span class="hl">movimento</span></div>
+  <div class="fine" style="font-size:32px;margin-top:18px">Assis Chateaubriand – PR</div>
+</div>
+</div>
+<script src="studio.js"></script><script src="city.js"></script><script>
+const { show, prog, ease, out3, back } = studio;
+window.DURATION = 22;
+const $ = id => document.getElementById(id);
+$('far').innerHTML = cityLayers.far; $('mid').innerHTML = cityLayers.mid; $('near').innerHTML = cityLayers.near;
+const wins = [...document.querySelectorAll('.win')].map(w => [w, +w.getAttribute('opacity'), Math.random() * 6]);
+window.render = async t => {
+  // câmera: leve aproximação e paralaxe
+  const z = 1 + .06 * prog(t, 0, 12);
+  $('far').setAttribute('transform', `translate(${-10 * t} 0)`); $('mid').setAttribute('transform', `translate(${-18 * t} 0)`); $('near').setAttribute('transform', `translate(${-30 * t} 0)`);
+  $('city').style.transform = `scale(${z})`; $('city').style.transformOrigin = '50% 70%';
+  wins.forEach(([w, o, ph]) => w.setAttribute('opacity', (o * (.75 + .25 * Math.sin(t * 2 + ph))).toFixed(2)));
+  $('lane').setAttribute('stroke-dashoffset', -t * 260);
+  // rastro de luz da moto
+  const tr = prog(t, 1.2, 3.2), tf = 1 - prog(t, 4.2, 5.2);
+  for (const id of ['trail', 'trail2']) { const el = $(id); el.setAttribute('stroke-dasharray', `${700 * out3(tr)} 2000`); el.style.opacity = Math.min(tr * 3, 1) * tf * (id === 'trail' ? .9 : .7); }
+  show($('t1'), t, 0.8, 5.6, { d: .7, y: 40 });
+  show($('t2'), t, 6.2, 10.6, { d: .7, y: 40 });
+  // celulares
+  show($('pa'), t, 9.2, 12.2, { d: .8, y: 420, s: .05, blur: 0 });
+  const sp = ease(prog(t, 12.0, 12.8));
+  $('pb').dataset.base = `rotate(${-7 * sp}deg)`; $('pc').dataset.base = `rotate(${7 * sp}deg)`;
+  show($('pb'), t, 12.0, 17.8, { d: .7, y: 380, s: .05, blur: 0 });
+  show($('pc'), t, 12.2, 17.8, { d: .7, y: 380, s: .05, blur: 0 });
+  show($('w1'), t, 12.6, 13.9, { d: .25, y: 30, s: .15 });
+  show($('w2'), t, 14.1, 15.4, { d: .25, y: 30, s: .15 });
+  show($('w3'), t, 15.6, 17.6, { d: .25, y: 30, s: .15 });
+  $('flash').style.opacity = Math.max(0, 1 - Math.abs(t - 18.4) / .35);
+  show($('end'), t, 18.3, null, { d: .5, y: 0, s: .04 });
+  $('lg').style.transform = `scale(${.6 + .4 * back(prog(t, 18.5, 19.3))})`;
+  await Promise.all([...document.images].map(i => i.decode().catch(() => {})));
+};
+</script></body></html>
