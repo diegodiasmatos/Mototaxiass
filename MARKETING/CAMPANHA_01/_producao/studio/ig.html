@@ -1,0 +1,84 @@
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><link rel="stylesheet" href="studio.css">
+<style>
+body.p1080 { height: 1080px; } body.p1350 { height: 1350px; }
+.view { display: none; position: absolute; inset: 0; } .view.on { display: block; }
+.center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+/* foto de perfil: o Instagram corta em círculo */
+#perfil .ring { width: 1080px; height: 1080px; border-radius: 50%; display: grid; place-items: center;
+  background: radial-gradient(closest-side, #141410 0%, #090909 72%); }
+#perfil .ring img { width: 600px; height: 600px; filter: drop-shadow(0 0 40px rgba(231,255,0,.35)); }
+#perfil .halo { position: absolute; inset: 40px; border-radius: 50%; border: 10px solid rgba(231,255,0,.85); box-shadow: 0 0 80px rgba(231,255,0,.45), inset 0 0 80px rgba(231,255,0,.15); }
+/* capas de destaque: o centro vira um círculo */
+.hl-cover .disc { width: 640px; height: 640px; border-radius: 50%; display: grid; place-items: center;
+  background: radial-gradient(closest-side, #17171d, #0d0d10); border: 8px solid rgba(231,255,0,.55); box-shadow: 0 0 90px rgba(231,255,0,.25); }
+.hl-cover .disc svg, .hl-cover .disc img { width: 330px; height: 330px; }
+/* capas de reels: título dentro da área que aparece na grade (3:4 no centro) */
+.rc-title { position: absolute; left: 70px; right: 70px; top: 380px; text-align: center; }
+.rc-phone { width: 500px; height: 1053px; left: 290px; top: 790px; }
+.rc-badge { position: absolute; top: 300px; left: 0; right: 0; text-align: center; }
+/* peças novas */
+.list { display: grid; gap: 22px; }
+.li { display: flex; gap: 24px; align-items: center; padding: 26px 32px; border-radius: 28px; background: rgba(23,23,29,.92);
+  border: 1.5px solid #2e2e34; font-size: 38px; font-weight: 700; line-height: 1.25; }
+.li b { color: #e7ff00; }
+.li .ic { flex: none; width: 70px; height: 70px; border-radius: 20px; display: grid; place-items: center; background: rgba(231,255,0,.1); border: 1.5px solid rgba(231,255,0,.4); font-size: 38px; }
+.faq { padding: 28px 34px; border-radius: 28px; background: rgba(23,23,29,.92); border: 1.5px solid #2e2e34; }
+.faq h4 { font-size: 38px; font-weight: 800; color: #e7ff00; margin-bottom: 8px; }
+.faq p { font-size: 33px; line-height: 1.35; color: #e6e6e8; }
+</style></head><body><div class="stage">
+<div class="bg"></div><div class="grid"></div>
+
+<div class="view" id="perfil"><div class="center"><div class="ring"><img src="logo.svg"></div></div><div class="halo"></div></div>
+
+<div class="view hl-cover" id="hl"><div class="center"><div class="disc" id="hlicon"></div></div></div>
+
+<div class="view" id="reel">
+  <div class="rc-badge"><span class="tag" id="rcTag"></span></div>
+  <div class="rc-title h1" id="rcTitle" style="font-size:112px"></div>
+  <div class="phone rc-phone"><div class="notch"></div><div class="scr"><img id="rcImg"></div></div>
+  <div class="abs" style="left:0;right:0;top:120px;display:flex;justify-content:center;align-items:center;gap:20px">
+    <div class="tile" style="width:96px;height:96px;border-radius:26px"><img src="logo.svg"></div><div class="word" style="font-size:66px;letter-spacing:.06em">VAIRO</div></div>
+</div>
+
+<div class="view" id="parceiro">
+  <div class="abs" id="pTop" style="left:0;right:0;top:80px;display:flex;justify-content:center;align-items:center;gap:20px">
+    <div class="tile" style="width:96px;height:96px;border-radius:26px"><img src="logo.svg"></div><div class="word" style="font-size:66px;letter-spacing:.06em">VAIRO</div></div>
+  <div class="abs h1" id="pH" style="left:60px;right:60px;top:230px;font-size:92px">É mototaxista em <span class="hl">Assis</span>?<br>Seja parceiro.</div>
+  <div class="abs list" id="pList" style="left:70px;right:70px;top:500px">
+    <div class="li"><span class="ic">💰</span><span>Você fica com <b>85%</b> de cada corrida</span></div>
+    <div class="li"><span class="ic">💸</span><span>Saque por <b>Pix</b> a cada 48 horas, direto pelo app</span></div>
+    <div class="li"><span class="ic">💵</span><span>Corrida em dinheiro: você recebe <b>na hora</b></span></div>
+    <div class="li"><span class="ic">📍</span><span>Chamadas perto de você, com rota e destino na tela</span></div>
+  </div>
+  <div class="abs" id="pReq" style="left:70px;right:70px;top:1060px">
+    <div class="fine" style="font-size:30px;color:#d8d8d9;line-height:1.4"><b style="color:#fff">Requisitos:</b> 21 anos ou mais · CNH categoria A com EAR há pelo menos 2 anos · CRLV da moto em dia. A central confere os documentos antes de aprovar.</div>
+  </div>
+  <div class="abs" id="pCta" style="left:0;right:0;top:1230px;text-align:center"><span class="tag" style="font-size:34px;padding:14px 32px">Cadastro pelo link da bio</span></div>
+</div>
+
+<div class="view" id="duvidas">
+  <div class="abs" style="left:0;right:0;top:230px;display:flex;justify-content:center;align-items:center;gap:20px">
+    <div class="tile" style="width:96px;height:96px;border-radius:26px"><img src="logo.svg"></div><div class="word" style="font-size:66px;letter-spacing:.06em">VAIRO</div></div>
+  <div class="abs h1" style="left:60px;right:60px;top:380px;font-size:96px">Dúvidas <span class="hl">frequentes</span></div>
+  <div class="abs list" style="left:70px;right:70px;top:560px">
+    <div class="faq"><h4>Onde funciona?</h4><p>Em Assis Chateaubriand – PR.</p></div>
+    <div class="faq"><h4>Quanto custa?</h4><p>O preço é calculado pela distância da rota e aparece antes de você confirmar.</p></div>
+    <div class="faq"><h4>Como eu pago?</h4><p>Pix, cartão ou dinheiro.</p></div>
+    <div class="faq"><h4>Como sei que é a moto certa?</h4><p>O app mostra nome, moto e placa, e o embarque é confirmado com o seu código.</p></div>
+    <div class="faq"><h4>Preciso baixar?</h4><p>Funciona no navegador do celular e pode ser instalado na tela inicial.</p></div>
+  </div>
+</div>
+
+</div><script src="ig_icons.js"></script><script>
+const q = new URLSearchParams(location.search), v = q.get('v');
+document.body.className = q.get('b') || '';
+document.getElementById(v).classList.add('on');
+if (v === 'hl') document.getElementById('hlicon').innerHTML = q.get('i') === 'logo' ? '<img src="logo.svg">' : IG_ICONS[q.get('i')];
+if (v === 'reel') { rcTag.textContent = q.get('tag'); rcTitle.innerHTML = q.get('t'); rcImg.src = q.get('img'); }
+if (v === 'parceiro' && q.get('b') === 'p1350') {
+  pTop.style.top = '60px'; pH.style.top = '190px'; pH.style.fontSize = '84px'; pList.style.top = '420px';
+  document.querySelectorAll('#pList .li').forEach(e => { e.style.padding = '20px 28px'; e.style.fontSize = '34px'; });
+  pReq.style.top = '1000px'; pCta.style.top = '1190px';
+}
+if (v === 'parceiro' && q.get('b') !== 'p1350') { pTop.style.top = '230px'; pH.style.top = '380px'; pList.style.top = '740px'; pReq.style.top = '1400px'; pCta.style.top = '1590px'; }
+</script></body></html>
