@@ -31,6 +31,7 @@ export const KINDS: Record<string, KindInfo> = {
   ride_accepted: K('corrida', 'alta', { bodySafe: true }),
   driver_approaching: K('corrida', 'alta', { bodySafe: true }),
   driver_arrived: K('corrida', 'alta', { bodySafe: true }),
+  driver_waiting: K('corrida', 'alta', { bodySafe: true }),
   ride_started: K('corrida', 'alta', { bodySafe: true }),
   confirm_required: K('corrida', 'alta', { bodySafe: true }),
   ride_completed: K('corrida', 'normal', { push: { title: 'Corrida concluída', body: 'Toque para ver o resumo.' } }),

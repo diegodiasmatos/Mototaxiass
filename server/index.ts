@@ -16,6 +16,7 @@ import { adminRoutes } from './admin.ts';
 import { integrationRoutes } from './integrations.ts';
 import { accountRoutes, assetLinks } from './account.ts';
 import { notificationRoutes } from './notification-routes.ts';
+import { locationRoutes } from './location-routes.ts';
 import { startMaintenance } from './maintenance.ts';
 import { sseConnect } from './notify.ts';
 import { appVersion, injectSwVersion, injectHtmlVersion } from './version.ts';
@@ -157,7 +158,7 @@ function bootstrapAdmin(): void {
 }
 
 const ALL_ROUTES: Route[] = [
-  ...authRoutes, ...accountRoutes, ...notificationRoutes, ...rideRoutes, ...driverRoutes, ...adminRoutes, ...integrationRoutes,
+  ...authRoutes, ...accountRoutes, ...notificationRoutes, ...locationRoutes, ...rideRoutes, ...driverRoutes, ...adminRoutes, ...integrationRoutes,
 ];
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {

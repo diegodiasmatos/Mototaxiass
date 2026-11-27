@@ -540,6 +540,57 @@ confirmado (bloqueio no servidor, com erro explícito para o parceiro). Quem nã
 conectou a conta continua recebendo por repasse normalmente — os dois modelos
 convivem.
 
+### Mapa, origem/destino e localização em tempo real
+
+- **Escolher o trajeto**: "De onde você vai sair?" (GPS, busca por endereço,
+  número, estabelecimento ou bairro, ou "Ajustar no mapa": pino fixo no centro e
+  a pessoa arrasta o mapa) e "Para onde você vai?" (busca, destinos recentes da
+  própria pessoa, favoritos ou mapa). Pino **verde** = embarque, **vermelho** =
+  destino. Com os dois escolhidos, o trajeto **por ruas** aparece no mapa com
+  distância, tempo e preço inicial; sem serviço de rotas, o app diz que a
+  distância é **estimada**.
+- **Localização com consentimento**: o app explica antes de o navegador pedir
+  ("Permitir localização / Continuar sem localização"; para o mototaxista,
+  "Ativar localização / Agora não", ao ficar online). O "não" é respeitado; bloqueada,
+  o app ensina a liberar no Android/iPhone.
+- **Tempo real** (SSE, já usado pelo app): a moto anda suave no mapa do
+  passageiro, com "ao vivo" ou "desatualizada (há X)" e botão de acompanhar;
+  o mototaxista vê o passageiro e a distância ao embarque. Envio adaptativo:
+  em corrida a cada ~4 s se andou (15–30 s parado); só online, a cada 30 m ou 30 s.
+- **Privacidade**: posição do passageiro só depois do aceite e só para o
+  mototaxista da corrida; a do mototaxista só para o passageiro dele, enquanto a
+  corrida acontece; corrida encerrada não mostra mais onde ele está; offline, a
+  última posição é apagada; o endpoint público não tem coordenadas. GPS das
+  corridas é apagado após `gps_retention_days` (180).
+- **Segundo plano**: no navegador/PWA a localização só é confiável com o app
+  aberto e a tela ligada (o app pede para manter a tela acesa ao mototaxista).
+  Com a tela apagada, o Android/iOS suspendem o GPS da página. Rastreamento
+  contínuo em segundo plano exigiria um app nativo (serviço em primeiro plano
+  com notificação permanente, conforme a política do Google Play).
+
+#### Custos e limites (Google Maps Platform)
+
+O Google não é ilimitado: cada SKU tem cota grátis **por mês**
+(Essentials 10.000; rota de **moto** `TWO_WHEELER` é **Enterprise: 1.000**).
+O app conta cada chamada (`server/geo-usage.ts`) e para de chamar o Google
+num teto abaixo da cota (padrão 90%), passando para OpenStreetMap/OSRM até o
+mês virar. Painel e tetos: **Central → Mapas → Consumo do Google Maps**.
+No Google Cloud, configure também (a garantia definitiva):
+
+1. Chave do navegador restrita por **site** (`https://assis-mototaxi.fly.dev/*`)
+   e só à *Maps JavaScript API*; chave do servidor (`GOOGLE_MAPS_SERVER_KEY`)
+   restrita às APIs Routes, Places (New) e Geocoding.
+2. **Cotas por dia** em cada API (APIs e serviços → Cotas), ex.: Routes 30/dia.
+3. **Alerta de orçamento** (Faturamento → Orçamentos e alertas), ex.: R$ 10 com
+   avisos em 50/90/100%.
+
+Sem chave do Google, tudo funciona com OpenStreetMap: mapa (tiles OSM), busca na
+base local da cidade (IBGE + OSM), Nominatim **só quando a pessoa pede**
+("Buscar no OpenStreetMap"/Enter — a política dele proíbe autocompletar) e
+rotas pelo OSRM público, ambos com **no máximo 1 consulta por segundo** no
+servidor inteiro. Com mais movimento, use um provedor pago ou próprio
+(`OSRM_BASE`, `NOMINATIM_BASE`).
+
 ### Central de notificações
 
 - **Sino** com contador de não lidas que se atualiza sozinho (tempo real + ao

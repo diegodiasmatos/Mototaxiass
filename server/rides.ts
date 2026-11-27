@@ -148,6 +148,11 @@ export function rideViewForPassenger(r: any): any {
   let driver = null, eta_s = null;
   if (r.driver_id) {
     driver = driverCard(r.driver_id);
+    // a posição do mototaxista só aparece enquanto ele vem buscar ou leva o
+    // passageiro; corrida encerrada não mostra onde ele está agora
+    if (driver && !['accepted', 'in_progress'].includes(r.status)) {
+      driver.last_lat = null; driver.last_lng = null; driver.last_loc_at = null; driver.loc_stale = true;
+    }
     if (driver?.last_lat != null) {
       const target = r.status === 'in_progress'
         ? { lat: r.dest_lat, lng: r.dest_lng } : { lat: r.origin_lat, lng: r.origin_lng };
@@ -495,6 +500,13 @@ export async function cancelRide(r: any, user: SessionUser, reason: string): Pro
  */
 export async function expireStaleRides(t = now()): Promise<{ payment: number; request: number }> {
   const out = { payment: 0, request: 0 };
+  // mototaxista no ponto há 3 min e o passageiro ainda não embarcou: lembra uma vez
+  const waiting = db.prepare(`SELECT id, passenger_id FROM rides WHERE status = 'accepted'
+    AND arrived_at IS NOT NULL AND arrived_at < ? AND arrived_at > ?`).all(t - 3 * 60_000, t - 30 * 60_000) as any[];
+  for (const w of waiting) {
+    notify(w.passenger_id, 'driver_waiting', 'Seu mototaxista está aguardando',
+      { body: 'Ele chegou ao ponto de embarque há alguns minutos. Vá até ele ou fale pelo chat.', rideId: w.id, eventKey: `waiting:${w.id}` });
+  }
   const payMin = Math.max(1, getSettingNum('pix_expires_min')) + 5;
   const unpaid = db.prepare(`SELECT * FROM rides WHERE status = 'pending_payment' AND requested_at < ?`)
     .all(t - payMin * 60_000) as any[];
@@ -546,11 +558,9 @@ export const rideRoutes: Route[] = [
     const drivers = eligibleDrivers();
     json(res, 200, {
       online_drivers: drivers.length,
-      // posições aproximadas (~110 m) e anônimas, só para ambientar o mapa
-      markers: drivers.slice(0, 30).map(d => ({
-        lat: Math.round(d.lat * 1000) / 1000,
-        lng: Math.round(d.lng * 1000) / 1000,
-      })),
+      // sem posições: a localização de um mototaxista só é vista pelo
+      // passageiro da corrida dele (privacidade / LGPD)
+      markers: [],
     });
   }),
 
@@ -570,7 +580,10 @@ export const rideRoutes: Route[] = [
     if (q.length < 2) { json(res, 200, { results: [] }); return; }
     // a sessão junta a digitação + a escolha numa só cobrança do Google
     const { cleanSession } = await import('./google-maps.ts');
-    json(res, 200, { results: await searchAddress(q, cleanSession(query.get('session'))) });
+    // deep=1: a pessoa pediu para procurar também no OpenStreetMap (Nominatim);
+    // limite próprio, bem menor: o serviço público aceita 1 consulta por segundo
+    const deep = query.get('deep') === '1' && rateLimit(`geo-deep:${ip}`, 6, 60_000);
+    json(res, 200, { results: await searchAddress(q, cleanSession(query.get('session')), deep), deep });
   }),
 
   /** Pontos de referência e bairros para sugerir antes de digitar (só dados reais da base). */
@@ -921,9 +934,12 @@ export const rideRoutes: Route[] = [
   route('POST /api/rides/:id/location', 'passenger', async ({ req, res, user, params }) => {
     const r = getRide(params.id);
     if (r.passenger_id !== user!.id) throw new ApiError(403, 'Esta corrida não é sua.');
-    if (!['requested', 'accepted', 'in_progress'].includes(r.status)) {
+    // só com mototaxista designado: antes do aceite não há com quem compartilhar
+    if (!r.driver_id || !['accepted', 'in_progress'].includes(r.status)) {
       json(res, 200, { ok: true, ignored: true }); return;
     }
+    // no máximo uma posição a cada 3 s por corrida (bateria, dados e banco)
+    if (!rateLimit(`paxloc:${r.id}`, 1, 3000)) { json(res, 200, { ok: true, ignored: true, reason: 'throttled' }); return; }
     const b = await readBody(req);
     const lat = reqNum(b.lat, 'lat'), lng = reqNum(b.lng, 'lng');
     const acc = Number(b.accuracy_m);

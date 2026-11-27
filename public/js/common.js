@@ -655,9 +655,13 @@ function googleMapAdapter(el, center, zoom) {
     keyboardShortcuts: false,
   });
   const clickHandlers = new Map();
+  // o Google cobra por carregamento de mapa: o servidor conta e, no teto do mês, passa para o OpenStreetMap
+  api('/api/geo/mapload', { method: 'POST' }).catch(() => { });
   return {
     _google: map,
     _provider: 'google',
+    getCenter() { const c = map.getCenter(); return { lat: c.lat(), lng: c.lng() }; },
+    getZoom() { return map.getZoom(); },
     setView([lat, lng], z) { map.setCenter({ lat, lng }); if (z) map.setZoom(z); },
     fitBounds(bounds, opts = {}) {
       if (!bounds || bounds.isEmpty()) return;
@@ -698,7 +702,7 @@ function googleEmojiOverlay(lat, lng, emoji, title) {
         this.pos = pos;
         this.div = document.createElement('div');
         this.div.className = 'marker-moto';
-        this.div.textContent = text;
+        if (String(text).startsWith('<')) this.div.innerHTML = text; else this.div.textContent = text;
         if (tip) this.div.title = tip;
         Object.assign(this.div.style, {
           position: 'absolute', transform: 'translate(-50%, -50%)',
@@ -755,6 +759,8 @@ function mapboxAdapter(el, center, zoom) {
     _mapbox: map,
     _provider: 'mapbox',
     _whenReady(fn) { if (ready) fn(); else queue.push(fn); },
+    getCenter() { const c = map.getCenter(); return { lat: c.lat, lng: c.lng }; },
+    getZoom() { return map.getZoom(); },
     setView([lat, lng], z) {
       map.jumpTo({ center: [lng, lat], ...(z ? { zoom: mbZoom(z) } : {}) });
     },
@@ -867,7 +873,7 @@ function emojiMarker(map, lat, lng, emoji, title = '') {
     // mesmo visual dos marcadores do Leaflet: o emoji num elemento HTML
     const el = document.createElement('div');
     el.className = 'marker-moto';
-    el.textContent = emoji;
+    if (String(emoji).startsWith('<')) el.innerHTML = emoji; else el.textContent = emoji;
     if (title) el.title = title;
     const marker = new window.mapboxgl.Marker({ element: el, anchor: 'center' })
       .setLngLat([lng, lat]).addTo(map._mapbox);
@@ -950,6 +956,105 @@ function accuracyCircle(map, lat, lng, radius) {
   return L.circle([lat, lng], {
     radius, color: '#2563eb', weight: 1, fillOpacity: .08,
   }).addTo(map);
+}
+
+
+/* ---------- marcadores da VAIRO (iguais nos três provedores de mapa) ---------- */
+const PIN_SVG = color => `<span class="vpin" aria-hidden="true"><svg viewBox="0 0 30 40"><path d="M15 39C15 39 2 24.5 2 14.5A13 13 0 0 1 28 14.5C28 24.5 15 39 15 39Z" fill="${color}" stroke="#fff" stroke-width="2.5"/><circle cx="15" cy="14.5" r="5" fill="#fff"/></svg></span>`;
+const MARK = {
+  origin: PIN_SVG('#16a34a'),           // verde: embarque
+  dest: PIN_SVG('#dc2626'),             // vermelho: destino
+  me: '<span class="vdot" aria-hidden="true"></span>',   // você (azul)
+  passenger: '<span class="vdot pax" aria-hidden="true"></span>',
+  moto: '<span class="vmoto" aria-hidden="true">🏍️</span>',
+};
+
+/** Move um marcador até a nova posição em ~0,9 s (sem "saltos" no mapa). */
+function moveMarkerSmooth(marker, lat, lng, ms = 900) {
+  if (!marker) return;
+  const from = marker._vpos;
+  marker._vpos = { lat, lng };
+  cancelAnimationFrame(marker._vanim);
+  if (!from || document.hidden || haversineM2(from.lat, from.lng, lat, lng) > 800) { marker.setLatLng([lat, lng]); return; }
+  const t0 = performance.now();
+  const step = now => {
+    const k = Math.min(1, (now - t0) / ms), e = k < .5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2;
+    marker.setLatLng([from.lat + (lat - from.lat) * e, from.lng + (lng - from.lng) * e]);
+    if (k < 1) marker._vanim = requestAnimationFrame(step);
+  };
+  marker._vanim = requestAnimationFrame(step);
+}
+function placeMarker(map, lat, lng, html, title) {
+  const m = emojiMarker(map, lat, lng, html, title);
+  if (m) m._vpos = { lat, lng };
+  return m;
+}
+function haversineM2(lat1, lng1, lat2, lng2) {
+  const R = 6371000, r = d => d * Math.PI / 180;
+  const a = Math.sin(r(lat2 - lat1) / 2) ** 2 + Math.cos(r(lat1)) * Math.cos(r(lat2)) * Math.sin(r(lng2 - lng1) / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+/* ---------- permissão de localização (consentimento) ---------- */
+/** 'granted' | 'denied' | 'prompt' | 'unsupported' */
+async function locationPermission() {
+  if (!navigator.geolocation) return 'unsupported';
+  try {
+    const st = await navigator.permissions?.query({ name: 'geolocation' });
+    if (st) return st.state;
+  } catch { }
+  return 'prompt';
+}
+const LOC_TEXTS = {
+  passenger: {
+    title: '📍 Usar sua localização?',
+    text: 'Permita o acesso à sua localização para encontrar seu ponto de embarque com maior precisão e acompanhar seu motorista em tempo real.',
+    yes: 'Permitir localização', no: 'Continuar sem localização',
+  },
+  driver: {
+    title: '📍 Ativar sua localização',
+    text: 'Ative sua localização para receber corridas próximas, facilitar o encontro com passageiros e compartilhar sua posição durante as viagens.',
+    yes: 'Ativar localização', no: 'Agora não',
+  },
+};
+/**
+ * Explica antes de o navegador pedir. "Não" fica lembrado (não pergunta de
+ * novo sozinho; a pessoa pode ativar depois pelo botão de localização).
+ * Resolve true quando a pessoa aceita (o pedido do sistema vem em seguida).
+ */
+function askLocationConsent(role, { force = false } = {}) {
+  const key = `vairo_loc_choice_${role}`;
+  if (!force && localStorage.getItem(key) === 'no') return Promise.resolve(false);
+  const t = LOC_TEXTS[role];
+  return new Promise(resolve => {
+    let done = false;
+    const m = openModal(`<h3>${t.title}</h3>
+      <p class="muted mb">${t.text}</p>
+      <p class="muted small mb">Sua localização só é compartilhada com o ${role === 'driver' ? 'passageiro' : 'mototaxista'} da sua corrida, enquanto ela acontece.
+        <a href="/privacidade" target="_blank" rel="noopener">Política de Privacidade</a></p>
+      <button class="btn btn-primary" type="button" data-yes>${t.yes}</button>
+      <button class="btn btn-outline mt" type="button" data-no>${t.no}</button>`,
+      { onClose: () => { if (!done) { done = true; localStorage.setItem(key, 'no'); resolve(false); } } });
+    $('[data-yes]', m).onclick = () => { done = true; localStorage.removeItem(key); m.close(); resolve(true); };
+    $('[data-no]', m).onclick = () => { done = true; localStorage.setItem(key, 'no'); m.close(); resolve(false); };
+  });
+}
+/** Localização bloqueada: ensina a liberar (o site não pode pedir de novo). */
+function showLocationHelp() {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  openModal(`<h3>📍 Localização bloqueada</h3>
+    <p class="muted mb">O navegador está bloqueando a localização para este site. Para liberar:</p>
+    ${ios ? `<ol class="small">
+      <li>Abra <b>Ajustes → Privacidade e Segurança → Serviços de Localização</b> e ative.</li>
+      <li>Em <b>Ajustes → Safari → Localização</b> (ou no app instalado), escolha <b>Perguntar</b> ou <b>Permitir</b>.</li>
+      <li>Volte ao app e toque de novo no botão de localização.</li></ol>`
+    : `<ol class="small">
+      <li>Confira se a <b>Localização</b> do celular está ligada (barra de atalhos do Android).</li>
+      <li>No Chrome, toque no <b>cadeado</b> ao lado do endereço → <b>Permissões</b> → <b>Localização</b> → <b>Permitir</b>.
+        No app instalado: segure o ícone → <b>Informações do app</b> → <b>Permissões</b> → <b>Localização</b>.</li>
+      <li>Volte ao app e toque de novo no botão de localização.</li></ol>`}
+    <p class="muted small mt">Sem localização você ainda pode digitar o endereço ou marcar o ponto no mapa.</p>
+    <button class="btn btn-outline mt" type="button" data-ok>Entendi</button>`).querySelector('[data-ok]').onclick = e => e.target.closest('.modal-backdrop').close();
 }
 
 /* ---------- geolocalização ---------- */

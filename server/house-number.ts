@@ -21,6 +21,7 @@
 import { getCredential, getSetting, getSettingNum } from './db.ts';
 import { haversineM } from './util.ts';
 import { cacheGet, cacheSet, mapboxEnabled, mapboxAddress } from './mapbox.ts';
+import { googleAllowed, countGoogle } from './geo-usage.ts';
 
 const GOOGLE_GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json';
 const GOOGLE_CACHE_KIND = 'numero_google';
@@ -71,6 +72,9 @@ export async function googleAddress(street: string, number: number):
   const km = Math.min(50, getSettingNum('coverage_radius_km'));
   const dLat = km / 111.32, dLng = km / (111.32 * Math.cos(cLat * Math.PI / 180));
 
+  // teto mensal da cota grátis (Geocoding): passou, fica sem o Google até o mês virar
+  if (!googleAllowed('geocode')) return null;
+  countGoogle('geocode');
   const url = new URL(GOOGLE_GEOCODE_URL);
   url.searchParams.set('address', `${street}, ${number}, ${city}${uf ? ` - ${uf}` : ''}, Brasil`);
   url.searchParams.set('components', 'country:BR');

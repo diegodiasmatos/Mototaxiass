@@ -23,6 +23,7 @@
  */
 import { getCredential, getSetting, getSettingNum } from './db.ts';
 import { cacheGet, cacheSet } from './mapbox.ts';
+import { googleAllowed, countGoogle } from './geo-usage.ts';
 
 const ROUTES_URL = 'https://routes.googleapis.com/directions/v2:computeRoutes';
 const PLACES_AUTOCOMPLETE_URL = 'https://places.googleapis.com/v1/places:autocomplete';
@@ -164,12 +165,16 @@ export async function googleRoute(from: LatLng, to: LatLng): Promise<GoogleRoute
   const parts = [from.lat.toFixed(5), from.lng.toFixed(5), to.lat.toFixed(5), to.lng.toFixed(5)];
   const cached = cacheGet<GoogleRoute>(ROUTE_CACHE_KIND, parts);
   if (cached) return cached;
+  // teto mensal: sem cota grátis, a rota sai pelo Mapbox/OSRM
+  if (!googleAllowed('routes')) return null;
+  countGoogle('routes');
 
   let result: GoogleRoute | null = null;
   try {
     result = await computeRoute(from, to, 'TWO_WHEELER', key);
   } catch (e: any) {
     if (e?.status !== 400) throw e;
+    countGoogle('routes');
     const drive = await computeRoute(from, to, 'DRIVE', key);
     if (drive) result = { ...drive, fellBackToDrive: true };
   }
@@ -207,6 +212,8 @@ export async function googleAutocomplete(input: string, sessionToken?: string,
   timeoutMs = 2500): Promise<GooglePrediction[] | null> {
   const key = serverKey();
   if (!key) return null;
+  if (!googleAllowed('autocomplete')) return null;
+  countGoogle('autocomplete');
 
   const cLat = getSettingNum('center_lat'), cLng = getSettingNum('center_lng');
   const radius = Math.min(50000, Math.max(1000, getSettingNum('coverage_radius_km') * 1000));
@@ -251,6 +258,8 @@ export async function googlePlaceDetails(placeId: string, sessionToken?: string)
   Promise<GooglePlace | null> {
   const key = serverKey();
   if (!key) return null;
+  if (!googleAllowed('details')) return null;
+  countGoogle('details');
 
   const url = new URL(`${PLACES_DETAILS_URL}/${encodeURIComponent(placeId)}`);
   url.searchParams.set('languageCode', 'pt-BR');
@@ -280,6 +289,8 @@ export async function googleReverse(lat: number, lng: number):
   Promise<{ text: string; exact: boolean } | null> {
   const key = serverKey();
   if (!key) return null;
+  if (!googleAllowed('geocode')) return null;
+  countGoogle('geocode');
 
   const url = new URL(GEOCODE_URL);
   url.searchParams.set('latlng', `${lat},${lng}`);

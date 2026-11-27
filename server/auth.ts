@@ -202,7 +202,9 @@ export const authRoutes: Route[] = [
     const forceOsm = getSetting('maps_provider') === 'osm';
     const tk = forceOsm ? null : publicToken();
     // Google primeiro quando há chave; o Mapbox segue junto como reserva
-    const gk = googleVisualEnabled() ? browserKey() : null;
+    // teto mensal de carregamentos do mapa do Google: passou, o mapa sai no OpenStreetMap
+    const { googleAllowed } = await import('./geo-usage.ts');
+    const gk = googleVisualEnabled() && googleAllowed('maploads') ? browserKey() : null;
     json(res, 200, {
       city_name: getSetting('city_name'),
       center: { lat: Number(getSetting('center_lat')), lng: Number(getSetting('center_lng')) },

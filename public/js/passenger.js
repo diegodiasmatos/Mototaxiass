@@ -195,6 +195,7 @@ async function enterApp() {
   $('#greeting').textContent = S.config.welcome_message;
   fillProfile();
   refreshPushSubscription();
+  initPassengerLocation();
 
   connectSSE({
     notification: n => { toast(n.title); browserNotify(n.title, n.body || ''); bumpBadge(); },
@@ -207,7 +208,6 @@ async function enterApp() {
   await refreshActiveRide();
   if (!S.activeRide) showScreen('screen-home');
   initHomeMap();
-  startGpsWatch();
   refreshStats();
   clearInterval(S.statsTimer);
   S.statsTimer = setInterval(refreshStats, 15000);
@@ -268,9 +268,12 @@ function startGpsWatch() {
   S.gps.watchId = navigator.geolocation.watchPosition(
     pos => onGpsFix(pos),
     err => {
-      setGpsState('off', err.code === 1
-        ? 'Permissão de localização negada'
-        : 'Sem sinal de GPS no momento');
+      if (err.code === 1) {
+        navigator.geolocation.clearWatch(S.gps.watchId); S.gps.watchId = null;
+        setGpsState('off', 'Localização bloqueada — toque para ver como liberar');
+      } else {
+        setGpsState('off', err.code === 3 ? 'GPS sem resposta — procurando sinal…' : 'Sem sinal de GPS no momento');
+      }
     },
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 });
 }
@@ -286,16 +289,58 @@ function onGpsFix(pos) {
 
   drawMeOnMaps(lat, lng, accuracy);
 
-  // durante a corrida, compartilha a posição com o mototaxista
-  if (S.activeRide && ['requested', 'accepted', 'in_progress'].includes(S.activeRide.status)) {
-    api(`/api/rides/${S.activeRide.id}/location`, {
-      method: 'POST', body: { lat, lng, accuracy_m: accuracy },
-    }).catch(() => { });
-  }
+  // durante a corrida, compartilha a posição SÓ com o mototaxista dela
+  shareMyLocation(lat, lng, accuracy);
+  updateDriverDistance();
 
   // avisa se o passageiro se afastou do ponto de embarque escolhido
   if (accuracy <= maxAcc) checkPickupDrift(lat, lng, prev);
 }
+
+/**
+ * Envia a posição ao mototaxista da corrida, de forma econômica: no máximo a
+ * cada 4 s, e parado (menos de 10 m) só a cada 30 s. Antes do aceite e depois
+ * do fim da corrida nada é enviado.
+ */
+function shareMyLocation(lat, lng, accuracy) {
+  const r = S.activeRide;
+  if (!r || !r.driver || !['accepted', 'in_progress'].includes(r.status)) return;
+  const t = Date.now(), last = S.gps.sent;
+  if (last && t - last.at < 4000) return;
+  if (last && haversineClient(lat, lng, last.lat, last.lng) < 10 && t - last.at < 30000) return;
+  S.gps.sent = { lat, lng, at: t };
+  api(`/api/rides/${r.id}/location`, { method: 'POST', body: { lat, lng, accuracy_m: accuracy } }).catch(() => { });
+}
+
+/**
+ * Localização com consentimento: explica antes de o navegador pedir, respeita
+ * o "não" (não pergunta de novo sozinho) e, bloqueada, ensina a liberar.
+ */
+async function initPassengerLocation() {
+  const st = await locationPermission();
+  if (st === 'unsupported') { setGpsState('off', 'GPS indisponível neste navegador'); return; }
+  if (st === 'granted') { startGpsWatch(); return; }
+  if (st === 'denied') { setGpsState('off', 'Localização bloqueada — toque para ver como liberar'); return; }
+  if (localStorage.getItem('vairo_loc_choice_passenger') === 'no') {
+    setGpsState('off', 'Localização desligada — toque para ativar'); return;
+  }
+  if (await askLocationConsent('passenger')) startGpsWatch();
+  else setGpsState('off', 'Localização desligada — toque para ativar');
+}
+/** Pedido feito pela própria pessoa (botão): pergunta de novo, mesmo após "não". */
+async function requestLocationByUser() {
+  const st = await locationPermission();
+  if (st === 'denied' || st === 'unsupported') { showLocationHelp(); return false; }
+  if (st === 'prompt' && !await askLocationConsent('passenger', { force: true })) return false;
+  startGpsWatch();
+  return true;
+}
+
+// tocar no indicador de GPS desligado/bloqueado: ativa ou ensina a liberar
+document.addEventListener('click', e => {
+  const chip = e.target.closest?.('.gps-chip');
+  if (chip && S.user && S.gps.state === 'off') requestLocationByUser();
+});
 
 function setGpsState(state, label) {
   S.gps.state = state;
@@ -312,10 +357,10 @@ function drawMeOnMaps(lat, lng, accuracy) {
   for (const map of [S.maps.home, S.maps.ride]) {
     if (!map) continue;
     if (!map._meMarker) {
-      map._meMarker = emojiMarker(map, lat, lng, '🔵', 'Você');
+      map._meMarker = placeMarker(map, lat, lng, MARK.me, 'Você');
       map._accCircle = accuracyCircle(map, lat, lng, accuracy);
     } else {
-      map._meMarker.setLatLng([lat, lng]);
+      moveMarkerSmooth(map._meMarker, lat, lng);
       map._accCircle.setLatLng([lat, lng]).setRadius(accuracy);
     }
   }
@@ -375,6 +420,7 @@ async function showMoveAlert(lat, lng, dist) {
 }
 
 function centerOnMe(map) {
+  if (S.gps.watchId == null) { requestLocationByUser(); return; }
   if (S.gps.lat == null) { toast('Ainda estamos obtendo sua localização.', 'err'); return; }
   map?.setView([S.gps.lat, S.gps.lng], 16);
 }
@@ -417,10 +463,64 @@ function addMapTools(elId, map, allowPick) {
   if (allowPick) $('[data-pick]', tools).onclick = () => startMapPick(map, host);
 }
 
+/**
+ * Ajuste fino do ponto, como nos apps de mobilidade: o pino fica fixo no
+ * centro e a pessoa arrasta o mapa até o lugar exato (ou toca nele). O
+ * endereço só é consultado ao confirmar (uma consulta, não uma por movimento).
+ */
+function startAdjust(which, start) {
+  initHomeMap();
+  const map = S.maps.home, host = document.getElementById('map-home');
+  if (!map || !map.getCenter || S.pickingOnMap) return;
+  S.pickingOnMap = which;
+  const c = start || (which === 'origin' ? S.origin : S.dest) || (S.gps.lat != null ? { lat: S.gps.lat, lng: S.gps.lng } : S.config.center);
+  map.setView([c.lat, c.lng], 17);
+  host.classList.add('adjusting');
+  host.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  homePins[which]?.remove(); delete homePins[which];
+  const pin = document.createElement('div');
+  pin.className = 'center-pin';
+  pin.innerHTML = (which === 'origin' ? MARK.origin : MARK.dest).replace('class="vpin"', 'class=""');
+  const hint = document.createElement('div');
+  hint.className = 'map-hint';
+  hint.textContent = which === 'origin' ? 'Arraste o mapa até o ponto exato do EMBARQUE' : 'Arraste o mapa até o DESTINO';
+  const bar = document.createElement('div');
+  bar.className = 'adjust-bar';
+  bar.innerHTML = `<button class="btn btn-outline btn-sm" type="button" data-cancel>Cancelar</button>
+    <button class="btn btn-primary btn-sm" type="button" data-ok>${which === 'origin' ? 'Confirmar embarque aqui' : 'Confirmar destino aqui'}</button>`;
+  host.append(pin, hint, bar);
+  const onTap = e => map.setView([e.latlng.lat, e.latlng.lng]);
+  map.on('click', onTap);
+  const end = () => {
+    map.off('click', onTap);
+    pin.remove(); hint.remove(); bar.remove();
+    host.classList.remove('adjusting');
+    S.pickingOnMap = null;
+  };
+  $('[data-cancel]', bar).onclick = () => {
+    end();
+    const prev = which === 'origin' ? S.origin : S.dest;
+    if (prev) placeHomePin(prev, which);
+  };
+  $('[data-ok]', bar).onclick = () => withLoading($('[data-ok]', bar), async () => {
+    const { lat, lng } = map.getCenter();
+    const rev = await api(`/api/geo/reverse?lat=${lat}&lng=${lng}`).catch(() => null);
+    if (rev && !rev.in_coverage) throw new Error('Esse ponto está fora da área de atendimento.');
+    const text = rev?.text || `Ponto no mapa (${lat.toFixed(5)}, ${lng.toFixed(5)})`;
+    const point = { lat, lng, text };
+    end();
+    if (which === 'origin') { S.origin = point; S.originConfirmed = true; $('#in-origin').value = text; }
+    else { S.dest = point; S.destConfirmed = true; $('#in-dest').value = text; }
+    placeHomePin(point, which);
+    toast(`${which === 'origin' ? 'Embarque' : 'Destino'} definido${rev?.exact ? '' : ' (endereço aproximado — o ponto no mapa é o que vale)'}.`, 'ok');
+  });
+}
+
 /** Seleção manual do ponto tocando no mapa (pedido comum em bairros sem número). */
 function startMapPick(map, host) {
   if (S.pickingOnMap) return;
   const which = S.origin && !S.dest ? 'dest' : 'origin';
+  if (map.getCenter) { startAdjust(which); return; }
   const hint = document.createElement('div');
   hint.className = 'map-hint';
   hint.textContent = which === 'origin'
@@ -522,11 +622,14 @@ function bindHome() {
     placeHomePin(p, which);
   };
   setupAutocomplete($('#in-origin'), $('#ac-origin'),
-    pick('origin'), () => { S.originConfirmed = false; });
+    pick('origin'), () => { S.originConfirmed = false; previewRoute(); });
   setupAutocomplete($('#in-dest'), $('#ac-dest'),
-    pick('dest'), () => { S.destConfirmed = false; });
+    pick('dest'), () => { S.destConfirmed = false; previewRoute(); });
 
+  $('#btn-adjust-origin').onclick = () => startAdjust('origin');
+  $('#btn-adjust-dest').onclick = () => startAdjust('dest');
   $('#btn-mylocation').onclick = () => withLoading($('#btn-mylocation'), async () => {
+    if (S.gps.watchId == null && !await requestLocationByUser()) return;
     const pos = S.gps.lat != null && Date.now() - S.gps.at < 30000
       ? { lat: S.gps.lat, lng: S.gps.lng }
       : await getPosition();
@@ -547,7 +650,10 @@ function bindHome() {
     if (!S.dest || !S.destConfirmed) {
       throw new Error('Escolha o destino na lista de sugestões ou marque no mapa.');
     }
-    const r = await api('/api/quotes', { method: 'POST', body: { origin: S.origin, dest: S.dest } });
+    const fresh = S.preview && S.preview.key === pointsKey() && Date.now() - S.preview.at < 7 * 60_000;
+    const r = fresh ? S.preview.r : await api('/api/quotes', { method: 'POST', body: { origin: S.origin, dest: S.dest } });
+    // a prévia pode ser de minutos atrás: a quantidade de mototaxistas é a de agora
+    if (fresh) r.online_drivers = (await api('/api/public/stats').catch(() => null))?.online_drivers ?? r.online_drivers;
     S.quotes = r.quotes; S.quoteRoute = r.route; S.selectedQuote = null;
     S.payMethods = r.payment_methods; S.testMode = r.test_mode;
     renderQuotes(r);
@@ -559,8 +665,49 @@ const homePins = {};
 function placeHomePin(p, kind) {
   if (!S.maps.home) return;
   homePins[kind]?.remove();
-  homePins[kind] = emojiMarker(S.maps.home, p.lat, p.lng, kind === 'origin' ? '📍' : '🏁');
-  S.maps.home.setView([p.lat, p.lng], 15);
+  homePins[kind] = placeMarker(S.maps.home, p.lat, p.lng, kind === 'origin' ? MARK.origin : MARK.dest,
+    kind === 'origin' ? 'Embarque' : 'Destino');
+  if (!(S.origin && S.dest)) S.maps.home.setView([p.lat, p.lng], 15);
+  previewRoute();
+}
+
+const pointsKey = () => S.origin && S.dest
+  ? `${S.origin.lat.toFixed(6)},${S.origin.lng.toFixed(6)}|${S.dest.lat.toFixed(6)},${S.dest.lng.toFixed(6)}` : '';
+let _previewSeq = 0, _previewLine = null;
+
+/**
+ * Com embarque e destino escolhidos, mostra o trajeto POR RUAS no mapa, com
+ * distância e tempo. Usa a mesma cotação que o botão "Ver preços" abre (uma
+ * chamada só). Sem serviço de rotas, avisa que a distância é estimada.
+ */
+async function previewRoute() {
+  const box = $('#route-info');
+  if (!box) return;
+  const ready = S.origin && S.dest && S.originConfirmed && S.destConfirmed;
+  if (!ready) { box.hidden = true; _previewLine?.remove(); _previewLine = null; return; }
+  const key = pointsKey();
+  if (S.preview?.key === key && Date.now() - S.preview.at < 7 * 60_000) return;
+  const seq = ++_previewSeq;
+  box.hidden = false;
+  box.innerHTML = '<span class="chip soft">🛣️ Calculando o trajeto…</span>';
+  try {
+    const r = await api('/api/quotes', { method: 'POST', body: { origin: S.origin, dest: S.dest } });
+    if (seq !== _previewSeq || key !== pointsKey()) return;
+    S.preview = { key, at: Date.now(), r };
+    const q = r.quotes[0];
+    _previewLine?.remove();
+    _previewLine = S.maps.home && r.route.geometry?.length > 1 ? drawRoute(S.maps.home, r.route.geometry) : null;
+    if (_previewLine) S.maps.home.fitBounds(_previewLine.getBounds(), { padding: [40, 40] });
+    box.innerHTML = r.route.estimated
+      ? `<span class="chip soft">≈ ${fmt.dist(q.distance_m)} · ~${fmt.dur(q.duration_s)}</span>
+         <span class="warn">⚠️ Serviço de rotas indisponível agora: distância estimada.</span>`
+      : `<span class="chip yellow">🛣️ ${fmt.dist(q.distance_m)} por ruas</span>
+         <span class="chip soft">⏱️ ~${fmt.dur(q.duration_s)}</span>
+         <span class="chip soft">a partir de ${fmt.money(Math.min(...r.quotes.map(x => x.price_cents)))}</span>`;
+  } catch (e) {
+    if (seq !== _previewSeq) return;
+    box.innerHTML = `<span class="warn">⚠️ Não foi possível calcular o trajeto agora (${escapeHtml(e.message)}).</span>`;
+  }
 }
 
 /**
@@ -580,7 +727,7 @@ function setupAutocomplete(input, list, onPick, onEdit) {
 
   /** Desenha os resultados (busca ou sugestões) e trata a escolha. */
   const render = (results, sess, groups) => {
-    const KIND = { bairro: 'Bairro', local: 'Referência', rua: 'Rua', endereco: 'Endereço', google: 'Google Maps', fav: 'Favorito' };
+    const KIND = { bairro: 'Bairro', local: 'Referência', rua: 'Rua', endereco: 'Endereço', google: 'Google Maps', fav: 'Favorito', recente: 'Recente' };
     let html = '';
     results.forEach((r, i) => {
       if (groups?.[i]) html += `<div class="ac-head">${escapeHtml(groups[i])}</div>`;
@@ -611,6 +758,11 @@ function setupAutocomplete(input, list, onPick, onEdit) {
     const items = [], groups = {};
     const add = (title, arr) => { if (!arr.length) return; groups[items.length] = title; items.push(...arr); };
     add('⭐ Seus favoritos', favs);
+    if (input.id === 'in-dest') {
+      if (!S.recent) S.recent = (await api('/api/geo/recent').catch(() => ({ recent: [] }))).recent;
+      add('🕘 Destinos recentes', S.recent.filter(r => !favs.some(f => f.text === r.text))
+        .map(r => ({ ...r, in_coverage: true, kind: 'recente' })));
+    }
     add('📍 Pontos de referência', suggestions.referencias || []);
     add('🏘️ Bairros', suggestions.bairros || []);
     if (!items.length) return;
@@ -630,23 +782,45 @@ function setupAutocomplete(input, list, onPick, onEdit) {
     list.innerHTML = '<button type="button" disabled>Buscando…</button>';
     list.hidden = false;
     // espera o usuário parar de digitar: menos chamadas, menos custo
-    timer = setTimeout(async () => {
-      try {
-        const { results } = await api(
-          `/api/geo/search?q=${encodeURIComponent(q)}&session=${encodeURIComponent(sess)}`);
-        if (q !== lastQuery) return;          // a pessoa já digitou outra coisa
-        if (!results.length) {
-          list.innerHTML = `<div class="ac-empty">
-            <b>Não encontramos "${escapeHtml(q)}".</b><br>
-            Confira a grafia, tente o nome da rua com o bairro (ex.: "Rua Paraná, Centro")
-            ou um ponto conhecido perto. Se não achar, toque em 📌 e marque o lugar no mapa.</div>`;
-          return;
-        }
+    timer = setTimeout(() => runSearch(q, sess, false), 450);
+  });
+
+  /**
+   * Busca. A comum usa a base da cidade (e o Google/Mapbox, se configurados).
+   * O OpenStreetMap público (Nominatim) só entra quando a pessoa pede — Enter
+   * ou "Buscar no OpenStreetMap" —, como manda a política de uso dele.
+   */
+  async function runSearch(q, sess, deep) {
+    if (deep) { list.innerHTML = '<button type="button" disabled>Buscando no OpenStreetMap…</button>'; list.hidden = false; }
+    try {
+      const { results } = await api(`/api/geo/search?q=${encodeURIComponent(q)}`
+        + `&session=${encodeURIComponent(sess || '')}${deep ? '&deep=1' : ''}`);
+      if (q !== lastQuery) return;          // a pessoa já digitou outra coisa
+      const more = deep ? '' : `<button type="button" class="ac-deep" data-deep>🔎 Não achou? Buscar no OpenStreetMap</button>`;
+      if (!results.length) {
+        list.innerHTML = `<div class="ac-empty">
+          <b>Não encontramos "${escapeHtml(q)}".</b><br>
+          Confira a grafia, tente o nome da rua com o bairro (ex.: "Rua Paraná, Centro")
+          ou um ponto conhecido perto. Se não achar, use 📌 e marque o lugar no mapa.</div>${more}`;
+      } else {
         render(results, sess);
-      } catch (e) {
-        list.innerHTML = `<button type="button" disabled>${escapeHtml(e.message)}</button>`;
+        if (more) list.insertAdjacentHTML('beforeend', more);
       }
-    }, 450);
+      list.hidden = false;
+      const d = list.querySelector('[data-deep]');
+      if (d) d.onclick = () => runSearch(q, sess, true);
+    } catch (e) {
+      list.innerHTML = `<button type="button" disabled>${escapeHtml(e.message)}</button>`;
+    }
+  }
+  input.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const q = input.value.trim();
+    if (q.length < 2) return;
+    clearTimeout(timer);
+    lastQuery = q;
+    runSearch(q, session, true);
   });
 
   function bindPick(results, sess) {
@@ -732,9 +906,11 @@ function renderQuotes(r) {
     estimativa: '<span class="pill yellow">distância estimada</span>',
   };
   const procedencia = PROC[r.route.mode] || '';
-  const aviso = r.route.mode_fallback
-    ? '<br><span class="muted small">⚠️ Sem rota de motocicleta para este trajeto; usamos a rota de carro.</span>'
-    : '';
+  const aviso = r.route.estimated
+    ? '<br><span class="muted small warn-text">⚠️ O serviço de rotas está indisponível agora: a distância e o tempo são estimados.</span>'
+    : r.route.mode_fallback
+      ? '<br><span class="muted small">⚠️ Sem rota de motocicleta para este trajeto; usamos a rota de carro.</span>'
+      : '';
 
   $('#quote-summary').innerHTML =
     `📍 ${escapeHtml(S.origin.text)}<br>🏁 ${escapeHtml(S.dest.text)}<br>` +
@@ -796,8 +972,8 @@ function renderQuotes(r) {
     S.quoteLayers.forEach(l => l.remove());
     const line = drawRoute(map, r.route.geometry);
     S.quoteLayers = [
-      emojiMarker(map, S.origin.lat, S.origin.lng, '📍'),
-      emojiMarker(map, S.dest.lat, S.dest.lng, '🏁'),
+      placeMarker(map, S.origin.lat, S.origin.lng, MARK.origin, 'Embarque'),
+      placeMarker(map, S.dest.lat, S.dest.lng, MARK.dest, 'Destino'),
       line,
     ];
     map.invalidateSize();        // a tela acabou de aparecer: mede antes de enquadrar
@@ -1206,32 +1382,39 @@ function renderRideMap() {
     if (!S.maps.ride) {
       S.maps.ride = makeMap('map-ride', { lat: r.origin.lat, lng: r.origin.lng }, 14);
       addMapTools('map-ride', S.maps.ride, false);
+      addFollowButton();
     }
     const map = S.maps.ride;
     if (!map) return;
     S.rideLayers.forEach(l => l.remove()); S.rideLayers = [];
     map.invalidateSize();        // a tela acabou de aparecer: mede antes de enquadrar
-    S.rideLayers.push(emojiMarker(map, r.origin.lat, r.origin.lng, '📍'));
-    S.rideLayers.push(emojiMarker(map, r.dest.lat, r.dest.lng, '🏁'));
+    S.rideLayers.push(placeMarker(map, r.origin.lat, r.origin.lng, MARK.origin, 'Embarque'));
+    S.rideLayers.push(placeMarker(map, r.dest.lat, r.dest.lng, MARK.dest, 'Destino'));
     if (r.route_geojson) {
       const line = drawRoute(map, r.route_geojson);
       S.rideLayers.push(line);
       map.fitBounds(line.getBounds(), { padding: [30, 30] });
     }
-    if (r.driver?.last_lat != null) {
-      S.driverMarker = emojiMarker(map, r.driver.last_lat, r.driver.last_lng, '🏍️');
+    if (r.driver?.last_lat != null && ['accepted', 'in_progress'].includes(r.status)) {
+      S.driverMarker = placeMarker(map, r.driver.last_lat, r.driver.last_lng, MARK.moto, 'Mototaxista');
       S.rideLayers.push(S.driverMarker);
-    } else S.driverMarker = null;
+      S.driverPos = { lat: r.driver.last_lat, lng: r.driver.last_lng, at: (r.driver.last_loc_at || 0) - (S.serverSkew || 0) };
+    } else { S.driverMarker = null; S.driverPos = null; }
+    checkDriverStale();
     if (S.gps.lat != null) drawMeOnMaps(S.gps.lat, S.gps.lng, S.gps.accuracy || 30);
   }, 80);
 }
 
 function onDriverLocation(d) {
   if (!S.activeRide || d.ride_id !== S.activeRide.id) return;
+  S.driverPos = { lat: d.lat, lng: d.lng, at: Date.now() };
   if (S.maps.ride) {
-    if (S.driverMarker) S.driverMarker.setLatLng([d.lat, d.lng]);
-    else { S.driverMarker = emojiMarker(S.maps.ride, d.lat, d.lng, '🏍️'); S.rideLayers.push(S.driverMarker); }
+    if (S.driverMarker) moveMarkerSmooth(S.driverMarker, d.lat, d.lng);
+    else { S.driverMarker = placeMarker(S.maps.ride, d.lat, d.lng, MARK.moto, 'Mototaxista'); S.rideLayers.push(S.driverMarker); }
+    if (S.followDriver) S.maps.ride.setView([d.lat, d.lng]);
   }
+  checkDriverStale();
+  updateDriverDistance();
   if (d.eta_s != null && S.activeRide.status !== 'requested') {
     const sub = $('#ride-banner .ssub');
     if (sub && !S.activeRide.arrived_at) {
@@ -1241,6 +1424,52 @@ function onDriverLocation(d) {
         : `Chegada em aproximadamente ${fmt.dur(d.eta_s)}${dist}`;
     }
   }
+}
+
+/** Botão "seguir o mototaxista": o mapa acompanha a moto a cada atualização. */
+function addFollowButton() {
+  const tools = document.querySelector('#map-ride .map-tools');
+  if (!tools || tools.querySelector('[data-follow]')) return;
+  const b = document.createElement('button');
+  b.type = 'button'; b.dataset.follow = '1'; b.textContent = '🏍️';
+  b.title = 'Acompanhar o mototaxista'; b.setAttribute('aria-label', 'Acompanhar o mototaxista no mapa');
+  b.setAttribute('aria-pressed', 'false');
+  b.onclick = () => {
+    S.followDriver = !S.followDriver;
+    b.classList.toggle('on', S.followDriver);
+    b.setAttribute('aria-pressed', String(S.followDriver));
+    if (S.followDriver && S.driverPos) S.maps.ride?.setView([S.driverPos.lat, S.driverPos.lng], 16);
+    else if (S.followDriver) toast('Ainda sem a posição do mototaxista.');
+  };
+  tools.prepend(b);
+}
+
+/** Posição velha nunca aparece como atual: marca e avisa depois de 45 s sem notícia. */
+function checkDriverStale() {
+  const el = S.driverMarker?._google?.div || S.driverMarker?._mapbox?.getElement?.() || S.driverMarker?.getElement?.();
+  const age = S.driverPos ? Date.now() - S.driverPos.at : Infinity;
+  const stale = !!S.driverPos && age > 45_000;
+  el?.querySelector?.('.vmoto')?.classList.toggle('stale', stale);
+  const chip = $('#driver-loc-chip');
+  if (chip) {
+    const r = S.activeRide;
+    const show = r && ['accepted', 'in_progress'].includes(r.status) && r.driver;
+    chip.hidden = !show;
+    if (show) chip.textContent = !S.driverPos ? '📡 Aguardando a localização do mototaxista…'
+      : stale ? `⚠️ Localização do mototaxista desatualizada (há ${fmt.dur(Math.round(age / 1000))})`
+        : '🟢 Localização do mototaxista ao vivo';
+  }
+}
+setInterval(() => { if (S.activeRide) checkDriverStale(); }, 10_000);
+
+/** Distância (em linha reta) entre você e o mototaxista, enquanto ele vem buscar. */
+function updateDriverDistance() {
+  const el = $('#driver-dist-chip');
+  if (!el) return;
+  const r = S.activeRide;
+  const ok = r && r.status === 'accepted' && S.driverPos && S.gps.lat != null && Date.now() - S.gps.at < 60_000;
+  el.hidden = !ok;
+  if (ok) el.textContent = `📏 Você está a ${fmt.dist(haversineClient(S.gps.lat, S.gps.lng, S.driverPos.lat, S.driverPos.lng))} do mototaxista (linha reta)`;
 }
 
 /* ---------- chat ---------- */
