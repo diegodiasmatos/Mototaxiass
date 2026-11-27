@@ -54,6 +54,8 @@ export const KINDS: Record<string, KindInfo> = {
   payout: K('financeiro', 'normal', { push: { title: '💸 Repasse realizado', body: 'Toque para ver o valor.' } }),
   debt: K('financeiro', 'normal', { push: { title: 'Comissão quitada', body: 'Toque para ver o saldo.' } }),
   mp_connected: K('financeiro', 'normal', { bodySafe: true }),
+  withdrawal_approved: K('financeiro', 'normal', { push: { title: 'Saque aprovado', body: 'Toque para ver.' } }),
+  withdrawal_rejected: K('financeiro', 'alta', { push: { title: 'Saque recusado', body: 'Toque para ver o motivo.' } }),
 
   // ---------- cadastro do motorista ----------
   application: K('cadastro', 'normal', { bodySafe: true }),
@@ -81,6 +83,7 @@ export const KINDS: Record<string, KindInfo> = {
   low_rating: K('admin_ocorrencias', 'normal', { push: { title: 'Avaliação baixa registrada' } }),
   ride_cancelled_admin: K('admin_ocorrencias', 'baixa'),
   payment_failed_admin: K('admin_pagamentos', 'alta', { push: { title: '⚠️ Falha em pagamento', body: 'Toque para ver a corrida.' } }),
+  withdrawal_requested: K('admin_pagamentos', 'normal', { push: { title: '💸 Novo pedido de saque', body: 'Toque para analisar.' } }),
   support: K('admin_suporte', 'normal', { push: { title: '🛟 Nova mensagem de suporte' } }),
   fraud_suspect: K('admin_seguranca', 'alta', { push: { title: '🚨 Possível fraude', body: 'Toque para analisar.' } }),
   webhook: K('admin_seguranca', 'alta', { push: { title: '⚠️ Webhook com assinatura inválida' } }),

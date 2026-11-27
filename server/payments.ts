@@ -175,34 +175,101 @@ function mapMpStatus(s: string, captured: boolean): PaymentStatus {
 
 export function ledger(kind: string, amountCents: number, opts: {
   rideId?: string; paymentId?: string; driverId?: string; description?: string; testMode?: boolean;
-} = {}): void {
+  payoutId?: string;
+} = {}): string {
+  const lid = id('ftx');
   db.prepare(`INSERT INTO financial_transactions
-    (id, ride_id, payment_id, driver_id, kind, amount_cents, description, test_mode, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(id('ftx'), opts.rideId ?? null, opts.paymentId ?? null, opts.driverId ?? null,
+    (id, ride_id, payment_id, driver_id, payout_id, kind, amount_cents, description, test_mode, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(lid, opts.rideId ?? null, opts.paymentId ?? null, opts.driverId ?? null, opts.payoutId ?? null,
       kind, Math.round(amountCents), opts.description ?? null, opts.testMode ? 1 : 0, now());
+  return lid;
+}
+
+/**
+ * Executa `fn` numa transação do banco (tudo ou nada). Chamadas aninhadas
+ * reaproveitam a transação de fora. Síncrono de propósito: nenhuma outra
+ * requisição roda no meio (Node é um processo só e o SQLite trava a escrita).
+ */
+export function tx<T>(fn: () => T): T {
+  if ((db as any).isTransaction) return fn();
+  db.exec('BEGIN IMMEDIATE');
+  try { const out = fn(); db.exec('COMMIT'); return out; }
+  catch (e) { try { db.exec('ROLLBACK'); } catch { /* já desfeita */ } throw e; }
 }
 
 export interface DriverBalance {
-  earned_cents: number;      // repasses devidos (cobrados pela plataforma)
-  paid_cents: number;        // repasses já efetuados
-  pending_cents: number;     // a receber da plataforma
+  earned_cents: number;      // crédito líquido de corridas digitais (85%), já com estornos
+  paid_cents: number;        // repassado/saques já transferidos
+  reserved_cents: number;    // reservado em saques em andamento
+  pending_cents: number;     // saldo bruto disponível (antes da comissão pendente)
   debt_cents: number;        // comissão devida por corridas em dinheiro
+  withdrawable_cents: number;// disponível para saque = saldo − comissão pendente (nunca negativo)
   auto_cents: number;        // recebido direto na conta dele (split automático)
 }
 
+/**
+ * Saldo do mototaxista, calculado SÓ a partir do livro-caixa (fonte única
+ * para a carteira dele e para o financeiro da central).
+ */
 export function driverBalance(driverId: string): DriverBalance {
-  const sum = (kind: string) => (db.prepare(
-    `SELECT COALESCE(SUM(amount_cents),0) v FROM financial_transactions
-     WHERE driver_id = ? AND kind = ?`).get(driverId, kind) as any).v as number;
-  const earned = sum('repasse_devido');
-  const paid = sum('repasse_pago');
-  const debt = sum('divida_comissao') - sum('quitacao_divida');
+  const rows = db.prepare(`SELECT kind, COALESCE(SUM(amount_cents),0) v FROM financial_transactions
+     WHERE driver_id = ? GROUP BY kind`).all(driverId) as any[];
+  const sum = (k: string) => Number(rows.find(r => r.kind === k)?.v || 0);
+  const earned = sum('repasse_devido') + sum('ajuste_repasse');        // ajuste tem sinal
+  const reservedTotal = sum('saque_reserva') - sum('saque_devolucao');  // saques do parceiro (pedidos e pagos)
+  const paidLegacy = sum('repasse_pago');                               // repasses lançados pela central
+  const paidWithdrawals = sum('saque_pago');
+  const reservedOpen = (db.prepare(`SELECT COALESCE(SUM(gross_cents),0) v FROM payouts
+     WHERE driver_id = ? AND origin = 'motorista' AND status IN ('aguardando_aprovacao','aprovado','em_processamento')`)
+    .get(driverId) as any).v as number;
+  const pending = earned - reservedTotal - paidLegacy;
+  const debt = sum('divida_comissao') - sum('quitacao_divida') + sum('quitacao_estorno');
   return {
-    earned_cents: earned, paid_cents: paid,
-    pending_cents: earned - paid, debt_cents: debt,
+    earned_cents: earned, paid_cents: paidLegacy + paidWithdrawals,
+    reserved_cents: reservedOpen, pending_cents: pending, debt_cents: debt,
+    withdrawable_cents: Math.max(0, pending - debt),
     auto_cents: sum('repasse_automatico'),
   };
+}
+
+/**
+ * Lança a corrida concluída no livro-caixa — UMA vez (idempotente):
+ *  - dinheiro: cobrança, comissão e a comissão como dívida do parceiro;
+ *  - digital: só com o pagamento CONFIRMADO pelo provedor ('pago'); se ainda
+ *    não estiver, nada entra agora e o lançamento acontece quando o provedor
+ *    confirmar (applyPaymentStatus chama esta função de novo).
+ * Devolve true se lançou agora.
+ */
+export function postRideFinancials(rideId: string): boolean {
+  return tx(() => {
+    const r = db.prepare('SELECT * FROM rides WHERE id = ?').get(rideId) as any;
+    if (!r || r.status !== 'completed' || !r.driver_id) return false;
+    const done = db.prepare(`SELECT 1 FROM financial_transactions WHERE ride_id = ?
+      AND kind IN ('repasse_devido','divida_comissao','repasse_automatico') LIMIT 1`).get(rideId);
+    if (done) return false;
+    const payment = getPaymentByRide(rideId);
+    const test = !!payment?.test_mode;
+    const commission = r.commission_cents, driverPart = r.driver_cents;
+    const base = { rideId, paymentId: payment?.id, driverId: r.driver_id, testMode: test };
+    if (r.payment_method === 'dinheiro') {
+      ledger('cobranca', r.price_cents, { ...base, description: 'Recebido em dinheiro diretamente pelo mototaxista' });
+      ledger('comissao', commission, { ...base, description: `Comissão da plataforma (${r.commission_pct}%)` });
+      ledger('divida_comissao', commission, { ...base, description: 'Comissão a descontar do próximo saque (corrida em dinheiro)' });
+      return true;
+    }
+    if (!payment || payment.status !== 'pago') return false;   // sem confirmação do provedor, nada de crédito
+    if (payment.seller_driver_id) {
+      ledger('cobranca', r.price_cents, { ...base, description: `Recebido na conta do mototaxista via ${r.payment_method} (split)` });
+      ledger('comissao', commission, { ...base, description: 'Comissão retida automaticamente pelo provedor' });
+      ledger('repasse_automatico', driverPart, { ...base, description: 'Valor creditado direto na conta do mototaxista' });
+    } else {
+      ledger('cobranca', r.price_cents, { ...base, description: `Recebido pela plataforma via ${r.payment_method}` });
+      ledger('comissao', commission, { ...base, description: `Comissão da plataforma (${r.commission_pct}%)` });
+      ledger('repasse_devido', driverPart, { ...base, description: `Ganho líquido do mototaxista (${100 - r.commission_pct}%)` });
+    }
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------
@@ -354,6 +421,8 @@ export function applyPaymentStatus(payment: PaymentRow, status: PaymentStatus,
       description: 'Tarifa do provedor de pagamento', testMode: !!payment.test_mode,
     });
   }
+  // corrida já concluída cujo pagamento só agora foi confirmado: entra na carteira
+  if (status === 'pago') postRideFinancials(payment.ride_id);
   return db.prepare('SELECT * FROM payments WHERE id = ?').get(payment.id) as any;
 }
 
@@ -401,11 +470,41 @@ export async function refundPayment(payment: PaymentRow, reason: string): Promis
     });
   }
   const updated = applyPaymentStatus(payment, 'estornado', { failure: reason });
-  ledger('estorno', payment.amount_cents, {
-    rideId: payment.ride_id, paymentId: payment.id,
-    description: reason, testMode: !!payment.test_mode,
+  tx(() => {
+    ledger('estorno', payment.amount_cents, {
+      rideId: payment.ride_id, paymentId: payment.id,
+      description: reason, testMode: !!payment.test_mode,
+    });
+    compensateRefund(payment.ride_id, payment.id, !!payment.test_mode);
   });
   return updated;
+}
+
+/**
+ * Estorno de corrida já lançada: desfaz o crédito do parceiro e a comissão
+ * com lançamentos COMPENSATÓRIOS (nada é apagado). Uma vez por corrida. Se o
+ * parceiro já sacou esse valor, o saldo fica negativo e é compensado nos
+ * próximos ganhos antes de qualquer novo saque.
+ */
+export function compensateRefund(rideId: string, paymentId: string | undefined, test: boolean): void {
+  const credit = db.prepare(`SELECT driver_id, kind, amount_cents FROM financial_transactions
+    WHERE ride_id = ? AND kind IN ('repasse_devido','repasse_automatico') LIMIT 1`).get(rideId) as any;
+  if (!credit) return;                                  // nada foi creditado (ex.: estorno antes da conclusão)
+  const already = db.prepare(`SELECT 1 FROM financial_transactions WHERE ride_id = ? AND kind = 'estorno_comissao'`).get(rideId);
+  if (already) return;
+  const r = db.prepare('SELECT commission_cents FROM rides WHERE id = ?').get(rideId) as any;
+  if (credit.kind === 'repasse_devido') {
+    ledger('ajuste_repasse', -credit.amount_cents, {
+      rideId, paymentId, driverId: credit.driver_id, testMode: test,
+      description: 'Estorno ao passageiro: ganho desta corrida desfeito',
+    });
+  }
+  ledger('estorno_comissao', r?.commission_cents || 0, {
+    rideId, paymentId, driverId: credit.driver_id, testMode: test,
+    description: credit.kind === 'repasse_automatico'
+      ? 'Estorno: comissão desfeita (valor devolvido pela conta do mototaxista no provedor)'
+      : 'Estorno: comissão da plataforma desfeita',
+  });
 }
 
 /** Consulta o provedor e sincroniza (usado por polling e pelo webhook). */

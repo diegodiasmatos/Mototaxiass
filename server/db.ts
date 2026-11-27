@@ -759,6 +759,98 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     );
     `,
   },
+  // ----------------------------------------------------------------
+  // v13 — carteira do mototaxista: saques pedidos pelo próprio parceiro,
+  // com aprovação da central. Reaproveita o livro-caixa e a tabela de
+  // repasses (nenhuma carteira paralela). Lançamentos novos:
+  //   saque_reserva / saque_devolucao  reserva e devolução do saldo do saque
+  //   saque_pago                       valor efetivamente transferido (informativo)
+  //   quitacao_estorno                 devolve a dívida descontada num saque recusado
+  //   ajuste_repasse (com sinal)       estorno de corrida já creditada
+  //   estorno_comissao                 comissão desfeita por estorno
+  // ----------------------------------------------------------------
+  {
+    version: 13,
+    fkOff: true,
+    sql: `
+    CREATE TABLE financial_transactions_v13 (
+      id          TEXT PRIMARY KEY,
+      ride_id     TEXT REFERENCES rides(id),
+      payment_id  TEXT REFERENCES payments(id),
+      driver_id   TEXT REFERENCES drivers(user_id),
+      payout_id   TEXT,
+      kind        TEXT NOT NULL
+                  CHECK (kind IN ('cobranca','comissao','repasse_devido','repasse_pago',
+                                  'repasse_automatico','estorno','taxa_provedor',
+                                  'divida_comissao','quitacao_divida',
+                                  'saque_reserva','saque_devolucao','saque_pago',
+                                  'quitacao_estorno','ajuste_repasse','estorno_comissao')),
+      amount_cents INTEGER NOT NULL,
+      description TEXT,
+      test_mode   INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL
+    );
+    INSERT INTO financial_transactions_v13
+      (id, ride_id, payment_id, driver_id, kind, amount_cents, description, test_mode, created_at)
+      SELECT id, ride_id, payment_id, driver_id, kind, amount_cents, description, test_mode, created_at
+      FROM financial_transactions;
+    DROP TABLE financial_transactions;
+    ALTER TABLE financial_transactions_v13 RENAME TO financial_transactions;
+    CREATE INDEX idx_fintx_ride ON financial_transactions(ride_id);
+    CREATE INDEX idx_fintx_driver ON financial_transactions(driver_id, kind);
+    CREATE INDEX idx_fintx_created ON financial_transactions(created_at);
+    CREATE INDEX idx_fintx_payout ON financial_transactions(payout_id);
+    -- (um crédito por corrida é garantido no código, dentro de transação: um
+    -- índice único poderia falhar em dados antigos e travar a subida)
+
+    CREATE TABLE payouts_v13 (
+      id           TEXT PRIMARY KEY,
+      driver_id    TEXT NOT NULL REFERENCES drivers(user_id),
+      origin       TEXT NOT NULL DEFAULT 'central' CHECK (origin IN ('central','motorista')),
+      amount_cents INTEGER NOT NULL,             -- líquido transferido ao parceiro
+      gross_cents  INTEGER NOT NULL,             -- reservado do saldo
+      debt_cents   INTEGER NOT NULL DEFAULT 0,   -- comissão de dinheiro descontada
+      status       TEXT NOT NULL CHECK (status IN ('aguardando_aprovacao','aprovado',
+                     'em_processamento','pago','rejeitado','cancelado')),
+      method       TEXT,
+      pix_type     TEXT,
+      pix_key_enc  TEXT,                         -- chave Pix cifrada (cópia do momento do pedido)
+      pix_holder   TEXT,
+      reference    TEXT,                         -- comprovante (ex.: identificador do Pix)
+      note         TEXT,
+      reason       TEXT,                         -- motivo de recusa/cancelamento
+      idem_key     TEXT,
+      created_by   TEXT,
+      created_at   INTEGER NOT NULL,
+      approved_at  INTEGER, approved_by TEXT,
+      processing_at INTEGER, processing_by TEXT,
+      paid_at      INTEGER, paid_by TEXT,
+      rejected_at  INTEGER, rejected_by TEXT,
+      cancelled_at INTEGER,
+      updated_at   INTEGER
+    );
+    INSERT INTO payouts_v13 (id, driver_id, origin, amount_cents, gross_cents, debt_cents, status, method,
+        reference, note, created_by, created_at, paid_at, updated_at)
+      SELECT id, driver_id, 'central', amount_cents, amount_cents, 0,
+        CASE status WHEN 'pago' THEN 'pago' WHEN 'falhou' THEN 'rejeitado' ELSE 'aprovado' END,
+        method, reference, note, created_by, created_at, paid_at, COALESCE(paid_at, created_at)
+      FROM payouts;
+    DROP TABLE payouts;
+    ALTER TABLE payouts_v13 RENAME TO payouts;
+    CREATE INDEX idx_payouts_driver ON payouts(driver_id, status);
+    CREATE INDEX idx_payouts_status ON payouts(status, created_at);
+    -- no máximo UM saque do parceiro em aberto por vez (barra pedidos simultâneos)
+    CREATE UNIQUE INDEX idx_payouts_one_open ON payouts(driver_id)
+      WHERE origin = 'motorista' AND status IN ('aguardando_aprovacao','aprovado','em_processamento');
+    CREATE UNIQUE INDEX idx_payouts_idem ON payouts(driver_id, idem_key) WHERE idem_key IS NOT NULL;
+    CREATE INDEX idx_payouts_reference ON payouts(reference);
+
+    ALTER TABLE drivers ADD COLUMN pix_type TEXT;
+    ALTER TABLE drivers ADD COLUMN pix_key_enc TEXT;
+    ALTER TABLE drivers ADD COLUMN pix_holder TEXT;
+    ALTER TABLE drivers ADD COLUMN pix_updated_at INTEGER;
+    `,
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {
@@ -810,6 +902,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   review_sla_hours: '48',
   passenger_cancel_states: 'requested,accepted',
   driver_cancel_states: 'accepted,in_progress',
+  withdrawal_interval_h: '48',     // intervalo mínimo entre saques pedidos pelo mototaxista
 };
 
 /**

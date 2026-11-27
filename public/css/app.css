@@ -950,3 +950,13 @@ details.rules li { margin-bottom: 6px; }
 .ov-card p { margin: 3px 0 0; color: var(--muted); font-size: .84rem; line-height: 1.45; }
 .ov-card a, .ov-legal a { color: var(--accent-text); font-weight: 700; }
 .ov-legal { margin-top: 14px; font-size: .82rem; color: var(--muted); }
+
+/* ---------- carteira do mototaxista ---------- */
+.wallet-hero { text-align: center; padding: 10px 0 4px; }
+.wallet-amount { font-size: 2.2rem; font-weight: 900; letter-spacing: -.03em; color: var(--accent-text); margin: 4px 0; }
+.wd-preview { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin: 10px 0; display: grid; gap: 8px; }
+.wd-preview > div { display: flex; justify-content: space-between; gap: 10px; font-size: .92rem; }
+.wd-preview .total { border-top: 1px solid var(--line); padding-top: 8px; font-size: 1.05rem; }
+.wd-preview .total b { color: var(--accent-text); }
+.stmt .mono { font-family: ui-monospace, monospace; font-size: .7rem; color: var(--muted); }
+.txt-green { color: var(--green); } .txt-red { color: var(--red); }

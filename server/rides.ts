@@ -13,7 +13,7 @@ import {
 import { notify, notifyAdmins, sseSend, sseSendMany } from './notify.ts';
 import {
   createCharge, getPaymentByRide, capturePayment, refundPayment, syncPayment,
-  isReleasable, availableMethods, isTestMode, providerName, ledger, driverBalance,
+  isReleasable, availableMethods, isTestMode, providerName, ledger, driverBalance, postRideFinancials,
   applyPaymentStatus, splitAvailable, connectedSeller, testPaymentsBlocked, type Method,
 } from './payments.ts';
 
@@ -342,59 +342,24 @@ export async function finalizeRide(rideId: string, by: string): Promise<void> {
     }
   }
 
-  // Livro-caixa: separa automaticamente comissão e valor do mototaxista.
-  if (payment?.seller_driver_id) {
-    // Split automático: o dinheiro já caiu na conta do parceiro e a comissão
-    // ficou retida pela plataforma — não há repasse manual a fazer.
-    ledger('cobranca', r.price_cents, {
-      rideId, paymentId: payment.id, driverId: r.driver_id, testMode: test,
-      description: `Recebido na conta do mototaxista via ${r.payment_method} (split)`,
-    });
-    ledger('comissao', split.commission_cents, {
-      rideId, paymentId: payment.id, driverId: r.driver_id, testMode: test,
-      description: 'Comissão retida automaticamente pelo provedor',
-    });
-    ledger('repasse_automatico', split.driver_cents, {
-      rideId, paymentId: payment.id, driverId: r.driver_id, testMode: test,
-      description: 'Valor creditado direto na conta do mototaxista',
-    });
-  } else if (r.payment_method === 'dinheiro') {
-    ledger('cobranca', r.price_cents, {
-      rideId, paymentId: payment?.id, driverId: r.driver_id, testMode: test,
-      description: 'Recebido em dinheiro diretamente pelo mototaxista',
-    });
-    ledger('comissao', split.commission_cents, {
-      rideId, paymentId: payment?.id, driverId: r.driver_id, testMode: test,
-      description: 'Comissão da plataforma',
-    });
-    ledger('divida_comissao', split.commission_cents, {
-      rideId, paymentId: payment?.id, driverId: r.driver_id, testMode: test,
-      description: 'Comissão a cobrar do mototaxista (corrida em dinheiro)',
-    });
-  } else {
-    ledger('cobranca', r.price_cents, {
-      rideId, paymentId: payment?.id, driverId: r.driver_id, testMode: test,
-      description: `Recebido pela plataforma via ${r.payment_method}`,
-    });
-    ledger('comissao', split.commission_cents, {
-      rideId, paymentId: payment?.id, driverId: r.driver_id, testMode: test,
-      description: 'Comissão da plataforma',
-    });
-    ledger('repasse_devido', split.driver_cents, {
-      rideId, paymentId: payment?.id, driverId: r.driver_id, testMode: test,
-      description: 'Valor líquido do mototaxista (aguardando repasse)',
-    });
-  }
+  // Livro-caixa: comissão (percentual gravado na corrida) e ganho do parceiro.
+  // Digital só entra com o pagamento confirmado pelo provedor; se a captura
+  // falhou, entra quando o provedor confirmar (sem crédito sem dinheiro).
+  const posted = postRideFinancials(rideId);
+  const paidNow = r.payment_method === 'dinheiro' || posted
+    || !!db.prepare(`SELECT 1 FROM financial_transactions WHERE ride_id = ? AND kind IN ('repasse_devido','repasse_automatico')`).get(rideId);
 
   notify(r.passenger_id, 'ride_completed', 'Corrida concluída!',
     { body: 'Obrigado por viajar com a VAIRO. Avalie seu motorista!', rideId });
   notify(r.driver_id, 'ride_completed', 'Corrida concluída',
     {
-      body: payment?.seller_driver_id
-        ? `R$ ${(split.driver_cents / 100).toFixed(2)} caíram direto na sua conta Mercado Pago.`
-        : r.payment_method === 'dinheiro'
-          ? `Receba R$ ${(r.price_cents / 100).toFixed(2)} em dinheiro. Comissão de R$ ${(split.commission_cents / 100).toFixed(2)} fica registrada.`
-          : `R$ ${(split.driver_cents / 100).toFixed(2)} entram no seu saldo a receber.`,
+      body: !paidNow
+        ? 'O pagamento digital ainda não foi confirmado pelo provedor; o ganho entra na carteira assim que confirmar.'
+        : payment?.seller_driver_id
+          ? `R$ ${(split.driver_cents / 100).toFixed(2)} caíram direto na sua conta Mercado Pago.`
+          : r.payment_method === 'dinheiro'
+            ? `Receba R$ ${(r.price_cents / 100).toFixed(2)} em dinheiro. A comissão de R$ ${(split.commission_cents / 100).toFixed(2)} será descontada do seu próximo saque.`
+            : `R$ ${(split.driver_cents / 100).toFixed(2)} entraram na sua carteira.`,
       rideId,
     });
   sseSend(r.passenger_id, 'ride_update', { id: rideId });
