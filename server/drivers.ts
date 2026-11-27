@@ -256,6 +256,13 @@ export const driverRoutes: Route[] = [
         remaining_m: Math.round(remaining),
         eta_s: etaSeconds(remaining),
       });
+      // perto do embarque (~400 m em linha reta): avisa o passageiro uma vez por corrida
+      if (active.status === 'accepted' && !active.arrived_at
+          && haversineM(lat, lng, active.origin_lat, active.origin_lng) <= 400
+          && (accuracy === null || accuracy <= 150)) {
+        notify(active.passenger_id, 'driver_approaching', 'Seu mototaxista está chegando',
+          { body: 'Ele está a menos de 400 m. Vá para o ponto de embarque.', rideId: active.id, eventKey: `approach:${active.id}` });
+      }
     }
     json(res, 200, {
       ok: true,
@@ -368,6 +375,9 @@ export const driverRoutes: Route[] = [
         .run(lock ? 0 : attempts, lock ? t + BOARDING_LOCK_MS : null, r.id);
       rideEvent(r.id, 'boarding_code_wrong', user!.id, `tentativa ${attempts}${lock ? ' — espera de 2 min' : ''}`);
       if (lock) {
+        notifyAdmins('fraud_suspect', 'Possível fraude no embarque', {
+          body: `Código de embarque errado ${BOARDING_MAX_ATTEMPTS} vezes seguidas na corrida ${r.id}.`, rideId: r.id,
+          url: '/admin#rides' });
         notify(r.passenger_id, 'boarding_code_wrong', 'Código de embarque digitado errado',
           { body: 'O mototaxista errou o código várias vezes. Só mostre o código quando estiver com ele.', rideId: r.id });
         notifyRideUpdate(getRide(r.id));

@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { db, getSettingNum, dbFilePath } from './db.ts';
 import { now, pruneRateLimits } from './util.ts';
+import { checkCnhExpiry } from './notify-events.ts';
 
 const DAY = 24 * 3600_000;
 const ACTIVE = `'pending_payment','requested','accepted','in_progress','awaiting_confirmation','disputed'`;
@@ -84,6 +85,7 @@ export function runMaintenance(t = now(), opts: { backup?: boolean } = {}): Main
   safe(() => { r.gps = purgeOldGps(t); }, 'GPS');
   safe(() => { r.messages = purgeOldMessages(t); }, 'mensagens');
   safe(() => { pruneRateLimits(); }, 'contadores');
+  safe(() => { checkCnhExpiry(t); }, 'validade da CNH');
   if (opts.backup !== false) safe(() => { r.backup = dailyBackupIfDue(t); }, 'cópia diária');
   if (r.backup) console.log(`[manutenção] cópia diária do banco: ${r.backup}`);
   return r;

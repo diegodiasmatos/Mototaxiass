@@ -175,7 +175,18 @@ async function enterApp() {
     passenger_location: p => onPassengerLocation(p),
   });
   await refreshDriver();
+  handleInitialNotificationLink();
 }
+
+/** Destino de uma notificação tocada (ver openNotificationLink em common.js). */
+window.vairoLinkHandler = async hash => {
+  if (hash === 'ganhos' || hash === 'corridas') {
+    if (!S.driver || S.driver.status !== 'approved') { await refreshDriver(); return; }
+    showScreen('screen-earnings'); loadEarnings(); loadDrvHistory();
+  } else if (hash === 'perfil' || hash === 'suporte') showScreen('screen-profile');
+  else if (hash === 'notificacoes') openNotifications();
+  else await refreshDriver();   // corrida, cadastro: a tela certa sai do estado atual
+};
 
 async function refreshDriver() {
   const me = await api('/api/driver/me').catch(() => ({ driver: null }));

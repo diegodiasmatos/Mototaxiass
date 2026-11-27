@@ -212,7 +212,21 @@ async function enterApp() {
   clearInterval(S.statsTimer);
   S.statsTimer = setInterval(refreshStats, 15000);
   loadFavorites();
+  handleInitialNotificationLink();
 }
+
+/** Destino de uma notificação tocada (ver openNotificationLink em common.js). */
+window.vairoLinkHandler = async hash => {
+  if (!S.user) return;
+  if (hash === 'corrida') {
+    await refreshActiveRide();
+    if (S.activeRide) { showScreen('screen-ride'); return; }
+    hash = 'corridas';
+  }
+  if (hash === 'corridas') { showScreen('screen-history'); loadHistory(); }
+  else if (hash === 'perfil' || hash === 'suporte') showScreen('screen-profile');
+  else if (hash === 'notificacoes') openNotifications();
+};
 
 async function loadPaymentMethods() {
   try {
@@ -807,7 +821,8 @@ async function requestRide(btn) {
       body: { quote_id: S.selectedQuote.id, payment_method: S.payment },
     });
     S.activeRide = r.ride;
-    enablePush();
+    if (window.Notification?.permission === 'granted') enablePush();
+    else setTimeout(() => maybeAskPushSoftly('Avisamos quando o mototaxista aceitar, estiver chegando e chegar.'), 1500);
     renderRide();
     showScreen('screen-ride');
   }).catch(e => {

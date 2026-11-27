@@ -142,6 +142,7 @@ function connectSSE(handlers) {
       }
     }
     fn(data);
+    if (event === 'notification') onLiveNotification(data);
   });
 
   for (const [event, fn] of Object.entries(handlers)) wrap(event, fn);
@@ -155,6 +156,7 @@ function connectSSE(handlers) {
         if (_seenNotifications.has(n.id)) continue;
         _seenNotifications.add(n.id);
         handlers.notification(n);
+        onLiveNotification(n);
       }
     } catch { /* tenta na próxima */ }
   });
@@ -285,7 +287,10 @@ function renderNotificationStatus(el) {
       ${d.canPush ? '<button class="btn btn-primary btn-sm" data-enable-push>Ativar notificações</button>' : ''}
       ${d.canPush ? '<button class="btn btn-outline btn-sm" data-test-push>Enviar teste</button>' : ''}
       ${!d.standalone ? '<button class="btn btn-navy btn-sm" data-install-app>📲 Instalar app</button>' : ''}
+      ${el.closest('.modal') ? '' : '<button class="btn btn-outline btn-sm" data-notif-prefs>⚙️ Preferências</button>'}
     </div>`;
+  const np = $('[data-notif-prefs]', el);
+  if (np) np.onclick = () => openNotificationPrefs();
 
   const en = $('[data-enable-push]', el);
   if (en) en.onclick = () => withLoading(en, async () => {
@@ -1151,35 +1156,267 @@ function fileToDataUrl(file, maxDim = 1600, quality = 0.82) {
   });
 }
 
-/* ---------- sino de notificações ---------- */
-async function openNotifications() {
-  try {
-    const { notifications } = await api('/api/notifications');
-    const items = notifications.length
-      ? notifications.map(n => `
-        <div class="list-item">
-          <div class="li-main">
-            <div class="li-title">${escapeHtml(n.title)}</div>
-            <div class="li-sub">${escapeHtml(n.body || '')} · ${fmt.ago(n.created_at)}</div>
-          </div>
-          ${n.read ? '' : '<span class="pill yellow">nova</span>'}
-        </div>`).join('')
-      : '<div class="empty"><div class="eico">🔔</div>Nenhuma notificação por enquanto.</div>';
-    openModal(`<h3>Notificações</h3><div>${items}</div>`);
-    await api('/api/notifications/read', { method: 'POST' });
-    $('#notif-badge')?.remove();
-  } catch (e) { toast(e.message, 'err'); }
+/* ---------- central de notificações ---------- */
+const NOTIF_CATS = {
+  corrida: ['🏍️', 'Corridas'], pagamento: ['💳', 'Pagamentos'], financeiro: ['💸', 'Ganhos'],
+  cadastro: ['🪪', 'Cadastro'], suporte: ['🛟', 'Suporte'], conta: ['🔐', 'Conta'], novidades: ['📣', 'Novidades'],
+  admin_cadastros: ['🪪', 'Cadastros'], admin_ocorrencias: ['⚠️', 'Ocorrências'], admin_pagamentos: ['💳', 'Pagamentos'],
+  admin_suporte: ['🛟', 'Suporte'], admin_seguranca: ['🚨', 'Segurança'], admin_sistema: ['🖥️', 'Sistema'],
+};
+const _notifCenter = { filter: '', items: [], hasMore: false, modal: null, loading: false };
+
+/** Abre o destino de uma notificação: mesma tela → navega dentro dela; outra → troca de página. */
+function openNotificationLink(link) {
+  if (!link) return false;
+  let u;
+  try { u = new URL(link, location.origin); } catch { return false; }
+  if (u.origin !== location.origin) return false;
+  if (u.pathname === location.pathname && typeof window.vairoLinkHandler === 'function') {
+    window.vairoLinkHandler(u.hash.slice(1));
+    return true;
+  }
+  location.href = u.pathname + u.hash;
+  return true;
 }
+// clique numa notificação do sistema com esta tela aberta
+navigator.serviceWorker?.addEventListener('message', e => {
+  if (e.data?.type === 'notification-click' && e.data.data?.url) openNotificationLink(e.data.data.url);
+});
+/** Ao abrir a página por uma notificação (ex.: /motorista#ganhos), vai direto ao destino. */
+function handleInitialNotificationLink() {
+  const h = location.hash.slice(1);
+  if (h && typeof window.vairoLinkHandler === 'function') {
+    window.vairoLinkHandler(h);
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+}
+
+function notifItemHtml(n) {
+  const [ico, cat] = NOTIF_CATS[n.category] || ['🔔', 'Aviso'];
+  const when = new Date(n.created_at);
+  const date = when.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return `<div class="notif-item${n.read ? '' : ' unread'}${n.priority === 'alta' ? ' high' : ''}" data-id="${escapeHtml(n.id)}">
+    <button class="notif-open" type="button" data-open aria-label="${escapeHtml(n.title)}${n.read ? '' : ' (não lida)'}">
+      <span class="notif-ico" aria-hidden="true">${ico}</span>
+      <span class="notif-main">
+        <span class="notif-title">${escapeHtml(n.title)}</span>
+        ${n.body ? `<span class="notif-body">${escapeHtml(n.body)}</span>` : ''}
+        <span class="notif-meta">${escapeHtml(cat)} · <time datetime="${when.toISOString()}" title="${escapeHtml(date)}">${fmt.ago(n.created_at)}</time></span>
+      </span>
+      ${n.read ? '' : '<span class="notif-dot" aria-hidden="true"></span>'}
+    </button>
+    <div class="notif-actions">
+      ${n.read ? '' : '<button class="linkbtn" type="button" data-read>Marcar como lida</button>'}
+      <button class="linkbtn danger" type="button" data-del>Excluir</button>
+    </div>
+  </div>`;
+}
+
+function renderNotifList() {
+  const m = _notifCenter.modal;
+  if (!m) return;
+  const list = $('[data-list]', m);
+  const it = _notifCenter.items;
+  if (!it.length) {
+    list.innerHTML = `<div class="empty"><div class="eico">🔔</div>${_notifCenter.filter === 'unread'
+      ? 'Tudo lido por aqui.' : 'Nenhuma notificação por enquanto.'}</div>`;
+  } else {
+    list.innerHTML = it.map(notifItemHtml).join('')
+      + (_notifCenter.hasMore ? '<button class="btn btn-outline btn-sm mt" type="button" data-more>Ver mais antigas</button>' : '');
+  }
+}
+
+async function loadNotifications(more = false) {
+  const c = _notifCenter;
+  if (c.loading) return;
+  c.loading = true;
+  const list = c.modal && $('[data-list]', c.modal);
+  if (!more && list) list.innerHTML = '<div class="spinner"></div>';
+  try {
+    const q = new URLSearchParams({ limit: '20' });
+    if (c.filter) q.set('filter', c.filter);
+    if (more && c.items.length) q.set('before', String(c.items[c.items.length - 1].created_at));
+    const r = await api('/api/notifications?' + q);
+    c.items = more ? c.items.concat(r.notifications) : r.notifications;
+    c.hasMore = r.has_more;
+    setNotifBadge(r.unread);
+    renderNotifList();
+  } catch (e) {
+    if (list) list.innerHTML = `<div class="empty"><div class="eico">⚠️</div>Não foi possível carregar.
+      <br><button class="btn btn-outline btn-sm mt" type="button" data-retry>Tentar de novo</button></div>`;
+  } finally { c.loading = false; }
+}
+
+async function openNotifications() {
+  const c = _notifCenter;
+  c.filter = ''; c.items = []; c.hasMore = false;
+  const m = openModal(`
+    <div class="notif-head">
+      <h3>Notificações</h3>
+      <button class="iconbtn" type="button" data-prefs title="Preferências" aria-label="Preferências de notificação">⚙️</button>
+    </div>
+    <div class="notif-filters" role="tablist" aria-label="Filtrar">
+      <button class="chip active" type="button" data-filter="">Todas</button>
+      <button class="chip" type="button" data-filter="unread">Não lidas</button>
+      <select class="chip" data-catfilter aria-label="Categoria"><option value="">Categoria…</option></select>
+    </div>
+    <button class="linkbtn mb" type="button" data-readall>Marcar todas como lidas</button>
+    <div class="notif-list" data-list aria-live="polite"></div>
+  `, { onClose: () => { c.modal = null; } });
+  c.modal = m;
+  m.querySelector('.modal').classList.add('notif-modal');
+  // categorias do perfil desta pessoa
+  api('/api/notifications/prefs').then(p => {
+    $('[data-catfilter]', m).innerHTML = '<option value="">Categoria…</option>'
+      + p.categories.map(x => `<option value="${x.key}">${escapeHtml((NOTIF_CATS[x.key] || [''])[0] + ' ' + x.label)}</option>`).join('');
+  }).catch(() => { $('[data-catfilter]', m).hidden = true; });
+
+  const setFilter = f => {
+    c.filter = f;
+    $$('[data-filter]', m).forEach(b => b.classList.toggle('active', b.dataset.filter === f));
+    if (!['', 'unread'].includes(f)) $$('[data-filter]', m).forEach(b => b.classList.remove('active'));
+    else $('[data-catfilter]', m).value = '';
+    loadNotifications();
+  };
+  $$('[data-filter]', m).forEach(b => b.onclick = () => setFilter(b.dataset.filter));
+  $('[data-catfilter]', m).onchange = e => setFilter(e.target.value);
+  $('[data-prefs]', m).onclick = () => { m.close(); openNotificationPrefs(); };
+  $('[data-readall]', m).onclick = async () => {
+    try {
+      const r = await api('/api/notifications/read', { method: 'POST', body: {} });
+      c.items.forEach(n => { n.read = true; });
+      if (c.filter === 'unread') c.items = [];
+      setNotifBadge(r.unread); renderNotifList();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  $('[data-list]', m).addEventListener('click', async e => {
+    const t = e.target;
+    if (t.closest('[data-more]')) return loadNotifications(true);
+    if (t.closest('[data-retry]')) return loadNotifications();
+    const item = t.closest('.notif-item');
+    if (!item) return;
+    const n = c.items.find(x => x.id === item.dataset.id);
+    if (!n) return;
+    try {
+      if (t.closest('[data-del]')) {
+        const r = await api(`/api/notifications/${encodeURIComponent(n.id)}`, { method: 'DELETE' });
+        c.items = c.items.filter(x => x !== n);
+        setNotifBadge(r.unread); renderNotifList();
+        return;
+      }
+      if (!n.read) {
+        const r = await api(`/api/notifications/${encodeURIComponent(n.id)}/read`, { method: 'POST' });
+        n.read = true; setNotifBadge(r.unread);
+      }
+      if (t.closest('[data-read]')) { renderNotifList(); return; }
+      if (t.closest('[data-open]')) {
+        // o destino é a própria central (ex.: comunicado): só marca como lida
+        if (!n.link || /#notificacoes$/.test(n.link)) { renderNotifList(); return; }
+        m.close();
+        if (!openNotificationLink(n.link)) toast(n.title);
+      }
+    } catch (err) { toast(err.message, 'err'); }
+  });
+  loadNotifications();
+}
+
+/** Chegou notificação em tempo real: atualiza o contador e a lista aberta. */
+function onLiveNotification(n) {
+  refreshNotifBadge();
+  const c = _notifCenter;
+  if (c.modal && (!c.filter || c.filter === 'unread' || c.filter === n.category) && !c.items.some(x => x.id === n.id)) {
+    c.items.unshift({ ...n, read: false });
+    renderNotifList();
+  }
+}
+
+let _badgeTimer = 0;
+function refreshNotifBadge() {
+  clearTimeout(_badgeTimer);
+  _badgeTimer = setTimeout(async () => {
+    try { setNotifBadge((await api('/api/notifications/unread-count')).unread); } catch { }
+  }, 300);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && $('#btn-notifs') && !$('#btn-notifs').hidden) refreshNotifBadge();
+});
 
 function setNotifBadge(count) {
   const btn = $('#btn-notifs');
   if (!btn) return;
   $('#notif-badge')?.remove();
+  btn.setAttribute('aria-label', count > 0 ? `Notificações: ${count} não lida${count > 1 ? 's' : ''}` : 'Notificações');
   if (count > 0) {
     const b = document.createElement('span');
-    b.id = 'notif-badge'; b.className = 'badge'; b.textContent = count > 9 ? '9+' : count;
+    b.id = 'notif-badge'; b.className = 'badge'; b.textContent = count > 99 ? '99+' : count;
     btn.appendChild(b);
   }
+}
+function bumpBadge() { refreshNotifBadge(); }
+
+/* ---------- preferências de notificação ---------- */
+async function openNotificationPrefs() {
+  const m = openModal(`<h3>Preferências de notificação</h3>
+    <p class="muted small mb">Escolha o que receber dentro do app e no celular (push). Avisos essenciais e de segurança não podem ser desligados.</p>
+    <div data-prefs-list><div class="spinner"></div></div>
+    <div class="mt" data-push-status></div>`);
+  try {
+    const p = await api('/api/notifications/prefs');
+    const row = c => `<div class="pref-row" data-cat="${c.key}">
+      <div class="pref-info"><strong>${escapeHtml((NOTIF_CATS[c.key] || ['🔔'])[0])} ${escapeHtml(c.label)}</strong>
+        <span class="muted small">${escapeHtml(c.description)}</span></div>
+      <label class="switch-label" title="${c.lock_inapp ? 'Essencial: sempre ligado' : ''}">
+        <input type="checkbox" data-ch="inapp" ${c.inapp ? 'checked' : ''} ${c.lock_inapp ? 'disabled' : ''}> No app</label>
+      <label class="switch-label" title="${c.lock_push ? 'Segurança: sempre ligado' : ''}">
+        <input type="checkbox" data-ch="push" ${c.push ? 'checked' : ''} ${c.lock_push || !c.inapp ? 'disabled' : ''}> Push</label>
+    </div>`;
+    $('[data-prefs-list]', m).innerHTML = p.categories.map(row).join('')
+      + '<p class="muted small mt">E-mail: ainda não disponível.</p>';
+    $('[data-prefs-list]', m).addEventListener('change', async e => {
+      const inp = e.target.closest('input[data-ch]');
+      if (!inp) return;
+      const r = inp.closest('.pref-row');
+      const cat = p.categories.find(x => x.key === r.dataset.cat);
+      const inEl = $('[data-ch="inapp"]', r), pushEl = $('[data-ch="push"]', r);
+      inEl.disabled = pushEl.disabled = true;
+      let st = { inapp: inEl.checked, push: pushEl.checked };
+      try {
+        st = await api('/api/notifications/prefs', { method: 'PUT',
+          body: { category: cat.key, [inp.dataset.ch]: inp.checked } });
+      } catch (err) { inp.checked = !inp.checked; st = { inapp: inEl.checked, push: pushEl.checked }; toast(err.message, 'err'); }
+      inEl.checked = st.inapp; pushEl.checked = st.push;
+      inEl.disabled = !!cat.lock_inapp;
+      pushEl.disabled = !!cat.lock_push || !st.inapp;
+    });
+    renderNotificationStatus($('[data-push-status]', m));
+  } catch (e) { $('[data-prefs-list]', m).innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`; }
+}
+
+/**
+ * Pedido de permissão amigável: só depois de um momento em que o aviso faz
+ * sentido (ex.: o passageiro pediu uma corrida), nunca na primeira visita, e
+ * "Agora não" segura o próximo pedido por 30 dias.
+ */
+function maybeAskPushSoftly(reason) {
+  try {
+    if (!('Notification' in window) || !('PushManager' in window)) return;
+    if (Notification.permission !== 'default') return;
+    const last = Number(localStorage.getItem('vairo_push_ask_at') || 0);
+    if (Date.now() - last < 30 * 86400_000) return;
+    if (document.querySelector('.push-ask')) return;
+    const box = document.createElement('div');
+    box.className = 'push-ask card';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', 'Ativar notificações');
+    box.innerHTML = `<strong>🔔 Quer ser avisado mesmo com o app fechado?</strong>
+      <p class="muted small">${escapeHtml(reason)} Sem endereços nem valores na tela bloqueada.</p>
+      <div class="row"><button class="btn btn-primary btn-sm" type="button" data-yes>Ativar notificações</button>
+      <button class="btn btn-outline btn-sm" type="button" data-no>Agora não</button></div>`;
+    document.body.appendChild(box);
+    const done = () => { localStorage.setItem('vairo_push_ask_at', String(Date.now())); box.remove(); };
+    $('[data-no]', box).onclick = done;
+    $('[data-yes]', box).onclick = async () => { done(); const r = await enablePush(); toast(r.msg, r.ok ? 'ok' : 'err'); };
+  } catch { }
 }
 
 initChrome();
