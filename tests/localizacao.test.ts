@@ -45,7 +45,7 @@ function actor() {
   };
 }
 
-const fakeDoc = () => `data:image/jpeg;base64,${Buffer.alloc(4000, 7).toString('base64')}`;
+const fakeDoc = () => `data:image/jpeg;base64,${Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(3996, 7)]).toString('base64')}`;
 const ORIGIN = { lat: -24.4156, lng: -53.5216, text: 'Centro, Assis Chateaubriand' };
 const DEST = { lat: -24.4450, lng: -53.5400, text: 'Jardim Paraná, Assis Chateaubriand' };
 const pax = actor(), intruso = actor(), drv = actor(), drv2 = actor(), adm = actor(), anon = actor();
@@ -230,4 +230,40 @@ test('OpenStreetMap público: sem autocompletar no Nominatim e no máximo 1 cons
     process.env.GEO_OFFLINE = '1';
     globalThis.fetch = realFetch;
   }
+});
+
+test('Mapbox: carregamentos e chamadas contam; no teto o token não vai ao app e a API não é chamada', async () => {
+  process.env.MAPBOX_PUBLIC_TOKEN = 'pk.teste-local';
+  try {
+    const c1 = await pax.req('GET', '/api/config');
+    assert.ok(c1.data.maps.mapbox_token);
+    const before = usage.usageOf('mb_maploads');
+    await pax.req('POST', '/api/geo/mapload?p=mapbox');
+    assert.equal(usage.usageOf('mb_maploads'), before + 1);
+    dbMod.setSetting('mapbox_cap_maploads', String(before + 1));
+    const c2 = await pax.req('GET', '/api/config');
+    assert.equal(c2.data.maps.mapbox_token, null);
+    // rotas: no teto, nenhuma chamada sai para o Mapbox
+    dbMod.setSetting('mapbox_cap_directions', '0');
+    const { mapboxRoute } = await import('../server/mapbox.ts');
+    await assert.rejects(() => mapboxRoute({ lat: -24.41, lng: -53.52 }, { lat: -24.44, lng: -53.54 }), /teto/);
+  } finally {
+    delete process.env.MAPBOX_PUBLIC_TOKEN;
+    dbMod.setSetting('mapbox_cap_maploads', '45000');
+    dbMod.setSetting('mapbox_cap_directions', '50000');
+  }
+});
+
+test('documento do mototaxista: o conteúdo precisa ser do tipo declarado', async () => {
+  const a = actor();
+  await a.req('POST', '/api/auth/register', { role: 'driver', accept_terms: true, name: 'Doc Falso',
+    cpf: '390.533.447-05', phone: '(44) 90000-6060', email: 'docfalso@loc.test', password: 'senha12345' });
+  const html = `data:image/jpeg;base64,${Buffer.from('<html><script>alert(1)</script>' + 'x'.repeat(2000)).toString('base64')}`;
+  const r = await a.req('POST', '/api/driver/apply', {
+    birth_date: '1990-01-01', cnh_expiry: '2031-01-01', cnh_first_date: '2012-05-10', decl_cat_a_ear: true,
+    address: 'Rua A, 10', moto_plate: 'ABC-1D23', moto_brand: 'Honda', moto_model: 'CG 160', moto_year: '2022',
+    moto_color: 'Preta', documents: { cnh: html, crlv: fakeDoc(), selfie: fakeDoc() },
+  });
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /não é um JPG válido/);
 });

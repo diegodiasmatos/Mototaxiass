@@ -455,9 +455,20 @@ function showInstallButton() {
   if (isStandalone() || $('#install-btn')) return;
   const b = document.createElement('button');
   b.id = 'install-btn';
-  b.innerHTML = '📲 Instalar app';
+  b.type = 'button';
   b.onclick = promptInstall;
-  document.body.appendChild(b);
+  // no cabeçalho, ao lado do tema: o botão flutuante cobria links e o botão
+  // principal das telas (ex.: "Esqueci minha senha", "Ver preços")
+  const bar = document.querySelector('.topbar');
+  if (bar) {
+    b.className = 'iconbtn install-top';
+    b.title = 'Instalar o app'; b.setAttribute('aria-label', 'Instalar o app no celular');
+    b.textContent = '📲';
+    bar.insertBefore(b, document.getElementById('btn-theme') || null);
+  } else {
+    b.innerHTML = '📲 Instalar app';
+    document.body.appendChild(b);
+  }
 }
 
 async function promptInstall() {
@@ -626,7 +637,10 @@ async function startMapbox(maps, quiet = false) {
  * Se um provedor falhar (sem rede, biblioteca bloqueada), o seguinte assume
  * e o app avisa — nunca fica sem mapa silenciosamente.
  */
-async function initMaps(config) {
+/** Carrega o provedor de mapa UMA vez (chamado depois do login: a tela de entrada não baixa o mapa). */
+let _mapsInit = null;
+function initMaps(config) { return _mapsInit || (_mapsInit = _initMapsImpl(config)); }
+async function _initMapsImpl(config) {
   _mapsConfig = config?.maps || {};
   _mapsProvider = 'osm';
   if (_mapsConfig.google_key) {
@@ -729,6 +743,8 @@ const mbZoom = z => Math.max(0, z - 1);
 
 function mapboxAdapter(el, center, zoom) {
   const mb = window.mapboxgl;
+  // o Mapbox cobra por carregamento de mapa: o servidor conta e, no teto do mês, passa para o OpenStreetMap
+  api('/api/geo/mapload?p=mapbox', { method: 'POST' }).catch(() => { });
   const map = new mb.Map({
     container: el,
     style: _mapboxStyle,
@@ -1128,7 +1144,7 @@ const AREAS = [
   { id: 'visao', label: 'Visão Geral', href: '/visao-geral', icon: 'layer-group' },
   { id: 'passageiro', label: 'Passageiro', href: '/passageiro', icon: 'user' },
   { id: 'motorista', label: 'Motorista', href: '/motorista', icon: 'motorcycle' },
-  { id: 'empresa', label: 'Empresa', href: '/empresa', icon: 'store' },
+  { id: 'empresa', label: 'Empresa (em breve)', href: '/empresa', icon: 'store' },
 ];
 
 function currentTheme() {

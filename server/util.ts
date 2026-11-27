@@ -141,17 +141,43 @@ export class ApiError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 
-export async function readBody(req: IncomingMessage, limit = 30 * 1024 * 1024): Promise<any> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > limit) throw new ApiError(413, 'Corpo da requisição muito grande.');
-    chunks.push(chunk as Buffer);
+/**
+ * Lê o corpo JSON. Padrão: até 512 KB — rotas que recebem arquivos passam um
+ * limite maior (e todas exigem login). Corpos grandes (> 1 MB) são lidos um
+ * por vez no servidor inteiro: sem isso, poucas requisições de 30 MB
+ * estouravam a memória da máquina (512 MB) e derrubavam o app.
+ */
+export const BODY_DEFAULT = 512 * 1024;
+let _bigReads = 0;
+const _bigQueue: (() => void)[] = [];
+export async function readBody(req: IncomingMessage, limit = BODY_DEFAULT): Promise<any> {
+  const declared = Number(req.headers['content-length']);
+  if (Number.isFinite(declared) && declared > limit) {
+    req.resume();
+    throw new ApiError(413, 'Corpo da requisição muito grande.');
   }
-  if (size === 0) return {};
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
-  catch { throw new ApiError(400, 'JSON inválido.'); }
+  const big = limit > 1024 * 1024;
+  if (big) {
+    if (_bigReads >= 1) {
+      if (_bigQueue.length >= 20) { req.resume(); throw new ApiError(503, 'Muitos envios ao mesmo tempo. Tente de novo em instantes.'); }
+      await new Promise<void>(r => _bigQueue.push(r));
+    }
+    _bigReads++;
+  }
+  try {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += (chunk as Buffer).length;
+      if (size > limit) { req.resume(); throw new ApiError(413, 'Corpo da requisição muito grande.'); }
+      chunks.push(chunk as Buffer);
+    }
+    if (size === 0) return {};
+    try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+    catch { throw new ApiError(400, 'JSON inválido.'); }
+  } finally {
+    if (big) { _bigReads--; _bigQueue.shift()?.(); }
+  }
 }
 
 export function parseCookies(req: IncomingMessage): Record<string, string> {

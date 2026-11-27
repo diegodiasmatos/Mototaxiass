@@ -357,7 +357,7 @@ test('I3: cadastro do mototaxista confere idade, validade e tempo de CNH e a cat
     role: 'driver', name: 'Moto Teste', cpf: '529.982.247-25', phone: '(44) 90000-1212',
     email: 'moto@lanc.test', password: 'senha12345', accept_terms: true,
   });
-  const doc = `data:image/jpeg;base64,${Buffer.alloc(4000, 7).toString('base64')}`;
+  const doc = `data:image/jpeg;base64,${Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(3996, 7)]).toString('base64')}`;
   const iso = (yearsAgo: number) => { const t = new Date(); t.setFullYear(t.getFullYear() - yearsAgo); return t.toISOString().slice(0, 10); };
   const body = (over: any = {}) => ({
     birth_date: iso(30), address: 'Rua A, 10', moto_plate: 'ABC-1D23', moto_brand: 'Honda',
@@ -554,4 +554,21 @@ test('Play: regras de cancelamento aparecem antes de confirmar a corrida', async
   const manifest = await (await fetch(base + '/manifest.webmanifest')).json() as any;
   assert.equal(manifest.id, '/');
   assert.ok(manifest.icons.some((i: any) => i.sizes === '512x512' && i.purpose === 'maskable'));
+});
+
+test('segurança: corpo grande sem login é recusado e ação de outro site é barrada', async () => {
+  const big = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'x'.repeat(2 * 1024 * 1024), password: 'y' }) });
+  assert.equal(big.status, 413);
+  const cross = await fetch(base + '/api/auth/login', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: 'https://site-malicioso.example' },
+    body: JSON.stringify({ email: 'paula@lanc.test', password: 'senha12345' }) });
+  assert.equal(cross.status, 403);
+  const same = await fetch(base + '/api/auth/register', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: base, 'Fly-Client-IP': '200.9.9.9' },
+    body: JSON.stringify({ role: 'passenger', name: 'Mesmo Site', phone: '(44) 90000-9999', email: 'mesmo@lanc.test', password: 'senha12345', accept_terms: true }) });
+  assert.equal(same.status, 201);
+  // webhook (servidor→servidor, sem Origin) continua chegando
+  const wh = await fetch(base + '/api/webhooks/mercadopago', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  assert.notEqual(wh.status, 403);
 });

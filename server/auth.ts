@@ -56,7 +56,7 @@ export const authRoutes: Route[] = [
 
   route('POST /api/auth/register', null, async ({ req, res, ip }) => {
     if (!rateLimit(`reg:${ip}`, 20, 10 * 60_000)) throw new ApiError(429, 'Muitas tentativas. Aguarde alguns minutos.');
-    const b = await readBody(req);
+    const b = await readBody(req, 1024 * 1024);   // foto de perfil (~400 KB)
     const roleIn = b.role === 'driver' ? 'driver' : 'passenger';
     const name = reqStr(b.name, 'nome', 120);
     const phone = reqStr(b.phone, 'telefone', 25);
@@ -173,7 +173,7 @@ export const authRoutes: Route[] = [
   }),
 
   route('PATCH /api/me', 'any', async ({ req, res, user }) => {
-    const b = await readBody(req);
+    const b = await readBody(req, 1024 * 1024);   // foto de perfil (~400 KB)
     const name = b.name !== undefined ? reqStr(b.name, 'nome', 120) : user!.name;
     const phone = b.phone !== undefined ? reqStr(b.phone, 'telefone', 25) : user!.phone;
     const photo = b.photo !== undefined ? sanitizePhoto(b.photo) : user!.photo;
@@ -200,7 +200,8 @@ export const authRoutes: Route[] = [
     // nem é enviado — senão o app tentaria carregar um Mapbox com problema
     // (token revogado, cota estourada) em vez de usar o OSM que funciona.
     const forceOsm = getSetting('maps_provider') === 'osm';
-    const tk = forceOsm ? null : publicToken();
+    const { googleAllowed: underCap } = await import('./geo-usage.ts');
+    const tk = forceOsm || !underCap('mb_maploads') ? null : publicToken();
     // Google primeiro quando há chave; o Mapbox segue junto como reserva
     // teto mensal de carregamentos do mapa do Google: passou, o mapa sai no OpenStreetMap
     const { googleAllowed } = await import('./geo-usage.ts');

@@ -937,3 +937,16 @@ details.rules li { margin-bottom: 6px; }
 .gps-chip.off { cursor: pointer; }
 
 .ac-list .ac-deep { color: var(--accent-text); font-weight: 700; }
+/* instalar: ícone no cabeçalho (não cobre o conteúdo) */
+#install-btn.install-top { position: static; padding: 0; box-shadow: none; font-size: 1.1rem; border-radius: 14px; }
+
+/* página inicial: como funciona, área, preço, atendimento */
+.ov-info { max-width: 880px; margin: 22px auto 0; }
+.ov-info h2 { font-size: 1.15rem; margin: 0 0 10px; }
+.ov-steps { margin: 0 0 16px; padding-left: 20px; display: grid; gap: 8px; color: var(--text-2); font-size: .9rem; line-height: 1.45; }
+.ov-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.ov-card { display: flex; gap: 12px; align-items: flex-start; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+.ov-card > span { font-size: 1.3rem; }
+.ov-card p { margin: 3px 0 0; color: var(--muted); font-size: .84rem; line-height: 1.45; }
+.ov-card a, .ov-legal a { color: var(--accent-text); font-weight: 700; }
+.ov-legal { margin-top: 14px; font-size: .82rem; color: var(--muted); }

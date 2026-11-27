@@ -27,7 +27,6 @@ async function init() {
     city_name: 'Assis Chateaubriand - PR', center: { lat: -24.4156, lng: -53.5216 },
     welcome_message: 'Olá! Para onde vamos?',
   }));
-  await initMaps(S.config);
   $('#auth-logo').innerHTML = LOGO_MARK;
 
   bindAuth(); bindHome(); bindQuote(); bindRide(); bindProfile(); bindNav();
@@ -181,6 +180,7 @@ function setupGoogleButton() {
 
 /* ================= entrada no app ================= */
 async function enterApp() {
+  await initMaps(S.config);       // só depois do login (a tela de entrada fica leve)
   const rt = $('#rule-timeout');
   if (rt && S.config?.request_timeout_min > 0) rt.textContent = String(S.config.request_timeout_min);
   else if (rt && S.config?.request_timeout_min === 0) {

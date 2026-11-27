@@ -48,7 +48,7 @@ function actor() {
 }
 
 const fakeDoc = (kind = 'jpeg') =>
-  `data:image/${kind};base64,${Buffer.alloc(4000, 7).toString('base64')}`;
+  `data:image/${kind};base64,${Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(3996, 7)]).toString('base64')}`;
 
 // pontos dentro de Assis Chateaubriand
 const ORIGIN = { lat: -24.4156, lng: -53.5216, text: 'Centro, Assis Chateaubriand' };
