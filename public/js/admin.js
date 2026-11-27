@@ -59,7 +59,14 @@ function enter() {
     },
   });
   refreshPushSubscription();
-  go('dashboard');
+  window.vairoLinkHandler = sec => {
+    if (!SECTIONS[sec]) sec = 'dashboard';
+    $$('.sidebar button').forEach(x => x.classList.toggle('active', x.dataset.sec === sec));
+    go(sec);
+  };
+  const first = location.hash.slice(1);
+  if (first && SECTIONS[first]) { window.vairoLinkHandler(first); history.replaceState(null, '', location.pathname); }
+  else go('dashboard');
 }
 
 const SECTIONS = {
@@ -1411,6 +1418,31 @@ async function secSettings() {
        Plataforma (${r.commission_pct}%): <b>${fmt.money(r.commission_cents)}</b> ·
        Mototaxista recebe: <b style="color:var(--green)">${fmt.money(r.driver_cents)}</b>`;
   });
+
+  // comunicados: só chegam a quem ativou "Novidades e promoções" (consentimento)
+  const ann = document.createElement('div');
+  ann.className = 'card';
+  ann.innerHTML = `<h3>📣 Comunicado aos usuários</h3>
+    <p class="muted small mb">Vai para a categoria "Novidades e promoções", que cada pessoa precisa ATIVAR nas
+      preferências (LGPD). Quem não ativou não recebe. Até 3 por dia; fica na auditoria.</p>
+    <div class="field"><label for="ann-aud">Público</label>
+      <select class="input" id="ann-aud"><option value="all">Passageiros e mototaxistas</option>
+      <option value="passenger">Só passageiros</option><option value="driver">Só mototaxistas</option></select></div>
+    <div class="field"><label for="ann-title">Título</label><input class="input" id="ann-title" maxlength="80"></div>
+    <div class="field"><label for="ann-body">Mensagem</label><textarea class="input" id="ann-body" maxlength="300" rows="3"></textarea></div>
+    <button class="btn btn-primary" type="button" id="ann-send">Enviar comunicado</button>`;
+  main().appendChild(ann);
+  $('#ann-send').onclick = async () => {
+    const title = $('#ann-title').value.trim(), body = $('#ann-body').value.trim();
+    if (!title || !body) { toast('Preencha título e mensagem.', 'err'); return; }
+    if (!await confirmModal('Enviar comunicado?', `"${title}" para quem ativou as novidades. Não dá para desfazer.`, 'Enviar')) return;
+    await withLoading($('#ann-send'), async () => {
+      const r = await api('/api/admin/announcements', { method: 'POST',
+        body: { title, body, audience: $('#ann-aud').value } });
+      toast(`Comunicado entregue a ${r.sent} de ${r.audience_total} pessoa(s) (só quem ativou as novidades).`, 'ok');
+      $('#ann-title').value = ''; $('#ann-body').value = '';
+    }).catch(() => { });
+  };
 }
 
 /* ============ auditoria ============ */

@@ -68,15 +68,17 @@ self.addEventListener('notificationclick', event => {
   event.notification.close();
   const url = event.notification.data?.url || '/';
   event.waitUntil((async () => {
+    const target = new URL(url, self.location.origin);
     const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    // a mesma tela (passageiro, motorista ou central) já aberta: traz para frente e navega lá dentro
     for (const c of all) {
-      if (c.url.includes(self.location.origin)) {
+      if (new URL(c.url).pathname === target.pathname) {
         await c.focus();
         c.postMessage({ type: 'notification-click', data: event.notification.data });
         return;
       }
     }
-    await self.clients.openWindow(url);
+    await self.clients.openWindow(target.href);
   })());
 });
 

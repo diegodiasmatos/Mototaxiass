@@ -1033,25 +1033,7 @@ export const rideRoutes: Route[] = [
     json(res, 200, { ok: true });
   }),
 
-  // ---------- notificações ----------
-  route('GET /api/notifications', 'any', ({ res, user, query }) => {
-    const since = Number(query.get('since'));
-    const rows = Number.isFinite(since) && since > 0
-      ? db.prepare(`SELECT * FROM notifications WHERE user_id = ? AND created_at > ?
-          ORDER BY created_at DESC LIMIT 50`).all(user!.id, since)
-      : db.prepare(`SELECT * FROM notifications WHERE user_id = ?
-          ORDER BY created_at DESC LIMIT 50`).all(user!.id);
-    json(res, 200, { notifications: rows, server_time: now() });
-  }),
-  route('POST /api/notifications/read', 'any', ({ res, user }) => {
-    db.prepare('UPDATE notifications SET read = 1 WHERE user_id = ?').run(user!.id);
-    json(res, 200, { ok: true });
-  }),
-  route('POST /api/notifications/:id/ack', 'any', async ({ res, user, params }) => {
-    const { ackNotification } = await import('./notify.ts');
-    ackNotification(user!.id, params.id);
-    json(res, 200, { ok: true });
-  }),
+  // notificações: server/notification-routes.ts
 
   // ---------- suporte ----------
   route('POST /api/support', 'any', async ({ req, res, user }) => {

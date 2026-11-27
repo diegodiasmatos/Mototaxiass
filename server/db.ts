@@ -707,6 +707,43 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
       WHERE key IN ('gps_retention_days', 'messages_retention_days') AND value = '0';
     `,
   },
+
+  // ----------------------------------------------------------------
+  // V11 — central de notificações: categoria, prioridade, link, chave de
+  // idempotência (evita duplicadas), data de leitura, status do push;
+  // preferências por categoria; aparelhos já usados (aviso de acesso novo).
+  // Só adiciona colunas e tabelas; notificações antigas ganham categoria.
+  // ----------------------------------------------------------------
+  {
+    version: 11,
+    sql: `
+    ALTER TABLE notifications ADD COLUMN category TEXT;
+    ALTER TABLE notifications ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal';
+    ALTER TABLE notifications ADD COLUMN link TEXT;
+    ALTER TABLE notifications ADD COLUMN event_key TEXT;
+    ALTER TABLE notifications ADD COLUMN read_at INTEGER;
+    ALTER TABLE notifications ADD COLUMN push_status TEXT;
+    CREATE UNIQUE INDEX idx_notifications_event ON notifications(user_id, event_key) WHERE event_key IS NOT NULL;
+    CREATE INDEX idx_notifications_user_time ON notifications(user_id, created_at);
+    UPDATE notifications SET read_at = created_at WHERE read = 1;
+    CREATE TABLE notification_prefs (
+      user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      category TEXT NOT NULL,
+      inapp    INTEGER NOT NULL DEFAULT 1,
+      push     INTEGER NOT NULL DEFAULT 1,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, category)
+    );
+    CREATE TABLE user_devices (
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      device_key TEXT NOT NULL,
+      label      TEXT,
+      first_seen INTEGER NOT NULL,
+      last_seen  INTEGER NOT NULL,
+      PRIMARY KEY (user_id, device_key)
+    );
+    `,
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {

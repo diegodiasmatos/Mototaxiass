@@ -15,6 +15,7 @@ import { driverRoutes } from './drivers.ts';
 import { adminRoutes } from './admin.ts';
 import { integrationRoutes } from './integrations.ts';
 import { accountRoutes, assetLinks } from './account.ts';
+import { notificationRoutes } from './notification-routes.ts';
 import { startMaintenance } from './maintenance.ts';
 import { sseConnect } from './notify.ts';
 import { appVersion, injectSwVersion, injectHtmlVersion } from './version.ts';
@@ -156,7 +157,7 @@ function bootstrapAdmin(): void {
 }
 
 const ALL_ROUTES: Route[] = [
-  ...authRoutes, ...accountRoutes, ...rideRoutes, ...driverRoutes, ...adminRoutes, ...integrationRoutes,
+  ...authRoutes, ...accountRoutes, ...notificationRoutes, ...rideRoutes, ...driverRoutes, ...adminRoutes, ...integrationRoutes,
 ];
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -261,6 +262,7 @@ function installProcessGuards(): void {
   process.on('unhandledRejection', (reason: any) => {
     console.error(`[erro não tratado] ${reason?.name || 'Error'}: ${String(reason?.message || reason).slice(0, 300)}`
       + (reason?.stack ? `\n${String(reason.stack).split('\n').slice(1, 6).join('\n')}` : ''));
+    void import('./notify-events.ts').then(m => m.alertSystemError(`Erro não tratado (${reason?.name || 'Error'})`)).catch(() => {});
   });
   process.on('uncaughtException', (err: any) => {
     console.error(`[falha grave] ${err?.name || 'Error'}: ${String(err?.message || err).slice(0, 300)}`

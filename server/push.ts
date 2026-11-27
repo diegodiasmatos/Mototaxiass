@@ -107,13 +107,22 @@ export function saveSubscription(userId: string, sub: {
       (userAgent || '').slice(0, 200), now());
 }
 
-export function removeSubscription(endpoint: string): void {
-  db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(endpoint);
+export function removeSubscription(endpoint: string, userId?: string): void {
+  if (userId) db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?').run(endpoint, userId);
+  else db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(endpoint);
+}
+
+/** Aparelho que falhou muitas vezes seguidas (desinstalou, trocou de navegador) sai da lista. */
+const MAX_FAILURES = 10;
+function failed(subId: string): void {
+  db.prepare('UPDATE push_subscriptions SET failures = failures + 1 WHERE id = ?').run(subId);
+  db.prepare('DELETE FROM push_subscriptions WHERE id = ? AND failures >= ?').run(subId, MAX_FAILURES);
 }
 
 /** Envia para todos os aparelhos do usuário. Remove inscrições mortas (404/410). */
 export async function pushToUser(userId: string, data: {
   title: string; body?: string; url?: string; tag?: string; kind?: string; rideId?: string;
+  urgency?: 'high' | 'normal' | 'low';
 }): Promise<number> {
   const subs = db.prepare('SELECT * FROM push_subscriptions WHERE user_id = ?')
     .all(userId) as any as PushSub[];
@@ -132,21 +141,19 @@ export async function pushToUser(userId: string, data: {
           'Content-Encoding': 'aes128gcm',
           'Content-Type': 'application/octet-stream',
           'TTL': '600',
-          'Urgency': data.kind === 'ride_offer' ? 'high' : 'normal',
+          // nova corrida e avisos de prioridade alta chegam na hora, mesmo com o celular em economia
+          'Urgency': data.urgency || (data.kind === 'ride_offer' ? 'high' : 'normal'),
         },
         body: encrypted,
         signal: AbortSignal.timeout(10000),
       });
       if (r.status === 404 || r.status === 410) { removeSubscription(sub.endpoint); return; }
-      if (!r.ok) {
-        db.prepare('UPDATE push_subscriptions SET failures = failures + 1 WHERE id = ?').run(sub.id);
-        return;
-      }
+      if (!r.ok) { failed(sub.id); return; }
       db.prepare('UPDATE push_subscriptions SET failures = 0, last_ok_at = ? WHERE id = ?')
         .run(now(), sub.id);
       sent++;
     } catch {
-      db.prepare('UPDATE push_subscriptions SET failures = failures + 1 WHERE id = ?').run(sub.id);
+      failed(sub.id);
     }
   }));
   return sent;

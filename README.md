@@ -292,7 +292,10 @@ server/          backend (TypeScript puro)
   geo.ts         rotas, geocodificação, área de cobertura
   google-maps.ts Google: rotas de moto (Routes), busca por nome (Places), endereço do GPS (Geocoding)
   mapbox.ts      Mapbox: rotas (Directions), endereços (Geocoding), diagnóstico do token
-  notify.ts      SSE + notificações persistentes
+  notify.ts      SSE + notificações persistentes (preferências, sem duplicar, push sem dados sensíveis)
+  notification-catalog.ts  tipo → categoria, prioridade e texto da tela bloqueada
+  notification-routes.ts   central: lista paginada, lida, excluir, preferências, comunicados
+  notify-events.ts         aparelho novo, validade da CNH, erro grave do servidor
 public/          frontend (mobile-first, 3 apps)
 tests/           testes ponta a ponta (node --test)
 data/            banco, segredo de sessão e uploads privados (criado em runtime)
@@ -383,7 +386,9 @@ data/            banco, segredo de sessão e uploads privados (criado em runtime
 - **Financeiro**: caixa fecha (`comissão + repasse = cobrado`), repasse acima do
   saldo é recusado, livro-caixa sem rota de alteração.
 - **Webhook**: evento duplicado é idempotente; assinatura inválida não altera nada.
-- **Notificações**: replay por `since`, confirmação de entrega, chave VAPID.
+- **Notificações**: replay por `since`, confirmação de entrega, chave VAPID;
+  cada pessoa só vê as próprias, paginação, sem duplicar evento, preferências
+  com travas, push sem endereço/valor, eventos novos (`tests/notificacoes.test.ts`).
 - **Permissões**: parceiro não confirma pela passageira, não mexe em tarifas nem
   no financeiro; passageiro não controla a corrida do parceiro.
 - **Mapas (Mapbox)**: com a API do Mapbox simulada no formato real — rota
@@ -534,6 +539,30 @@ No modo "depois do aceite" a corrida **não inicia** enquanto o pagamento não f
 confirmado (bloqueio no servidor, com erro explícito para o parceiro). Quem não
 conectou a conta continua recebendo por repasse normalmente — os dois modelos
 convivem.
+
+### Central de notificações
+
+- **Sino** com contador de não lidas que se atualiza sozinho (tempo real + ao
+  voltar para o app). Lista com data, categoria, lidas/não lidas, filtros
+  (todas, não lidas, por categoria), marcar uma ou todas como lidas, excluir e
+  histórico paginado. Tocar numa notificação leva à tela certa
+  (corrida, histórico, ganhos, perfil; na central, à seção certa).
+- **Preferências** por categoria e canal (no app / push). *Corridas*,
+  *Pagamentos* e *Cadastro* não desligam dentro do app; *Conta e segurança* não
+  desliga nem o push. *Novidades e promoções* começa **desligada** (consentimento).
+- **Tela bloqueada**: o push nunca mostra endereço, valor nem texto de mensagem
+  (ex.: "Nova corrida disponível — abra o app para ver"). O detalhe só aparece
+  dentro do app, com login.
+- **Permissão**: nada é pedido na primeira visita. O passageiro vê "Ativar
+  notificações / Agora não" depois de pedir uma corrida; "Agora não" espera
+  30 dias. O mototaxista autoriza ao ficar online (precisa para receber corridas).
+- **Eventos**: além dos de corrida/pagamento/cadastro, há mototaxista chegando
+  (~400 m), boas-vindas, acesso de aparelho novo, dados do perfil alterados,
+  conta reativada, CNH vencendo (30 dias) e vencida; para a central, possível
+  fraude no código de embarque, CNH vencida e erro grave do servidor.
+- **Comunicados** (Central → Configurações): só para quem ativou novidades,
+  até 3 por dia, registrados na auditoria.
+- E-mail ainda não é canal: não há serviço de envio configurado.
 
 ### Notificações no iPhone
 

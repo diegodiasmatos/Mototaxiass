@@ -6,7 +6,8 @@ import {
 } from './util.ts';
 import { termsOk, recordTermsAcceptance, TERMS_VERSION } from './account.ts';
 import { route, type Route, type SessionUser } from './router.ts';
-import { notifyAdmins } from './notify.ts';
+import { notify, notifyAdmins } from './notify.ts';
+import { recordLoginDevice } from './notify-events.ts';
 
 const SESSION_TTL = 30 * 24 * 3600 * 1000;
 /** A central tem acesso a dados de todos: sessão de 12 h. */
@@ -43,8 +44,9 @@ function sanitizePhoto(photo: unknown): string | null {
   return photo;
 }
 
-async function loginUser(res: any, u: any): Promise<void> {
+async function loginUser(req: any, res: any, u: any): Promise<void> {
   if (u.blocked) throw new ApiError(403, `Conta bloqueada. ${u.blocked_reason || 'Fale com o suporte.'}`);
+  try { recordLoginDevice(u.id, String(req.headers['user-agent'] || '')); } catch (e: any) { console.error('[aparelho]', e?.message); }
   const token = createSession(u.id);
   setSessionCookie(res, token, sessionTtl(u.role) / 1000);
   json(res, 200, { ok: true, user: publicUser(u) });
@@ -77,6 +79,10 @@ export const authRoutes: Route[] = [
     recordTermsAcceptance(uid);
 
     if (roleIn === 'passenger') notifyAdmins('new_passenger', 'Novo passageiro cadastrado', `${name} (${b.email})`);
+    try { recordLoginDevice(uid, String(req.headers['user-agent'] || '')); } catch { /* só registro */ }
+    notify(uid, 'welcome', 'Bem-vindo(a) à VAIRO!', roleIn === 'driver'
+      ? 'Complete seu cadastro de mototaxista para começar a receber corridas.'
+      : 'Peça sua primeira corrida: informe para onde vai e veja o preço antes de confirmar.');
     const token = createSession(uid);
     setSessionCookie(res, token);
     json(res, 201, { ok: true, user: { id: uid, role: roleIn, name, email: b.email, phone, photo: null } });
@@ -100,7 +106,7 @@ export const authRoutes: Route[] = [
       rateHit(accKey, 15 * 60_000);
       throw new ApiError(401, 'E-mail ou senha incorretos.');
     }
-    await loginUser(res, u);
+    await loginUser(req, res, u);
   }),
 
   // Login com Google (Google Identity Services). Requer GOOGLE_CLIENT_ID no .env.
@@ -131,8 +137,11 @@ export const authRoutes: Route[] = [
           hashPassword(crypto.randomBytes(24).toString('hex')), now());
       u = db.prepare('SELECT * FROM users WHERE id = ?').get(uid) as any;
       if (roleIn === 'passenger') notifyAdmins('new_passenger', 'Novo passageiro (Google)', info.email);
+      notify(uid, 'welcome', 'Bem-vindo(a) à VAIRO!', roleIn === 'driver'
+        ? 'Complete seu cadastro de mototaxista para começar a receber corridas.'
+        : 'Peça sua primeira corrida: informe para onde vai e veja o preço antes de confirmar.');
     }
-    await loginUser(res, u);
+    await loginUser(req, res, u);
   }),
 
   route('POST /api/auth/logout', 'any', async ({ req, res }) => {
@@ -170,6 +179,11 @@ export const authRoutes: Route[] = [
     const photo = b.photo !== undefined ? sanitizePhoto(b.photo) : user!.photo;
     db.prepare('UPDATE users SET name = ?, phone = ?, photo = ? WHERE id = ?')
       .run(name, phone, photo, user!.id);
+    const changed = [name !== user!.name && 'nome', phone !== user!.phone && 'telefone', photo !== user!.photo && 'foto'].filter(Boolean);
+    if (changed.length) {
+      notify(user!.id, 'profile_updated', 'Seus dados foram alterados',
+        `Alterado: ${changed.join(', ')}. Se não foi você, troque a senha e fale com o suporte.`);
+    }
     json(res, 200, { ok: true });
   }),
 

@@ -154,7 +154,7 @@ export const adminRoutes: Route[] = [
 
   // ---------- usuários (bloqueio) ----------
   route('POST /api/admin/users/:id/block', 'admin', async ({ req, res, user, params }) => {
-    const target = db.prepare('SELECT id, role FROM users WHERE id = ?').get(params.id) as any;
+    const target = db.prepare('SELECT id, role, blocked FROM users WHERE id = ?').get(params.id) as any;
     if (!target) throw new ApiError(404, 'Usuário não encontrado.');
     if (target.role === 'admin') throw new ApiError(403, 'Não é possível bloquear administradores.');
     const b = await readBody(req);
@@ -166,6 +166,9 @@ export const adminRoutes: Route[] = [
     if (blocked) {
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(params.id);
       db.prepare('UPDATE drivers SET online = 0 WHERE user_id = ?').run(params.id);
+    }
+    if (!blocked && target.blocked) {
+      notify(params.id, 'account_reactivated', 'Sua conta foi reativada', 'Você já pode entrar e usar a VAIRO normalmente.');
     }
     audit(user!.id, blocked ? 'user_block' : 'user_unblock', 'user', params.id, reason);
     json(res, 200, { ok: true });

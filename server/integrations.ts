@@ -212,9 +212,10 @@ export const integrationRoutes: Route[] = [
     json(res, 201, { ok: true });
   }),
 
-  route('POST /api/push/unsubscribe', 'any', async ({ req, res }) => {
+  route('POST /api/push/unsubscribe', 'any', async ({ req, res, user }) => {
     const b = await readBody(req);
-    if (typeof b.endpoint === 'string') removeSubscription(b.endpoint);
+    // só o dono da inscrição pode removê-la
+    if (typeof b.endpoint === 'string') removeSubscription(b.endpoint, user!.id);
     json(res, 200, { ok: true });
   }),
 
