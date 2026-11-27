@@ -7,7 +7,26 @@ import {
 import { searchBase, nearestBase, referencePlaces, neighbourhoods } from './address-base.ts';
 import { locateHouseNumber } from './house-number.ts';
 
-const UA = 'AssisMotoTaxi/1.0 (plataforma de mototaxi; contato: admin local)';
+const UA = 'VAIRO/1.0 (mototaxi em Assis Chateaubriand-PR; +https://assis-mototaxi.fly.dev)';
+
+/**
+ * Serviços públicos do OpenStreetMap (Nominatim e o OSRM de demonstração):
+ * as políticas de uso pedem no máximo 1 consulta por segundo, identificação
+ * do app e nada de autocompletar. Esta fila garante o intervalo para o
+ * servidor inteiro; se a espera passar de ~3 s, a consulta é pulada (cai na
+ * base local) em vez de sobrecarregar o serviço.
+ */
+let _osmNext = 0;
+async function osmSlot(): Promise<boolean> {
+  const t = Date.now();
+  const at = Math.max(t, _osmNext);
+  if (at - t > 3000) return false;
+  _osmNext = at + 1100;
+  if (at > t) await new Promise(r => setTimeout(r, at - t));
+  return true;
+}
+/** Endereço de um ponto: guardado por 24 h (arredondado a ~10 m) para não repetir a consulta. */
+const _revCache = new Map<string, { v: { text: string; exact: boolean }; exp: number }>();
 
 export interface RouteResult {
   distance_m: number;
@@ -73,7 +92,8 @@ export async function route(from: GeoPoint, to: GeoPoint): Promise<RouteResult> 
     } catch { /* cai para OSRM */ }
   }
 
-  if (!offline()) {
+  // OSRM público (demonstração): 1 consulta/s; com OSRM_BASE próprio, sem fila
+  if (!offline() && (process.env.OSRM_BASE || await osmSlot())) {
     try {
       const base = process.env.OSRM_BASE || 'https://router.project-osrm.org';
       const url = `${base}/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}` +
@@ -181,7 +201,7 @@ function decorate(text: string, lat: number, lng: number,
  * `sessionToken` identifica a digitação de uma pessoa: o Google cobra a
  * digitação + a escolha como uma sessão só.
  */
-export async function searchAddress(q: string, sessionToken?: string): Promise<GeoSearchResult[]> {
+export async function searchAddress(q: string, sessionToken?: string, deep = false): Promise<GeoSearchResult[]> {
   const cLat = getSettingNum('center_lat'), cLng = getSettingNum('center_lng');
   const cityFull = getSetting('city_name');              // "Assis Chateaubriand - PR"
   const cityName = cityFull.split('-')[0].trim();        // "Assis Chateaubriand"
@@ -301,8 +321,10 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
     } catch { /* cai para o OSM abaixo */ }
   }
 
-  // 3) Nominatim (OpenStreetMap), com a cidade no texto da consulta
-  if (!offline()) {
+  // 3) Nominatim (OpenStreetMap), com a cidade no texto da consulta — SÓ quando
+  //    a pessoa pede ("Buscar no OpenStreetMap" / Enter). A política do
+  //    Nominatim público proíbe usá-lo como autocompletar (a cada letra).
+  if (!offline() && deep && await osmSlot()) {
     const base = process.env.NOMINATIM_BASE || 'https://nominatim.openstreetmap.org';
     const d = 0.22;
     const attempts = [
@@ -313,8 +335,9 @@ export async function searchAddress(q: string, sessionToken?: string): Promise<G
       `${base}/search?format=jsonv2&limit=8&countrycodes=br&addressdetails=1&bounded=1` +
       `&viewbox=${cLng - d},${cLat - d},${cLng + d},${cLat + d}&q=${encodeURIComponent(q)}`,
     ];
-    for (const url of attempts) {
+    for (const [i, url] of attempts.entries()) {
       try {
+        if (i > 0 && !await osmSlot()) break;
         const r = await fetch(url, {
           headers: { 'User-Agent': UA, 'Accept-Language': 'pt-BR' },
           // curto de propósito: é só reserva — melhor "nada encontrado" rápido
@@ -438,7 +461,10 @@ export async function reverseGeocode(lat: number, lng: number):
       if (m) return m;
     } catch { /* cai para o Nominatim */ }
   }
-  if (!offline()) {
+  const ck = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+  const hit = _revCache.get(ck);
+  if (hit && hit.exp > Date.now()) return hit.v;
+  if (!offline() && await osmSlot()) {
     try {
       const base = process.env.NOMINATIM_BASE || 'https://nominatim.openstreetmap.org';
       const url = `${base}/reverse?format=jsonv2&addressdetails=1&zoom=18&lat=${lat}&lon=${lng}`;
@@ -449,15 +475,21 @@ export async function reverseGeocode(lat: number, lng: number):
       if (r.ok) {
         const data: any = await r.json();
         const a = data?.address || {};
-        const line = [
-          a.road || data?.name,
-          a.house_number,
-          a.suburb || a.neighbourhood,
-          a.city || a.town || a.village,
-        ].filter(Boolean).join(', ');
-        if (line) return { text: line, exact: true };
-        if (data?.display_name) {
-          return { text: String(data.display_name).split(',').slice(0, 4).join(','), exact: true };
+        const city = a.city || a.town || a.village;
+        let out: { text: string; exact: boolean } | null = null;
+        if (a.road) {
+          out = { text: [a.road, a.house_number, a.suburb || a.neighbourhood, city].filter(Boolean).join(', '), exact: true };
+        } else {
+          // sem rua (praça, terreno, área sem nome no mapa): referência mais
+          // próxima, marcada como aproximada — nunca só "Assis Chateaubriand"
+          const near = nearestBase(lat, lng);
+          const place = data?.name || (near ? `Perto de ${near.name}` : (a.suburb || a.neighbourhood) ? 'Ponto no mapa' : null);
+          if (place) out = { text: [place, a.suburb || a.neighbourhood, city].filter(Boolean).join(', '), exact: false };
+        }
+        if (out) {
+          if (_revCache.size > 5000) _revCache.clear();
+          _revCache.set(ck, { v: out, exp: Date.now() + 24 * 3600_000 });
+          return out;
         }
       }
     } catch { /* fallback */ }

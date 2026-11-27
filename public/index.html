@@ -71,23 +71,29 @@
   <!-- ============ INÍCIO (pedir corrida) ============ -->
   <section class="screen" id="screen-home" hidden>
     <h2 id="greeting" style="margin:2px 0 12px;font-size:1.2rem"></h2>
-    <div class="row mb">
+    <div class="row mb" style="flex-wrap:wrap;gap:8px">
       <span class="chip yellow" id="online-chip">🏍️ … mototaxistas disponíveis</span>
+      <span class="gps-chip off" role="button" tabindex="0">📍 Localização</span>
     </div>
     <div class="mapbox" id="map-home"></div>
+    <div class="route-info" id="route-info" hidden aria-live="polite"></div>
 
     <div class="card">
       <div class="field ac-wrap">
-        <label>📍 Origem (embarque)</label>
-        <input class="input" id="in-origin" placeholder="De onde você sai?" autocomplete="off">
+        <label for="in-origin">🟢 De onde você vai sair?</label>
+        <input class="input" id="in-origin" placeholder="Endereço, estabelecimento ou bairro" autocomplete="off">
         <div class="ac-list" id="ac-origin" hidden></div>
       </div>
-      <button class="btn btn-outline btn-sm mb" id="btn-mylocation">🧭 Usar minha localização atual</button>
+      <div class="row mb" style="flex-wrap:wrap;gap:8px">
+        <button class="btn btn-outline btn-sm" id="btn-mylocation">🧭 Usar minha localização atual</button>
+        <button class="btn btn-outline btn-sm" id="btn-adjust-origin" type="button">📌 Ajustar no mapa</button>
+      </div>
       <div class="field ac-wrap">
-        <label>🏁 Destino</label>
-        <input class="input" id="in-dest" placeholder="Digite seu destino" autocomplete="off">
+        <label for="in-dest">🔴 Para onde você vai?</label>
+        <input class="input" id="in-dest" placeholder="Endereço, estabelecimento ou bairro" autocomplete="off">
         <div class="ac-list" id="ac-dest" hidden></div>
       </div>
+      <button class="btn btn-outline btn-sm mb" id="btn-adjust-dest" type="button">📌 Marcar destino no mapa</button>
       <div id="fav-chips" class="row mb" style="flex-wrap:wrap"></div>
       <button class="btn btn-primary btn-lg" id="btn-quote">Ver preços e solicitar 🏍️</button>
     </div>
@@ -126,6 +132,11 @@
     <div class="status-banner" id="ride-banner"></div>
     <div class="card" id="ride-payment" hidden></div>
     <div class="mapbox tall" id="map-ride"></div>
+    <div class="row mb" style="flex-wrap:wrap;gap:8px">
+      <span class="chip soft" id="driver-loc-chip" hidden></span>
+      <span class="chip soft" id="driver-dist-chip" hidden></span>
+      <span class="gps-chip" role="button" tabindex="0"></span>
+    </div>
     <div class="card" id="ride-driver-card" hidden></div>
     <div class="card" id="ride-boarding" hidden></div>
     <div class="card" id="ride-safety" hidden></div>

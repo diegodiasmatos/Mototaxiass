@@ -371,6 +371,13 @@ function paintToggle() {
 async function toggleOnline() {
   try {
     if (!S.online) {
+      // consentimento: explica antes de o navegador pedir; bloqueada, ensina a liberar
+      const st = await locationPermission();
+      if (st === 'denied' || st === 'unsupported') { showLocationHelp(); return; }
+      if (st === 'prompt' && !await askLocationConsent('driver', { force: true })) {
+        toast('Sem localização não dá para receber corridas. Você pode ativar quando quiser.');
+        return;
+      }
       // exige localização real e precisa para entrar na fila
       const pos = await getPosition();
       await api('/api/driver/online', { method: 'POST', body: { online: true } });
@@ -423,11 +430,20 @@ function startLocationWatch() {
       const { latitude: lat, longitude: lng, accuracy } = p.coords;
       if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return;
       setDriverGps(accuracy > 150 ? 'weak' : 'ok', `±${Math.round(accuracy)} m`);
-      if (S.meMarker && S.maps.drive) S.meMarker.setLatLng([lat, lng]);
+      if (S.meMarker && S.maps.drive) moveMarkerSmooth(S.meMarker, lat, lng);
+      S.myPos = { lat, lng, at: Date.now() };
+      updatePickupDistance();
 
-      const t = Date.now();
-      if (t - S.lastSent < 4000) return;        // envia no máximo a cada 4 s
+      // envio adaptativo: em corrida, a cada 4 s se andou (ou 15 s parado);
+      // só online, a cada 30 m andados ou 30 s — parado não gasta bateria nem dados
+      const t = Date.now(), last = S.lastSentPos;
+      const inRide = !!S.activeRide && ['accepted', 'in_progress'].includes(S.activeRide.status);
+      const moved = last ? haversineM2(lat, lng, last.lat, last.lng) : Infinity;
+      const minGap = inRide ? 4000 : 8000;
+      if (t - S.lastSent < minGap) return;
+      if (inRide ? (moved < 8 && t - S.lastSent < 15000) : (moved < 30 && t - S.lastSent < 30000)) return;
       S.lastSent = t;
+      S.lastSentPos = { lat, lng };
       api('/api/driver/location', { method: 'POST', body: { lat, lng, accuracy_m: accuracy } })
         .then(r => { if (!r.accuracy_ok) setDriverGps('weak', `impreciso (±${Math.round(accuracy)} m)`); })
         .catch(() => setDriverGps('off', 'sem conexão'));
@@ -452,8 +468,23 @@ function setDriverGps(state, label) {
 
 function onPassengerLocation(p) {
   if (!S.activeRide || p.ride_id !== S.activeRide.id || !S.maps.drive) return;
-  if (S.paxMarker) S.paxMarker.setLatLng([p.lat, p.lng]);
-  else { S.paxMarker = emojiMarker(S.maps.drive, p.lat, p.lng, '🧍'); S.driveLayers.push(S.paxMarker); }
+  S.paxPos = { lat: p.lat, lng: p.lng, at: Date.now() };
+  if (S.paxMarker) moveMarkerSmooth(S.paxMarker, p.lat, p.lng);
+  else { S.paxMarker = placeMarker(S.maps.drive, p.lat, p.lng, MARK.passenger, 'Passageiro'); S.driveLayers.push(S.paxMarker); }
+  updatePickupDistance();
+}
+
+/** Distância até o embarque (e até o passageiro, se ele compartilha), em linha reta. */
+function updatePickupDistance() {
+  const el = $('#drv-dist');
+  const r = S.activeRide;
+  if (!el) return;
+  if (!r || r.status !== 'accepted' || !S.myPos || Date.now() - S.myPos.at > 60_000) { el.hidden = true; return; }
+  const toPickup = haversineM2(S.myPos.lat, S.myPos.lng, r.origin.lat, r.origin.lng);
+  const pax = S.paxPos && Date.now() - S.paxPos.at < 90_000
+    ? ` · passageiro a ${fmt.dist(haversineM2(S.myPos.lat, S.myPos.lng, S.paxPos.lat, S.paxPos.lng))}` : '';
+  el.hidden = false;
+  el.textContent = `📏 Embarque a ${fmt.dist(toPickup)} (linha reta)${pax}`;
 }
 
 async function refreshPanelStats() {
@@ -587,6 +618,7 @@ function renderDrive() {
       <span class="chip soft">${PAY_PT[r.payment_method]}</span>
       <span class="chip yellow">Você recebe ${fmt.money(r.driver_cents)}</span>
       <span class="gps-chip">🛰️ GPS</span>
+      <span class="chip soft" id="drv-dist" hidden></span>
     </div>
     ${r.paid_upfront
       ? `<p class="muted small mt">✅ <b>Já pago pela plataforma</b> — não cobre nada do passageiro.
@@ -724,10 +756,10 @@ function renderDriveMap() {
     const map = S.maps.drive;
     if (!map) return;
     S.driveLayers.forEach(l => l.remove()); S.driveLayers = [];
-    S.meMarker = null; S.paxMarker = null;   // foram removidos junto com as camadas
+    S.meMarker = null; S.paxMarker = null; S.paxPos = null;   // foram removidos junto com as camadas
     map.invalidateSize();        // a tela acabou de aparecer: mede antes de enquadrar
-    S.driveLayers.push(emojiMarker(map, r.origin.lat, r.origin.lng, '📍'));
-    S.driveLayers.push(emojiMarker(map, r.dest.lat, r.dest.lng, '🏁'));
+    S.driveLayers.push(placeMarker(map, r.origin.lat, r.origin.lng, MARK.origin, 'Embarque'));
+    S.driveLayers.push(placeMarker(map, r.dest.lat, r.dest.lng, MARK.dest, 'Destino'));
     if (r.route_geojson) {
       const line = drawRoute(map, r.route_geojson);
       S.driveLayers.push(line);
@@ -736,7 +768,7 @@ function renderDriveMap() {
     navigator.geolocation?.getCurrentPosition(p => {
       if (S.maps.drive !== map) return;      // o mapa foi refeito enquanto o GPS respondia
       S.meMarker?.remove();
-      S.meMarker = emojiMarker(map, p.coords.latitude, p.coords.longitude, '🏍️');
+      S.meMarker = placeMarker(map, p.coords.latitude, p.coords.longitude, MARK.moto, 'Você');
       S.driveLayers.push(S.meMarker);
     }, () => { });
   }, 80);

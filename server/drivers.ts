@@ -225,6 +225,11 @@ export const driverRoutes: Route[] = [
     }
     db.prepare('UPDATE drivers SET online = ?, last_seen_at = ? WHERE user_id = ?')
       .run(online, now(), user!.id);
+    // offline e sem corrida: a última posição deixa de existir (não fica rastro do parceiro parado em casa)
+    if (!online && !activeRideOf(user!.id)) {
+      db.prepare('UPDATE drivers SET last_lat = NULL, last_lng = NULL, last_loc_at = NULL, last_accuracy_m = NULL WHERE user_id = ?')
+        .run(user!.id);
+    }
     json(res, 200, { ok: true, online: !!online });
   }),
 
@@ -239,6 +244,12 @@ export const driverRoutes: Route[] = [
     const maxAcc = getSettingNum('gps_max_accuracy_m');
     const accuracy = Number.isFinite(acc) ? acc : null;
     const t = now();
+    // só guarda a posição de quem está trabalhando: online ou com corrida em andamento
+    const isOnline = (db.prepare('SELECT online FROM drivers WHERE user_id = ?').get(user!.id) as any)?.online;
+    if (!isOnline && !activeRideOf(user!.id)) {
+      json(res, 200, { ok: true, ignored: true, reason: 'offline', accuracy_ok: true, max_accuracy_m: maxAcc });
+      return;
+    }
     db.prepare(`UPDATE drivers SET last_lat = ?, last_lng = ?, last_loc_at = ?,
       last_accuracy_m = ?, last_seen_at = ? WHERE user_id = ?`)
       .run(lat, lng, t, accuracy, t, user!.id);
@@ -335,7 +346,7 @@ export const driverRoutes: Route[] = [
       .run(now(), r.id, 'accepted');
     rideEvent(r.id, 'arrived', user!.id);
     notify(r.passenger_id, 'driver_arrived', '🏍️ Seu mototaxista chegou!',
-      { body: 'Ele está aguardando no ponto de embarque.', rideId: r.id, url: '/' });
+      { body: 'Ele está aguardando no ponto de embarque.', rideId: r.id, eventKey: `arrived:${r.id}` });
     notifyRideUpdate(getRide(r.id));
     json(res, 200, { ok: true });
   }),

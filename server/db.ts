@@ -744,6 +744,21 @@ const MIGRATIONS: { version: number; sql: string; fkOff?: boolean }[] = [
     );
     `,
   },
+  // ----------------------------------------------------------------
+  // v12 — consumo mensal das APIs pagas (Google Maps Platform), para o app
+  // nunca passar da cota grátis sem querer.
+  // ----------------------------------------------------------------
+  {
+    version: 12,
+    sql: `
+    CREATE TABLE api_usage (
+      month TEXT NOT NULL,
+      api   TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (month, api)
+    );
+    `,
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {
@@ -772,6 +787,13 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   maps_provider: 'auto',
   mapbox_style: 'mapbox://styles/mapbox/streets-v12',
   cache_route_hours: '72',         // rota entre dois pontos muda pouco
+  // Tetos MENSAIS de chamadas ao Google (abaixo da cota grátis de cada SKU);
+  // passou do teto, o app usa OpenStreetMap/OSRM até o mês virar. Ver geo-usage.ts.
+  google_cap_routes: '900',        // Compute Routes Enterprise (moto): 1.000 grátis/mês
+  google_cap_autocomplete: '9000', // Autocomplete: 10.000 grátis/mês
+  google_cap_details: '9000',      // Place Details Essentials: 10.000 grátis/mês
+  google_cap_geocode: '9000',      // Geocoding: 10.000 grátis/mês
+  google_cap_maploads: '9000',     // Dynamic Maps: 10.000 grátis/mês
 
   city_name: 'Assis Chateaubriand - PR',
   center_lat: '-24.4156',

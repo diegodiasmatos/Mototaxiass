@@ -1282,6 +1282,38 @@ async function secMaps() {
     toast(`${r.removed} entrada(s) removida(s).`, 'ok');
     secMaps();
   });
+
+  renderGeoUsage();
+}
+
+/** Consumo do Google no mês e tetos (o app nunca passa da cota grátis). */
+async function renderGeoUsage() {
+  let card = document.getElementById('geo-usage');
+  if (!card) {
+    card = document.createElement('div');
+    card.className = 'card'; card.id = 'geo-usage';
+    main().appendChild(card);
+  }
+  const u = await api('/api/admin/geo-usage').catch(e => ({ error: e.message }));
+  if (u.error) { card.innerHTML = `<h3>💰 Consumo do Google</h3><p class="muted">${escapeHtml(u.error)}</p>`; return; }
+  card.innerHTML = `<h3>💰 Consumo do Google Maps — mês ${escapeHtml(u.month)}</h3>
+    <p class="muted small mb">Cada chamada ao Google é contada. Ao chegar no teto, o app passa a usar o
+      OpenStreetMap até o mês virar (dia 1º, horário do Pacífico) — sem cobrança surpresa.
+      O teto não pode passar da cota grátis do Google. Configure também cotas e alerta de orçamento no Google Cloud (ver README).</p>
+    ${u.apis.map(a => `<div class="list-item">
+      <div class="li-main"><div class="li-title">${escapeHtml(a.label)} ${a.blocked ? '<span class="pill red">teto atingido: usando OSM</span>' : ''}</div>
+        <div class="li-sub">${a.used} de ${a.cap} (cota grátis: ${a.free}/mês) · ${escapeHtml(a.sku)}</div>
+        <div class="bar" style="height:6px;border-radius:4px;background:var(--card-2);margin-top:6px">
+          <div style="height:6px;border-radius:4px;width:${a.pct}%;background:${a.pct >= 90 ? 'var(--red)' : a.pct >= 70 ? 'var(--amber)' : 'var(--green)'}"></div></div></div>
+      <input class="input" style="width:96px" type="number" min="0" max="${a.free}" value="${a.cap}" data-cap="${a.api}" aria-label="Teto mensal: ${escapeHtml(a.label)}">
+    </div>`).join('')}
+    <button class="btn btn-outline btn-sm mt" type="button" id="geo-caps-save">Salvar tetos</button>`;
+  $('#geo-caps-save').onclick = () => withLoading($('#geo-caps-save'), async () => {
+    const body = {};
+    $$('[data-cap]', card).forEach(i => { body[i.dataset.cap] = Number(i.value); });
+    await api('/api/admin/geo-usage', { method: 'PUT', body });
+    renderGeoUsage();
+  }, { okMsg: 'Tetos salvos e registrados na auditoria.' }).catch(() => { });
 }
 
 /* ============ configurações ============ */
