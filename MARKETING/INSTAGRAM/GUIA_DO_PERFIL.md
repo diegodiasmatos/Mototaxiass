@@ -14,8 +14,16 @@ em `../CAMPANHA_01/`. Os textos só falam do que o app já faz.
 2. **Nome** (até 30 caracteres; é o que a busca encontra):
    - `VAIRO · Mototáxi em Assis` ← recomendado
    - `VAIRO | Corridas de moto`
-3. **Nome de usuário**: curto e igual em todas as redes (ex.: `@vairo.app`,
-   `@vairoapp` ou `@vairo.assis`). Se já criou, mantenha.
+3. **Nome de usuário**: hoje é **`@vairo.1.1`** (instagram.com/vairo.1.1).
+   - Funciona, mas o "1.1" parece número de versão e é difícil de falar e de
+     lembrar ("vairo ponto um ponto um"). Se possível, troque por um nome limpo:
+     `@vairo.app`, `@vairoapp`, `@vairo.assis`, `@usevairo` ou `@vairo.oficial`.
+     O Instagram mostra na hora se está livre (Editar perfil → Nome de usuário).
+     A troca é grátis, os seguidores continuam, e o nome antigo fica reservado
+     para você por 14 dias.
+   - Ao divulgar, use o endereço **sem** o código do final
+     (`instagram.com/vairo.1.1`, não `...?cnvx=...`): esse código só rastreia
+     o compartilhamento.
 4. **Foto de perfil**: `FOTO_PERFIL.png`. O Instagram recorta em círculo; o
    logotipo já está centralizado para isso.
 5. **Bio**, opção A (até o lançamento):
