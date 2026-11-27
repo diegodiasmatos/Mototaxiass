@@ -612,13 +612,14 @@ async function secFinance() {
     <h2 class="mb">💰 Financeiro</h2>
     <p class="muted small mb">Provedor: <b>${escapeHtml(f.provider)}</b> ·
       todos os valores vêm do livro-caixa (somente inserção, nunca editado).</p>
+    <div class="card" id="wd-card"><div class="spinner"></div></div>
 
     <div class="fin-grid mb">
       <div class="fin-card in"><div class="fv">${fmt.money(t.cobrado)}</div><div class="fl">Total cobrado</div></div>
       <div class="fin-card in"><div class="fv">${fmt.money(t.comissao)}</div><div class="fl">Comissão da plataforma</div></div>
       <div class="fin-card out"><div class="fv">${fmt.money(t.repasse_devido)}</div><div class="fl">Repasses devidos</div></div>
       <div class="fin-card out"><div class="fv">${fmt.money(t.repasse_pago)}</div><div class="fl">Repasses pagos</div></div>
-      <div class="fin-card warn"><div class="fv">${fmt.money(t.repasse_devido - t.repasse_pago)}</div><div class="fl">A repassar</div></div>
+      <div class="fin-card warn"><div class="fv">${fmt.money(f.saldos.reduce((s, x) => s + Math.max(0, x.pending_cents), 0))}</div><div class="fl">A repassar (saldo das carteiras)</div></div>
       <div class="fin-card warn"><div class="fv">${fmt.money(t.divida_motoboys)}</div><div class="fl">Comissão a receber (dinheiro)</div></div>
       <div class="fin-card bad"><div class="fv">${fmt.money(t.estornos)}</div><div class="fl">Estornos</div></div>
       <div class="fin-card"><div class="fv">${fmt.money(t.taxas_provedor)}</div><div class="fl">Taxas do provedor</div></div>
@@ -668,6 +669,8 @@ async function secFinance() {
       </tr>`).join('') || '<tr><td class="muted center">Nenhuma transação.</td></tr>'}
       </tbody></table>
     </div>`;
+
+  renderWithdrawals();
 
   $$('[data-pay]').forEach(b => b.onclick = async () => {
     const max = Number(b.dataset.max);
@@ -1314,6 +1317,90 @@ async function renderGeoUsage() {
     await api('/api/admin/geo-usage', { method: 'PUT', body });
     renderGeoUsage();
   }, { okMsg: 'Tetos salvos e registrados na auditoria.' }).catch(() => { });
+}
+
+/* ============ saques dos mototaxistas ============ */
+const WD_PT = { aguardando_aprovacao: ['Aguardando aprovação', 'yellow'], aprovado: ['Aprovado', 'blue'],
+  em_processamento: ['Em processamento', 'blue'], pago: ['Pago', 'green'], rejeitado: ['Rejeitado', 'red'], cancelado: ['Cancelado', 'gray'] };
+
+async function renderWithdrawals(filter = 'abertos') {
+  const card = document.getElementById('wd-card');
+  if (!card) return;
+  let r;
+  try { r = await api(`/api/admin/withdrawals?status=${encodeURIComponent(filter)}`); }
+  catch (e) { card.innerHTML = `<p class="muted">${escapeHtml(e.message)}</p>`; return; }
+  const t = r.totals;
+  card.innerHTML = `
+    <h3>💸 Saques dos mototaxistas</h3>
+    <div class="fin-grid mb">
+      <div class="fin-card in"><div class="fv">${fmt.money(t.commission_cents)}</div><div class="fl">Comissão da plataforma (pagamentos reais)</div></div>
+      <div class="fin-card warn"><div class="fv">${fmt.money(t.cash_commission_pending_cents)}</div><div class="fl">Comissão de dinheiro a receber</div></div>
+      <div class="fin-card out"><div class="fv">${fmt.money(t.owed_to_drivers_cents)}</div><div class="fl">Saldo devido aos mototaxistas</div></div>
+      <div class="fin-card"><div class="fv">${t.open_withdrawals} · ${fmt.money(t.open_withdrawals_cents)}</div><div class="fl">Saques em aberto</div></div>
+    </div>
+    ${t.commission_test_cents ? `<p class="muted small">Pagamentos de teste (fora dos totais): comissão ${fmt.money(t.commission_test_cents)}.</p>` : ''}
+    <div class="row mb" style="flex-wrap:wrap;gap:6px">
+      ${[['abertos', 'Em aberto'], ['pago', 'Pagos'], ['rejeitado', 'Rejeitados'], ['cancelado', 'Cancelados'], ['', 'Todos']].map(([k, l]) =>
+        `<button class="chip ${k === filter ? 'yellow' : ''}" data-wdf="${k}">${l}</button>`).join('')}
+    </div>
+    <table class="tbl"><thead><tr><th>Pedido</th><th>Mototaxista</th><th>Líquido</th><th>Comissão descontada</th><th>Status</th><th></th></tr></thead><tbody>
+    ${r.withdrawals.map(w => `<tr>
+      <td data-l="Pedido" class="small">${fmt.dt(w.created_at)}<br><span class="muted">${escapeHtml(w.id)}</span></td>
+      <td data-l="Mototaxista"><b>${escapeHtml(w.driver_name)}</b>${w.flags.length ? `<br><span class="pill red" title="${escapeHtml(w.flags.join(' '))}">⚠️ ${w.flags.length} alerta(s)</span>` : ''}</td>
+      <td data-l="Líquido"><b>${fmt.money(w.amount_cents)}</b></td>
+      <td data-l="Comissão">${fmt.money(w.debt_cents)}</td>
+      <td data-l="Status"><span class="pill ${WD_PT[w.status][1]}">${WD_PT[w.status][0]}</span>${w.reference ? `<br><span class="small muted">${escapeHtml(w.reference)}</span>` : ''}</td>
+      <td><button class="btn btn-outline btn-sm" data-wd="${w.id}">Abrir</button></td>
+    </tr>`).join('') || '<tr><td class="muted center" colspan="6">Nenhum saque.</td></tr>'}
+    </tbody></table>`;
+  $$('[data-wdf]', card).forEach(b => b.onclick = () => renderWithdrawals(b.dataset.wdf));
+  $$('[data-wd]', card).forEach(b => b.onclick = () => openWithdrawal(b.dataset.wd, filter));
+}
+
+async function openWithdrawal(wid, filter) {
+  let d;
+  try { d = await api(`/api/admin/withdrawals/${wid}`); } catch (e) { toast(e.message, 'err'); return; }
+  const w = d.withdrawal, wal = d.wallet;
+  const can = s => ({ approve: ['aguardando_aprovacao'], processing: ['aprovado'], pay: ['aprovado', 'em_processamento'],
+    reject: ['aguardando_aprovacao', 'aprovado', 'em_processamento'] })[s].includes(w.status);
+  const m = openModal(`
+    <h3>💸 Saque de ${escapeHtml(w.driver_name)}</h3>
+    <p><span class="pill ${WD_PT[w.status][1]}">${WD_PT[w.status][0]}</span> <span class="muted small">${escapeHtml(w.id)}</span></p>
+    ${w.flags.length ? `<div class="testbar danger">${w.flags.map(escapeHtml).join('<br>')}</div>` : ''}
+    <div class="wd-preview">
+      <div><span>Valor bruto reservado</span><b>${fmt.money(w.gross_cents)}</b></div>
+      <div><span>Comissão pendente descontada</span><b>− ${fmt.money(w.debt_cents)}</b></div>
+      <div><span>Taxas</span><b>${fmt.money(0)}</b></div>
+      <div class="total"><span>Transferir</span><b>${fmt.money(w.amount_cents)}</b></div>
+    </div>
+    <div class="list-item"><div class="li-main"><div class="li-sub">Pix (${escapeHtml(w.pix_type || '')}) · confira o NOME do titular no app do banco antes de confirmar</div>
+      <div class="li-title mono">${escapeHtml(w.pix_key || '—')}</div><div class="li-sub">Titular informado: ${escapeHtml(w.pix_holder || '—')} · telefone ${escapeHtml(w.driver_phone || '—')}</div></div></div>
+    <div class="list-item"><div class="li-main"><div class="li-sub">Carteira agora</div>
+      <div class="li-title">Saldo ${fmt.money(wal.available_cents)} · comissão pendente ${fmt.money(wal.pending_commission_cents)} · ganhos totais ${fmt.money(wal.totals.net_cents)}</div></div></div>
+    <p class="muted small">Pedido ${fmt.dt(w.created_at)}${w.approved_at ? ` · aprovado ${fmt.dt(w.approved_at)}` : ''}${w.paid_at ? ` · pago ${fmt.dt(w.paid_at)} (${escapeHtml(w.reference || '')})` : ''}${w.reason ? ` · ${escapeHtml(w.reason)}` : ''}</p>
+    <div class="row mt" style="flex-wrap:wrap;gap:8px">
+      ${can('approve') ? '<button class="btn btn-primary btn-sm" data-a="approve">Aprovar</button>' : ''}
+      ${can('processing') ? '<button class="btn btn-outline btn-sm" data-a="processing">Marcar em processamento</button>' : ''}
+      ${can('pay') ? '<button class="btn btn-green btn-sm" data-a="pay">Registrar pagamento feito</button>' : ''}
+      ${can('reject') ? '<button class="btn btn-danger btn-sm" data-a="reject">Rejeitar</button>' : ''}
+    </div>`);
+  $$('[data-a]', m).forEach(b => b.onclick = async () => {
+    const a = b.dataset.a;
+    let body;
+    if (a === 'pay') {
+      const ref = await askText('Pagamento feito', 'Identificação do Pix enviado (comprovante, ex.: E2E…)');
+      if (!ref) return;
+      body = { reference: ref };
+    } else if (a === 'reject') {
+      const reason = await askText('Rejeitar saque', 'Justificativa (o mototaxista verá)');
+      if (!reason) return;
+      body = { reason };
+    } else if (a === 'approve' && !await confirmModal('Aprovar o saque?', 'Aprovar não é pagar: depois de transferir, registre o pagamento com o comprovante.', 'Aprovar')) return;
+    await withLoading(b, async () => {
+      await api(`/api/admin/withdrawals/${wid}/${a}`, { method: 'POST', body: body || {} });
+      m.close(); renderWithdrawals(filter);
+    }, { okMsg: 'Registrado e mototaxista avisado.' }).catch(() => { });
+  });
 }
 
 /* ============ configurações ============ */

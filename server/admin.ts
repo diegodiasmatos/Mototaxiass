@@ -10,7 +10,7 @@ import { getFare, allFares, computePriceCents, splitCommission } from './fares.t
 import { eligibleDrivers, finalizeRide, getRide, rideEvent, cancelRide, ridePaymentOk } from './rides.ts';
 import { notify, notifyAdmins, sseSend } from './notify.ts';
 import {
-  driverBalance, ledger, getPaymentByRide, refundPayment, syncPayment,
+  driverBalance, ledger, tx, getPaymentByRide, refundPayment, syncPayment,
   isTestMode, providerName, splitAvailable, testPaymentsBlocked,
 } from './payments.ts';
 
@@ -63,9 +63,9 @@ export const adminRoutes: Route[] = [
       gross_cents: c(`SELECT COALESCE(SUM(price_cents),0) v FROM rides WHERE status='completed'`).v,
       commission_cents: c(`SELECT COALESCE(SUM(commission_cents),0) v FROM rides WHERE status='completed'`).v,
       drivers_cents: c(`SELECT COALESCE(SUM(driver_cents),0) v FROM rides WHERE status='completed'`).v,
-      payout_pending_cents: Math.max(0,
-        c(`SELECT COALESCE(SUM(amount_cents),0) v FROM financial_transactions WHERE kind='repasse_devido'`).v
-        - c(`SELECT COALESCE(SUM(amount_cents),0) v FROM financial_transactions WHERE kind='repasse_pago'`).v),
+      // mesmo cálculo da carteira: saldo de cada parceiro (saques reservados já descontados)
+      payout_pending_cents: (db.prepare(`SELECT user_id FROM drivers WHERE status = 'approved'`).all() as any[])
+        .reduce((s, d) => s + Math.max(0, driverBalance(d.user_id).pending_cents), 0),
       test_mode: isTestMode(),
       test_blocked: testPaymentsBlocked(),
       provider: providerName(),
@@ -311,9 +311,11 @@ export const adminRoutes: Route[] = [
 
     const totals = {
       cobrado: sum('cobranca'), comissao: sum('comissao'),
-      repasse_devido: sum('repasse_devido'), repasse_pago: sum('repasse_pago'),
+      // crédito líquido dos parceiros (com estornos) e o que já saiu (repasses da central + saques pagos)
+      repasse_devido: sum('repasse_devido') + sum('ajuste_repasse'),
+      repasse_pago: sum('repasse_pago') + sum('saque_pago'),
       estornos: sum('estorno'), taxas_provedor: sum('taxa_provedor'),
-      divida_motoboys: sum('divida_comissao') - sum('quitacao_divida'),
+      divida_motoboys: sum('divida_comissao') - sum('quitacao_divida') + sum('quitacao_estorno'),
     };
     const periodo = {
       cobrado: sum('cobranca', since), comissao: sum('comissao', since),
@@ -352,30 +354,32 @@ export const adminRoutes: Route[] = [
   route('POST /api/admin/payouts', 'admin', async ({ req, res, user }) => {
     const b = await readBody(req);
     const driverId = reqStr(b.driver_id, 'mototaxista', 60);
-    const bal = driverBalance(driverId);
     const amount = Math.round(reqNum(b.amount_cents, 'valor'));
     if (amount <= 0) throw new ApiError(400, 'Valor do repasse deve ser maior que zero.');
-    if (amount > bal.pending_cents) {
-      throw new ApiError(400,
-        `Valor acima do saldo a repassar (${(bal.pending_cents / 100).toFixed(2)}).`);
-    }
     const pid = id('pyo');
     const t = now();
-    const paid = b.mark_paid !== false;
-    db.prepare(`INSERT INTO payouts (id, driver_id, amount_cents, status, method, reference, note, created_by, created_at, paid_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(pid, driverId, amount, paid ? 'pago' : 'pendente',
-        typeof b.method === 'string' ? b.method.slice(0, 30) : 'pix',
-        typeof b.reference === 'string' ? b.reference.slice(0, 120) : null,
-        typeof b.note === 'string' ? b.note.slice(0, 300) : null,
-        user!.id, t, paid ? t : null);
-    if (paid) {
+    // repasse feito por fora (Pix manual) e registrado aqui. Limite: o que o
+    // parceiro pode sacar (saldo − comissão pendente), pela mesma regra da carteira.
+    tx(() => {
+      const bal = driverBalance(driverId);
+      if (amount > bal.withdrawable_cents) {
+        throw new ApiError(400,
+          `Valor acima do disponível para repasse (${(bal.withdrawable_cents / 100).toFixed(2)}, já descontada a comissão pendente).`);
+      }
+      db.prepare(`INSERT INTO payouts (id, driver_id, origin, amount_cents, gross_cents, debt_cents, status, method,
+          reference, note, created_by, created_at, paid_at, paid_by, updated_at)
+        VALUES (?,?,'central',?,?,0,'pago',?,?,?,?,?,?,?,?)`)
+        .run(pid, driverId, amount, amount,
+          typeof b.method === 'string' ? b.method.slice(0, 30) : 'pix',
+          typeof b.reference === 'string' ? b.reference.slice(0, 120) : null,
+          typeof b.note === 'string' ? b.note.slice(0, 300) : null,
+          user!.id, t, t, user!.id, t);
       ledger('repasse_pago', amount, {
-        driverId, description: `Repasse registrado pelo administrador (${b.method || 'pix'})`,
+        driverId, payoutId: pid, description: `Repasse registrado pelo administrador (${b.method || 'pix'})`,
       });
-      notify(driverId, 'payout', '💸 Repasse realizado',
-        { body: `R$ ${(amount / 100).toFixed(2)} foram enviados para você.` });
-    }
+    });
+    notify(driverId, 'payout', '💸 Repasse realizado',
+      { body: `R$ ${(amount / 100).toFixed(2)} foram enviados para você.` });
     audit(user!.id, 'payout_create', 'driver', driverId, `${amount} centavos`);
     json(res, 201, { ok: true, id: pid });
   }),

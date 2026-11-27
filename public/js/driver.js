@@ -133,12 +133,12 @@ function bindScreenMenu() {
       },
     },
     {
-      label: 'Painel de Ganhos & Pix',
+      label: 'Carteira, Ganhos & Saques',
       match: () => currentScreen() === 'screen-earnings',
       go: () => {
         if (!S.user) return needLogin;
         if (!approved()) return notApproved();
-        showScreen('screen-earnings'); loadEarnings(); loadDrvHistory();
+        showScreen('screen-earnings'); loadWallet(); loadEarnings(); loadDrvHistory();
       },
     },
     {
@@ -169,7 +169,10 @@ async function enterApp() {
   });
 
   connectSSE({
-    notification: n => { toast(n.title); browserNotify(n.title, n.body || ''); },
+    notification: n => {
+      toast(n.title); browserNotify(n.title, n.body || '');
+      if (n.category === 'financeiro' && currentScreen() === 'screen-earnings') loadWallet();
+    },
     ride_offer: o => onOffer(o),
     ride_update: () => refreshActive(),
     passenger_location: p => onPassengerLocation(p),
@@ -182,7 +185,7 @@ async function enterApp() {
 window.vairoLinkHandler = async hash => {
   if (hash === 'ganhos' || hash === 'corridas') {
     if (!S.driver || S.driver.status !== 'approved') { await refreshDriver(); return; }
-    showScreen('screen-earnings'); loadEarnings(); loadDrvHistory();
+    showScreen('screen-earnings'); loadWallet(); loadEarnings(); loadDrvHistory();
   } else if (hash === 'perfil' || hash === 'suporte') showScreen('screen-profile');
   else if (hash === 'notificacoes') openNotifications();
   else await refreshDriver();   // corrida, cadastro: a tela certa sai do estado atual
@@ -216,7 +219,7 @@ function bindNav() {
     const id = b.dataset.screen;
     if (id === 'screen-panel' && S.activeRide) { showScreen('screen-drive'); return; }
     showScreen(id);
-    if (id === 'screen-earnings') { loadEarnings(); loadDrvHistory(); }
+    if (id === 'screen-earnings') { loadWallet(); loadEarnings(); loadDrvHistory(); }
     if (id === 'screen-profile') {
       fillDriverProfile(); loadDriverRatings(); loadMpConnect();
       renderNotificationStatus($('#notif-status'));
@@ -817,28 +820,142 @@ async function loadEarnings() {
       </div>`;
     const debtWarn = e.debt_cents > e.debt_limit_cents;
     $('#earnings-box').innerHTML = `
-      <div class="fin-grid mb">
-        <div class="fin-card in"><div class="fv">${fmt.money(e.balance.pending_cents)}</div>
-          <div class="fl">A receber da plataforma</div></div>
-        <div class="fin-card out"><div class="fv">${fmt.money(e.balance.paid_cents)}</div>
-          <div class="fl">Já repassado a você</div></div>
-        <div class="fin-card ${debtWarn ? 'bad' : 'warn'}"><div class="fv">${fmt.money(e.debt_cents)}</div>
-          <div class="fl">Comissão a pagar (corridas em dinheiro)</div></div>
-      </div>
       ${debtWarn ? `<div class="testbar danger">
-        ⛔ Sua dívida passou do limite de ${fmt.money(e.debt_limit_cents)} — você não recebe novas corridas
-        até quitar com a plataforma.</div>` : ''}
+        ⛔ Sua comissão pendente passou do limite de ${fmt.money(e.debt_limit_cents)} — você não recebe novas corridas
+        até ela ser descontada num saque ou quitada com a central.</div>` : ''}
       ${row('Hoje', e.day) + row('Esta semana', e.week) + row('Este mês', e.month) + row('Total', e.total)}
-      <h3 class="mt">Repasses recebidos</h3>
-      ${e.payouts.length ? e.payouts.map(p => `
-        <div class="list-item"><div class="li-main">
-          <div class="li-title">${fmt.money(p.amount_cents)} · ${escapeHtml(p.method || 'pix')}</div>
-          <div class="li-sub">${fmt.dt(p.created_at)}${p.reference ? ` · ${escapeHtml(p.reference)}` : ''}</div>
-        </div><span class="pill ${p.status === 'pago' ? 'green' : 'yellow'}">${p.status}</span></div>`).join('')
-        : '<p class="muted small">Nenhum repasse registrado ainda.</p>'}
-      <p class="muted small mt">Só corridas concluídas entram nos ganhos. Pix e cartão são recebidos
-      pela plataforma e repassados a você; em dinheiro você recebe na hora e fica devendo a comissão.</p>`;
+      <p class="muted small mt">Só corridas concluídas entram. Pix e cartão: a VAIRO recebe e credita ${100 - (S.wallet?.commission_pct ?? 15)}% na sua carteira.
+      Dinheiro: você recebe tudo na hora e a comissão é descontada do próximo saque.</p>`;
   } catch (err) { $('#earnings-box').innerHTML = `<p class="muted">${escapeHtml(err.message)}</p>`; }
+}
+
+/* ================= carteira: saldo, comissão, saques ================= */
+const WD_PILL = { aguardando_aprovacao: 'yellow', aprovado: 'blue', em_processamento: 'blue', pago: 'green', rejeitado: 'red', cancelado: 'gray' };
+const PIX_PT = { cpf: 'CPF', telefone: 'Telefone', email: 'E-mail', aleatoria: 'Chave aleatória' };
+
+async function loadWallet() {
+  const box = $('#wallet-box');
+  if (!box) return;
+  try {
+    const w = await api('/api/driver/wallet');
+    S.wallet = w;
+    const pct = w.commission_pct;
+    const nextTxt = w.next_withdrawal_at ? fmt.dt(w.next_withdrawal_at) : 'Agora';
+    box.innerHTML = `
+      <div class="wallet-hero">
+        <div class="muted small">Disponível para saque</div>
+        <div class="wallet-amount">${fmt.money(w.withdrawable_cents)}</div>
+        <div class="muted small">Saldo ${fmt.money(w.available_cents)} − comissão pendente ${fmt.money(w.pending_commission_cents)}</div>
+      </div>
+      <button class="btn btn-primary btn-lg mt" id="btn-withdraw" ${w.can_withdraw ? '' : 'disabled'}>SOLICITAR SAQUE</button>
+      ${w.blocked_reason ? `<p class="muted small center mt">${escapeHtml(w.blocked_reason)}</p>` : ''}
+      ${w.open ? `<div class="list-item mt"><div class="li-main"><div class="li-title">Saque em andamento: ${fmt.money(w.open.amount_cents)}</div>
+        <div class="li-sub">Pedido em ${fmt.dt(w.open.created_at)}</div></div>
+        <span class="pill ${WD_PILL[w.open.status]}">${escapeHtml(w.open.status_label)}</span></div>
+        ${w.open.status === 'aguardando_aprovacao' ? '<button class="btn btn-outline btn-sm mt" id="btn-wd-cancel">Cancelar pedido</button>' : ''}` : ''}
+      <div class="fin-grid mt">
+        <div class="fin-card in"><div class="fv">${fmt.money(w.available_cents)}</div><div class="fl">Saldo (corridas digitais, ${100 - pct}%)</div></div>
+        <div class="fin-card ${w.pending_commission_cents ? 'warn' : ''}"><div class="fv">${fmt.money(w.pending_commission_cents)}</div><div class="fl">Comissão pendente (dinheiro)</div></div>
+        <div class="fin-card out"><div class="fv">${w.last_paid ? fmt.money(w.last_paid.amount_cents) : '—'}</div><div class="fl">Último saque${w.last_paid ? ` · ${fmt.date(w.last_paid.paid_at)}` : ''}</div></div>
+        <div class="fin-card"><div class="fv">${escapeHtml(nextTxt)}</div><div class="fl">Próximo saque permitido</div></div>
+      </div>
+      <div class="list-item mt"><div class="li-main"><div class="li-title">Ganhos totais (${w.totals.rides} corrida${w.totals.rides === 1 ? '' : 's'})</div>
+        <div class="li-sub">Valor das corridas ${fmt.money(w.totals.gross_cents)} · digitais ${fmt.money(w.totals.digital_gross_cents)} · dinheiro ${fmt.money(w.totals.cash_gross_cents)}</div></div>
+        <b>${fmt.money(w.totals.net_cents)}</b></div>
+      <div class="list-item"><div class="li-main"><div class="li-title">Comissão VAIRO (${pct}%)</div>
+        <div class="li-sub">Digital: já descontada no saldo · Dinheiro: descontada do próximo saque</div></div>
+        <b>${fmt.money(w.totals.commission_cents)}</b></div>
+      <div class="list-item"><div class="li-main"><div class="li-title">💠 Chave Pix para saque</div>
+        <div class="li-sub">${w.pix ? `${PIX_PT[w.pix.type]} ${escapeHtml(w.pix.masked)} · ${escapeHtml(w.pix.holder)}` : 'Não cadastrada'}</div></div>
+        <button class="btn btn-outline btn-sm" id="btn-pix">${w.pix ? 'Alterar' : 'Cadastrar'}</button></div>
+      <h3 class="mt">Saques</h3>
+      ${w.history.length ? w.history.map(p => `<div class="list-item"><div class="li-main">
+          <div class="li-title">${fmt.money(p.amount_cents)}${p.debt_cents ? ` <span class="muted small">(+ ${fmt.money(p.debt_cents)} de comissão descontada)</span>` : ''}</div>
+          <div class="li-sub">${p.origin === 'central' ? 'Repasse da central' : 'Saque'} · ${fmt.dt(p.created_at)}${p.paid_at ? ` · pago ${fmt.dt(p.paid_at)}` : ''}${p.reason ? ` · ${escapeHtml(p.reason)}` : ''}</div>
+        </div><span class="pill ${WD_PILL[p.status] || 'gray'}">${escapeHtml(p.status_label)}</span></div>`).join('')
+        : '<p class="muted small">Nenhum saque ainda.</p>'}
+      <p class="muted small mt">Saques a cada ${w.interval_hours} horas, por Pix, aprovados pela central. Pedido recusado ou cancelado devolve o valor e não conta para o prazo. Sem taxas de saque.</p>`;
+    $('#btn-withdraw')?.addEventListener('click', openWithdrawModal);
+    $('#btn-pix').onclick = openPixModal;
+    const cancel = $('#btn-wd-cancel');
+    if (cancel) cancel.onclick = async () => {
+      if (!await confirmModal('Cancelar o pedido de saque?', 'O valor volta para a sua carteira.', 'Cancelar pedido', true)) return;
+      await withLoading(cancel, async () => { await api(`/api/driver/withdrawals/${w.open.id}/cancel`, { method: 'POST' }); loadWallet(); loadStatement(); },
+        { okMsg: 'Pedido cancelado; valor devolvido.' }).catch(() => { });
+    };
+  } catch (e) { box.innerHTML = `<p class="muted">${escapeHtml(e.message)}</p>`; }
+  loadStatement();
+}
+
+function openWithdrawModal() {
+  const w = S.wallet;
+  if (!w?.can_withdraw) return;
+  const key = (crypto.randomUUID?.() || `${Date.now()}${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9_-]/g, '');
+  const m = openModal(`
+    <h3>💸 Solicitar saque</h3>
+    <div class="list-item"><div class="li-main"><div class="li-sub">Mototaxista</div><div class="li-title">${escapeHtml(S.user?.name || '')}</div></div></div>
+    <div class="wd-preview">
+      <div><span>Valor bruto</span><b>${fmt.money(w.available_cents)}</b></div>
+      <div><span>Comissão pendente</span><b>− ${fmt.money(w.pending_commission_cents)}</b></div>
+      <div><span>Taxas adicionais</span><b>${fmt.money(0)}</b></div>
+      <div class="total"><span>Valor líquido</span><b>${fmt.money(w.withdrawable_cents)}</b></div>
+    </div>
+    <div class="list-item"><div class="li-main"><div class="li-sub">Forma de recebimento</div>
+      <div class="li-title">Pix · ${PIX_PT[w.pix.type]} ${escapeHtml(w.pix.masked)}</div>
+      <div class="li-sub">Titular: ${escapeHtml(w.pix.holder)}</div></div></div>
+    <p class="muted small mt">A central confere a titularidade da conta antes de transferir. O próximo saque fica liberado ${w.interval_hours} horas depois deste pedido.</p>
+    <button class="btn btn-primary btn-lg mt" data-ok>CONFIRMAR SAQUE</button>
+    <button class="btn btn-outline mt" data-no>Voltar</button>`);
+  $('[data-no]', m).onclick = () => m.close();
+  $('[data-ok]', m).onclick = () => withLoading($('[data-ok]', m), async () => {
+    // a mesma chave em todas as tentativas deste pedido: repetir não duplica
+    await api('/api/driver/withdrawals', { method: 'POST', body: { idempotency_key: key } });
+    m.close();
+    loadWallet();
+  }, { okMsg: 'Saque solicitado! Você será avisado quando for pago.' }).catch(() => { });
+}
+
+function openPixModal() {
+  const cur = S.wallet?.pix;
+  const m = openModal(`
+    <h3>💠 Chave Pix para saque</h3>
+    <p class="muted small mb">A conta precisa estar no seu nome. Chave CPF: use o mesmo CPF do seu cadastro.</p>
+    <div class="field"><label for="pix-type">Tipo de chave</label>
+      <select class="input" id="pix-type">${Object.entries(PIX_PT).map(([k, v]) => `<option value="${k}" ${cur?.type === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+    <div class="field"><label for="pix-key">Chave</label><input class="input" id="pix-key" autocomplete="off" maxlength="80"></div>
+    <div class="field"><label for="pix-holder">Nome completo do titular</label><input class="input" id="pix-holder" maxlength="120" value="${escapeHtml(cur?.holder || S.user?.name || '')}"></div>
+    <button class="btn btn-primary" data-ok>Salvar chave</button>`);
+  $('[data-ok]', m).onclick = () => withLoading($('[data-ok]', m), async () => {
+    await api('/api/driver/wallet/pix', { method: 'PUT', body: { type: $('#pix-type', m).value, key: $('#pix-key', m).value, holder_name: $('#pix-holder', m).value } });
+    m.close(); loadWallet();
+  }, { okMsg: 'Chave Pix salva.' }).catch(() => { });
+}
+
+async function loadStatement(more = false) {
+  const box = $('#wallet-statement');
+  if (!box) return;
+  try {
+    const before = more && S.stmtLast ? `&before=${S.stmtLast}` : '';
+    const r = await api(`/api/driver/wallet/statement?limit=30${before}`);
+    const PAY = { dinheiro: 'dinheiro', pix: 'Pix', cartao: 'cartão' };
+    const html = r.entries.map(e => {
+      const sign = e.effect.saldo > 0 ? '+' : e.effect.saldo < 0 ? '−' : '';
+      const cls = e.effect.saldo > 0 ? 'green' : e.effect.saldo < 0 ? 'red' : '';
+      const amount = Math.abs(e.amount_cents);
+      return `<div class="list-item stmt"><div class="li-main">
+        <div class="li-title">${escapeHtml(e.label)}</div>
+        <div class="li-sub">${fmt.dt(e.created_at)}${e.ride ? ` · corrida de ${fmt.money(e.ride.price_cents)} (${PAY[e.ride.payment_method] || e.ride.payment_method})` : ''}${e.payout_id ? ` · saque ${escapeHtml(e.payout_id.slice(-6))}` : ''}
+          <br><span class="mono">${escapeHtml(e.id)}</span></div></div>
+        <b class="${cls ? `txt-${cls}` : 'muted'}">${sign}${fmt.money(amount)}</b></div>`;
+    }).join('');
+    if (more) box.querySelector('[data-more]')?.remove();
+    if (more) box.insertAdjacentHTML('beforeend', html); else box.innerHTML = html || '<p class="muted small">Sem lançamentos ainda.</p>';
+    if (r.entries.length) S.stmtLast = r.entries[r.entries.length - 1].created_at;
+    if (r.has_more) {
+      box.insertAdjacentHTML('beforeend', '<button class="btn btn-outline btn-sm mt" data-more>Ver mais</button>');
+      box.querySelector('[data-more]').onclick = () => loadStatement(true);
+    }
+  } catch (e) { box.innerHTML = `<p class="muted">${escapeHtml(e.message)}</p>`; }
 }
 
 /** Conexão da conta Mercado Pago do parceiro (recebimento direto). */
