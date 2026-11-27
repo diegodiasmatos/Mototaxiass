@@ -1,0 +1,94 @@
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><link rel="stylesheet" href="studio.css">
+<style>
+.phone { width: 600px; height: 1262px; left: 240px; top: 560px; transform-origin: 50% 60%; }
+#cap { top: 190px; left: 60px; width: 960px; display: flex; justify-content: center; }
+.caption { flex-direction: column; align-items: flex-start; gap: 10px; }
+#sub { font-size: 32px; color: #d8d8d9; font-weight: 600; }
+#intro, #end, #trust { inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px; }
+#msg { left: 80px; width: 920px; top: 560px; }
+.bubble { background: #17171d; border: 2px solid rgba(231,255,0,.4); border-radius: 36px 36px 36px 8px; padding: 40px 44px;
+  font-size: 44px; line-height: 1.38; font-weight: 600; box-shadow: 0 30px 80px rgba(0,0,0,.6); }
+.bubble b { color: #e7ff00; }
+.msgh { font-size: 34px; font-weight: 800; color: #8b8b96; margin: 0 0 22px 8px; letter-spacing: .01em; }
+.note { margin-top: 30px; font-size: 34px; color: #d8d8d9; font-weight: 600; text-align: center; line-height: 1.35; }
+#warn { left: 80px; width: 920px; top: 1350px; }
+.warnbox { border-radius: 30px; padding: 30px 36px; background: rgba(255,182,46,.08); border: 2px solid rgba(255,182,46,.5);
+  font-size: 38px; font-weight: 700; line-height: 1.35; text-align: center; }
+.list { display: grid; gap: 22px; width: 900px; }
+.li { display: flex; gap: 26px; align-items: center; padding: 28px 34px; border-radius: 28px; background: rgba(23,23,29,.9);
+  border: 1.5px solid #2e2e34; font-size: 42px; font-weight: 800; }
+.li span { font-size: 54px; }
+#real { bottom: 40px; left: 50%; transform: translateX(-50%); white-space: nowrap; padding: 12px 26px; border-radius: 999px; background: rgba(9,9,9,.88); z-index: 6; }
+</style></head><body><div class="stage">
+<div class="bg"></div><div class="grid"></div>
+<div id="intro" class="abs">
+  <div class="tile" style="width:200px;height:200px;border-radius:52px"><img src="logo.svg"></div>
+  <div class="h1" style="font-size:108px">Segurança<br>na <span class="hl">corrida</span></div>
+  <div class="tag" style="font-size:32px">Recursos do app VAIRO</div>
+</div>
+<div class="phone" id="ph"><div class="notch"></div><div class="scr"><img id="scr"></div></div>
+<div id="cap" class="abs"><div class="caption"><div id="ct"></div><div id="sub"></div></div></div>
+<div id="msg" class="abs">
+  <div class="msgh">📤 Mensagem que a pessoa de confiança recebe:</div>
+  <div class="bubble" id="bubble"></div>
+  <div class="note">Pelo WhatsApp, SMS ou outro app que você escolher no “compartilhar” do celular.</div>
+</div>
+<div id="warn" class="abs"><div class="warnbox">ℹ️ São os <span class="hl">dados da corrida</span>: nome, moto, placa e trajeto.<br>Não é a localização ao vivo.</div></div>
+<div id="trust" class="abs">
+  <div class="h1" style="font-size:76px;margin-bottom:20px">E mais <span class="hl">segurança</span><br>em cada corrida</div>
+  <div class="list">
+    <div class="li"><span>🔑</span>Código de embarque para confirmar a moto certa</div>
+    <div class="li"><span>🪪</span>Mototaxistas com documentos conferidos pela central</div>
+    <div class="li"><span>🛟</span>Suporte e “Não embarquei” direto no app</div>
+  </div>
+</div>
+<div id="real" class="abs fine">Gravação de tela real do aplicativo · dados de demonstração</div>
+<div id="end" class="abs">
+  <div class="tile" style="width:240px;height:240px;border-radius:62px"><img src="logo.svg"></div>
+  <div class="h1 word" style="font-size:160px;letter-spacing:.05em">VAIRO</div>
+  <div class="h1" style="font-size:58px;font-weight:800">sua cidade em <span class="hl">movimento</span></div>
+  <div class="fine" style="font-size:32px;margin-top:20px">Assis Chateaubriand – PR</div>
+</div>
+</div>
+<script src="studio.js"></script><script src="clipE.js"></script><script>
+const { show, prog, ease, setImg, clipFrame } = studio;
+window.DURATION = 30;
+const $ = id => document.getElementById(id);
+// texto real gerado pelo app, com os dados da corrida destacados
+$('bubble').innerHTML = SHARED.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  .replace('Carlos Lima', '<b>Carlos Lima</b>').replace('placa BRA2E19', 'placa <b>BRA2E19</b>');
+const CAPS = [
+  [2.6, 6.6, 'Durante a corrida, os botões de segurança ficam na sua tela', ''],
+  [6.6, 11.2, '🆘 Emergência: um toque abre a ligação para o 190', 'No celular, abre o telefone já com 190: você confirma a chamada.'],
+  [11.2, 13.8, '📤 Compartilhar corrida: avise alguém de confiança', ''],
+];
+// tempo da gravação para cada instante do vídeo (com pausas para a explicação)
+function clipT(v) {
+  if (v < 2.4) return 0;
+  if (v < 6.8) return v - 2.4;
+  if (v < 11.2) return 4.4 + Math.min(v - 6.8, 1.2);
+  return Math.min(CLIPE.dur, 5.6 + (v - 11.2));
+}
+window.render = async t => {
+  show($('intro'), t, .15, 2.1, { d: .5, y: 30, s: .06 });
+  const lift = ease(prog(t, 13.6, 14.3));
+  // aproximação nos botões de segurança durante os toques
+  const z = 1 + .22 * ease(prog(t, 4.9, 5.6));
+  $('ph').dataset.base = `translateY(${-lift * 40}px) scale(${z})`;
+  show($('ph'), t, 2.2, 13.6, { d: .6, y: 160, s: .06, blur: 0 });
+  $('real').dataset.base = 'translateX(-50%)'; show($('real'), t, 2.6, 13.4, { d: .4, y: 0 });
+  const i = CAPS.findIndex(c => t >= c[0] && t < c[1]);
+  if (i >= 0) {
+    $('ct').textContent = CAPS[i][2]; $('sub').textContent = CAPS[i][3];
+    show($('cap'), t, CAPS[i][0], CAPS[i][1] - .3, { d: .3, y: 24 });
+    $('sub').style.display = CAPS[i][3] ? 'block' : 'none';
+  } else { $('cap').style.opacity = 0; }
+  show($('msg'), t, 14.0, 23.4, { d: .6, y: 60 });
+  show($('warn'), t, 18.4, 23.4, { d: .5, y: 30 });
+  show($('trust'), t, 23.8, 27.0, { d: .5, y: 40 });
+  [...document.querySelectorAll('#trust .li')].forEach((el, k) => show(el, t, 24.3 + k * .35, 27.0, { d: .4, y: 30 }));
+  show($('end'), t, 27.3, null, { d: .6, y: 40, s: .05 });
+  const k = clipFrame(CLIPE, clipT(t));
+  await setImg($('scr'), `${CLIPE.dir}/${CLIPE.files[k]}`);
+};
+</script></body></html>

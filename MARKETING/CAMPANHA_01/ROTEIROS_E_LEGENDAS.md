@@ -176,6 +176,50 @@ ainda não foi definida.
 
 ---
 
+---
+
+## VÍDEO 04 — Segurança na corrida (`VIDEO_04_SEGURANCA.mp4`, 30 s)
+
+Gravação de tela real de uma corrida de demonstração **em andamento**.
+
+O que os botões fazem de verdade (conferido no código do app):
+
+- **🆘 Emergência · 190**: abre o telefone do celular já com o número 190; a
+  pessoa confirma a chamada. Não avisa a central nem envia localização.
+- **📤 Compartilhar corrida**: abre o "compartilhar" do celular (WhatsApp, SMS…)
+  com um texto pronto: nome do mototaxista, moto, cor, placa, origem, destino e
+  horário de saída. **Não** é localização ao vivo, e o app e o vídeo dizem isso.
+
+O navegador usado na gravação não tem discador nem a tela de "compartilhar" do
+Android. Por isso o vídeo mostra o **toque real** e explica o que acontece no
+celular, sem simular a tela do telefone. O texto do balão é o que o app gerou
+nessa corrida.
+
+| Tempo | Imagem | Texto na tela |
+|---|---|---|
+| 0–2,1 s | Logotipo | **Segurança na corrida** · Recursos do app VAIRO |
+| 2,4–6,6 s | Corrida em andamento; a tela desce até o cartão de segurança e se aproxima | Durante a corrida, os botões de segurança ficam na sua tela |
+| 6,6–11,2 s | Toque em "Emergência · 190" | 🆘 Emergência: um toque abre a ligação para o 190 · *No celular, abre o telefone já com 190: você confirma a chamada.* |
+| 11,2–13,8 s | Toque em "Compartilhar corrida" | 📤 Compartilhar corrida: avise alguém de confiança |
+| 14–23,4 s | Balão com a mensagem real | "Estou numa corrida VAIRO. Mototaxista: Carlos Lima, Honda CG 160 Fan Vermelha, placa BRA2E19. De Rua Polônia, Jardim Europa, Assis Chateaubriand para Jardim Paraná, Assis Chateaubriand. Saída às 20:42." · Pelo WhatsApp, SMS ou outro app · ℹ️ São os dados da corrida: nome, moto, placa e trajeto. Não é a localização ao vivo. |
+| 23,8–27 s | Lista | E mais segurança em cada corrida: código de embarque · mototaxistas com documentos conferidos pela central · suporte e "Não embarquei" no app |
+| 27,3–30 s | Cartão final | **VAIRO** · sua cidade em movimento · Assis Chateaubriand – PR |
+
+Legenda do post:
+
+> Segurança vem antes de tudo. 🛡️
+>
+> Durante a corrida na VAIRO, dois botões ficam sempre à mão:
+>
+> 🆘 **Emergência**: um toque abre a ligação para o 190.
+> 📤 **Compartilhar corrida**: manda para alguém de confiança o nome do mototaxista, a moto, a placa e o trajeto, pelo WhatsApp ou SMS.
+>
+> E ainda tem o código de embarque para você conferir que subiu na moto certa.
+>
+> Telas reais do app (dados de demonstração). Marque aqui alguém que você sempre avisa quando sai! 💛
+>
+> #VAIRO #AssisChateaubriand #Paraná #Mototáxi #Segurança #CorridaSegura #MobilidadeUrbana
+
 ## Antes de publicar
 
 1. **Artigo da marca**: o app usa "**a** VAIRO" ("Entrar na VAIRO", "Bem-vindo(a)
@@ -200,6 +244,7 @@ ainda não foi definida.
 | `VIDEO_01_APRESENTACAO.mp4` | MP4 H.264 High · 1080×1920 · 30 fps · AAC 44,1 kHz estéreo · 24 s · −14 LUFS |
 | `VIDEO_02_COMO_FUNCIONA.mp4` | idem · 32 s |
 | `VIDEO_03_LANCAMENTO.mp4` | idem · 22 s |
+| `VIDEO_04_SEGURANCA.mp4` | idem · 30 s |
 | `IMAGEM_01_MARCA.png`, `IMAGEM_02_FUNCIONALIDADES.png`, `IMAGEM_03_LANCAMENTO.png` | PNG 1080×1350 |
 | `STORIES/STORY_0x_*.png` | PNG 1080×1920 |
 | `TELAS_REAIS/*.png` | 15 capturas reais em alta (1236×2676) para outras peças |
